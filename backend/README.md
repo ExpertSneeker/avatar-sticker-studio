@@ -12,8 +12,8 @@ The FastAPI lifespan starts the durable worker. A built `frontend/dist` is serve
 ## Configuration
 
 - `STUDIO_DATA_DIR`: private data directory, default `.data` in the working directory. Keep on a local filesystem, not a network share. Contains SQLite WAL database, original upload chunks and immutable PNG assets. Directory mode 0700, DB/assets mode 0600.
-- `OPENAI_API_KEY`: preferred OpenAI credential. Alternatively the authenticated administrator can set it in Settings; stored only in the private database and never returned by an API. No Codex credentials are read.
-- `YEZI_API_KEY`: optional separate Yezi cutout credential, with the same private admin setting alternative. A paid OpenAI result is retained before cutout processing.
+- `FAL_KEY`: preferred FAL credential. Alternatively the authenticated administrator can set it in Settings; stored only in the private database and never returned by an API. No Codex credentials are read.
+- `YEZI_API_KEY`: optional separate Yezi cutout credential, with the same private admin setting alternative. A paid FAL result is retained before cutout processing.
 - `STUDIO_ALLOWED_HOSTS`: comma-separated accepted hostnames; defaults `localhost,127.0.0.1,::1,testserver`.
 - `STUDIO_ALLOWED_ORIGINS`: explicit unsafe-request origins; defaults localhost/127.0.0.1 on ports 5173 and 8000. The request's own trusted origin is also accepted.
 - `STUDIO_SECURE_COOKIE=1`: require HTTPS cookies when running behind an explicitly configured HTTPS proxy.
@@ -23,10 +23,11 @@ The initial administrator can only be created from a loopback connection while n
 
 ## Queue and files
 
-- The global default is 5 OpenAI request starts per rolling minute and at most 2 known in-flight requests. Claim, start history and state transition are committed together with `BEGIN IMMEDIATE`.
-- All starts including 429 retries and manual reruns pass the same gate. Explicit 429s retry at most three times with exponential backoff and Retry-After. Rejected parameters/auth/content fail visibly. Network/timeout/5xx outcomes become `unknown` and never automatically resubmit.
-- Worker leases are refreshed every five seconds; missing/expired leases are classified unknown after 30 seconds. Startup and the running worker recover pending postprocessing. Pause only stops unstarted images. A manual rerun explicitly requeues only that image and preserves the old result until success.
-- OpenAI requests always use `gpt-image-2`, `low`, `1024x1024`, `transparent`, `png`, `n=1`, template first and avatar second. `input_fidelity` is omitted. A missing API key leaves jobs queued; there is no simulated production provider.
+- The only generation admission setting is `max_inflight`, default 2, configurable 1–40. No RPM setting or rolling-minute gate remains. All accounts and worker processes share transactional reservations. This website conservatively counts submitted FAL jobs while waiting in the remote queue as well as running jobs; FAL separately enforces the account's actual `IN_PROGRESS` limit across applications/endpoints.
+- Submit to `https://queue.fal.run/openai/gpt-image-2/edit` with `Authorization: Key <FAL_KEY>` and JSON `image_urls: [template_data_uri, portrait_data_uri]`, `prompt`, `image_size: {width:1024,height:1024}`, `quality: low`, `num_images: 1`, `background: transparent`, `output_format: png`, `sync_mode: false`. Do not use BYOK or pass an OpenAI credential. Missing FAL credentials leave new jobs queued. The old OpenAI credential is never reused as a FAL key.
+- Persist the request ID and validated queue status/result URLs immediately. Poll `IN_QUEUE` / `IN_PROGRESS` / `COMPLETED`, then download the result without an Authorization header. Remote URLs are validated, redirects are not followed blindly, and media size is bounded before image decoding. Production has no simulated provider.
+- Known request IDs survive worker leases/restarts. Transient status/download errors retry retrieval of the original request, never a fresh generation. Auth/validation/content failures are shown. A submission with an uncertain outcome and no ID is held as unknown and keeps its reservation until explicitly resolved. FAL handles concurrency waiting in the durable queue; no start deadline is set. HTTP 429 uses backoff/Retry-After.
+- Pause affects only unsubmitted jobs. Already submitted jobs continue lookup even if the order is paused or the account is deactivated. Lowering concurrency does not cancel active jobs; no new slots are admitted until the count falls below the new setting. Manual rerun after a terminal outcome clears remote identity for the new attempt, preserving the old good image until success.
 - Yezi uses a distinct 2-starts/second, 2-in-flight transactional gate. It is called only for opaque generation results when configured. The sync HTTPS API is implemented from the existing script contract; downloads are restricted to HTTPS Yezi/Alibaba OSS domains.
 - Upload chunks are at most 4 MiB; uploads at most 25 MiB. Offset retries must match existing bytes. Completion validates SHA256 and normalizes image orientation. A hash mismatch resets the durable offset to zero for recovery.
 - Templates store immutable revisions of exactly twelve images; `image_order` multipart JSON supports mixing retained `{id}` and newly uploaded `{file_index}` references. Existing orders embed selected template and prompt snapshots.
@@ -47,8 +48,16 @@ Tests use temporary directories and explicitly injected providers or HTTP transp
 
 ## Resume postprocessing without regenerating
 
-`POST /api/orders/{order_id}/items/{item_id}/reprocess` with no body returns the full Order and durably queues only postprocessing of the retained raw image. Items expose `raw_available: boolean` and `processing_stage: "generate" | "postprocess"`. This endpoint requires an existing raw result and rejects already queued/running items with409. It respects the order's paused state. It never calls OpenAI or increments `attempt` (the number of OpenAI starts), and works without an OpenAI key; opaque raw images use the independently limited Yezi API. Failures preserve previous good results/files, and reprocessing remains available across restart. In-progress uncertain cutout outcomes also require explicit operator retry.
+`POST /api/orders/{order_id}/items/{item_id}/reprocess` with no body returns the full Order and durably queues only postprocessing of the retained raw image. Items expose `raw_available: boolean` and `processing_stage: "generate" | "postprocess"`. This endpoint requires an existing raw result and rejects already queued/running items with409. It respects the order's paused state. It never calls image generation or increments `attempt` (the number of generation submissions), and works without a FAL key; opaque raw images use the independently limited Yezi API. Failures preserve previous good results/files, and reprocessing remains available across restart. In-progress uncertain cutout outcomes also require explicit operator retry.
 
 Template categories accept Chinese or English inputs and always return canonical `boy` / `girl` values. Display names are trimmed and cannot be whitespace-only.
 
 Authenticated browser API calls should send `X-Studio-User` containing the account ID captured by that tab. If shared cookies switch to another account, a mismatch returns401 (`登录账号已变化，请重新登录`) before mutation. Logout is guarded too when the header is present. Ordinary `<img>` asset requests may omit it and still require owner/admin session authorization.
+
+## FAL contract and settings
+
+`PATCH /api/admin/settings` accepts `fal_api_key`, `max_inflight`, `prompt` and optional `cutout_api_key`; public settings expose only `fal_configured` and `cutout_configured` flags, never keys. `rpm` and `openai_api_key` are rejected. Environment `FAL_KEY` takes precedence over the database value. Migrating an existing database retains accounts, templates, orders, images, prompt versions, print parameters and the chosen concurrency limit.
+
+Official references checked 2026-09-06: [edit schema](https://fal.ai/models/openai/gpt-image-2/edit/api), [queue API](https://fal.ai/docs/documentation/model-apis/inference/queue), [concurrency](https://fal.ai/docs/documentation/model-apis/concurrency-limits).
+
+Each detailed item exposes `fal_request_id`, `fal_status`, `queue_position`, `remote_reserved` and `recoverable` without queue URLs. `POST /api/orders/{order_id}/items/{item_id}/recover` resumes lookup for an unknown job with an ID. `POST /api/orders/{order_id}/items/{item_id}/resolve` requires `{"confirmed_ended":true}` and unknown status; it records the operator's assertion that the original job ended/does not exist, releases the reservation, and does not generate. The operator must verify FAL dashboard state before confirming. A later rerun is a separate action. Submission429 also sets a shared cooldown so other workers/orders cannot bypass backoff.
