@@ -1,3 +1,4 @@
+import { previewUrl } from '../lib/preview'
 import { createContext, useContext, useEffect, useId, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { X, LoaderCircle, ImagePlus, Check, Minus, Plus, Search } from 'lucide-react'
@@ -50,7 +51,7 @@ export function TemplateChooser({templates,value,onChange}:{templates:TemplateSe
       {search&&<button className="text-button" onClick={()=>setSearch('')}>清空搜索</button>}
       <span className="hint">找到 {filtered.length} 套</span>
     </div>
-    {filtered.length?<div className="template-picker">{filtered.map(set=><button type="button" key={set.id} className={'template-option '+(value.includes(set.id)?'selected':'')} onClick={()=>onChange(value.includes(set.id)?value.filter(id=>id!==set.id):[...value,set.id])}><div className="set-mosaic">{set.images.slice(0,4).map(im=><img key={im.id} src={im.url} alt=""/>)}</div><div><strong>{set.name}</strong><span>{set.code} · 12 张</span></div><span className="pick-check">{value.includes(set.id)?<Check size={16}/>:<Plus size={16}/>}</span></button>)}</div>:<Empty title="没有匹配的模板套装" description="试试其他名称或编号；已选套装会保留。"/>}
+    {filtered.length?<div className="template-picker">{filtered.map(set=><button type="button" key={set.id} className={'template-option '+(value.includes(set.id)?'selected':'')} onClick={()=>onChange(value.includes(set.id)?value.filter(id=>id!==set.id):[...value,set.id])}><div className="set-mosaic">{set.images.slice(0,4).map(im=><img key={im.id} src={previewUrl(im.url)} alt=""/>)}</div><div><strong>{set.name}</strong><span>{set.code} · 12 张</span></div><span className="pick-check">{value.includes(set.id)?<Check size={16}/>:<Plus size={16}/>}</span></button>)}</div>:<Empty title="没有匹配的模板套装" description="试试其他名称或编号；已选套装会保留。"/>}
   </>
 }
 export function Progress({value,total}:{value:number;total:number}) {return <div className="progress-track"><span style={{transform:`scaleX(${total?Math.min(1,value/total):0})`}}/></div>}

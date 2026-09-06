@@ -56,6 +56,7 @@ test('complete production UI workflow with isolated provider and data', async ({
   await dialog.getByRole('button', { name: '保存套装' }).click()
   await expect(dialog).not.toBeVisible()
   await expect(page.getByRole('heading', { name: '春日出游' })).toBeVisible()
+  await expect(page.locator('.library-mosaic img').first()).toHaveAttribute('src', /\/preview\?size=320$/)
 
   await page.getByRole('navigation').getByRole('button', { name: '工作台', exact: true }).click()
   await page.locator('input[type=file]').setInputFiles([{ name: '小满.png', mimeType: 'image/png', buffer: pixel }, { name: '岁岁.png', mimeType: 'image/png', buffer: pixel }])
@@ -155,8 +156,16 @@ test('complete production UI workflow with isolated provider and data', async ({
     }catch{return false}
   })).toBe(true)
   await page.getByRole('button',{name:'预览 小满',exact:true}).click()
-  await expect(dialog.getByRole('img',{name:'小满 预览原图'})).toBeVisible()
+  await expect(dialog.getByRole('img',{name:'小满 水印预览'})).toBeVisible()
+  await expect(dialog.locator('img')).toHaveAttribute('src', /\/preview\?size=1280$/)
+  await expect.poll(()=>dialog.locator('img').evaluate((image:HTMLImageElement)=>image.complete&&image.naturalWidth>0)).toBe(true)
+  await dialog.locator('img').evaluate(async (image:HTMLImageElement)=>{await image.decode();await new Promise(requestAnimationFrame)})
+  await page.screenshot({path:evidence('order-compressed-preview.png'),animations:'disabled'})
+  await dialog.getByRole('button',{name:'查看原图',exact:true}).click()
+  await expect(dialog.locator('img')).toHaveAttribute('src', /^\/api\/assets\/[a-f0-9]{32}$/)
+  await expect.poll(()=>dialog.locator('img').evaluate((image:HTMLImageElement)=>image.complete&&image.naturalWidth)).toBe(1024)
   expect(await dialog.locator('img').evaluate((image:HTMLImageElement)=>image.naturalWidth)).toBe(1024)
+  await dialog.locator('img').evaluate(async (image:HTMLImageElement)=>{await image.decode();await new Promise(requestAnimationFrame)})
   await page.screenshot({path:evidence('order-preview.png'),animations:'disabled'})
   await dialog.getByRole('button',{name:'关闭',exact:true}).click()
   const row=page.locator('.task-row').filter({has:page.getByRole('heading',{name:'小满',exact:true})})
@@ -303,7 +312,12 @@ test('FAL queue recovery preserves original request and requires confirmation be
   await page.locator('.result-card').first().click()
   const dialog=page.getByRole('dialog')
   await expect(dialog.getByText('fal-original-request',{exact:true})).toBeVisible()
-  expect(await dialog.locator('.compare-grid figure > img').evaluate(image=>image.getBoundingClientRect().bottom<=image.parentElement!.getBoundingClientRect().bottom+1)).toBe(true)
+  expect(await dialog.locator('.compare-grid figure').first().locator('img').evaluate(image=>image.getBoundingClientRect().bottom<=image.closest('figure')!.getBoundingClientRect().bottom+1)).toBe(true)
+  for(const image of await dialog.locator('.compare-grid img').all()){
+    await image.evaluate(async (img:HTMLImageElement)=>{await img.decode();await new Promise(requestAnimationFrame)})
+    expect((await image.boundingBox())!.height).toBeGreaterThan(64)
+  }
+  for(const button of await dialog.locator('.compare-grid').getByRole('button',{name:'查看原图',exact:true}).all())await expect(button).toBeInViewport()
   await page.screenshot({path:evidence('fal-request-unknown.png'),animations:'disabled'})
 
   await expect(dialog.getByRole('button',{name:/重新生成/})).toBeDisabled()

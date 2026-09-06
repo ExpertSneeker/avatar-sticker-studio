@@ -31,3 +31,32 @@ journalctl -u avatar-sticker-studio --since '30 minutes ago'
 Use controlled service restarts, retaining durable FAL request IDs. Unknown cutout requests require explicit manual retry; never automatically resubmit a deployment smoke request. Changing the release symlink and restarting selects another compatible code version; this does not roll back business data.
 
 No scheduled backups, off-host backups, backup timers or backup management features are installed, by the owner's instruction.
+
+## Display image cache
+
+Only display images use `/api/assets/{id}/preview?size=320` or `size=1280`.
+Pillow encodes WebP at quality 80 without upscaling; transparency and white
+watermark backgrounds are retained. Original URLs, download ZIPs and manifests
+continue to serve the original PNG bytes. Modal viewers provide an explicit
+original-image toggle for detailed inspection.
+
+Derivatives are generated on demand under `preview-cache/<asset-id>/` in the
+private data directory. The 256 MiB encoded-file budget uses least-recently-used
+eviction, pruning to approximately 80% when full. Encoding and eviction share a
+cross-process lock; only one image is encoded at a time. Incomplete temporary
+files are reclaimed on the next cache miss. Below 512 MiB free disk space, or
+if persisting a cache entry fails, the compressed response is returned without
+storing it. No external service or backup is added.
+
+Every preview request, including cache hits and conditional 304 responses,
+checks the authenticated account and asset access. Responses use
+`Cache-Control: private, no-cache`, `Vary: Cookie` and versioned ETags. Do not add
+Cloudflare rules that force these private endpoints into a shared cache.
+
+Administrator date cleanup includes all cached variants of removed assets,
+including historical outputs and variants created after the cleanup preview.
+Template/shared surviving assets stay protected. A durable per-asset cache
+cleanup entry is retried via the existing cleanup-retry action and on startup.
+The storage panel reports cache use and the limit; cached bytes are already
+included in the application's total. Cached derivatives are disposable and do
+not replace manual retention management of original orders.

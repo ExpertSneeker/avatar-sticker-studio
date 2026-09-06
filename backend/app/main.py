@@ -22,6 +22,7 @@ from .schemas import AccountPatch, ActivePatch, Credentials, CleanupConfirm, Cle
 from .storage import asset_bytes, normalize_image, save_asset
 from .maintenance import cleanup_plan, drain_cleanup, stage_cleanup, storage_stats
 from .statistics import summarize
+from .previews import PreviewCache
 
 
 def create_app(data_root=None, provider=None, clock=None, start_worker=True):
@@ -41,6 +42,7 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
 
     app = FastAPI(title='Avatar Sticker Studio', lifespan=lifespan)
     app.state.db, app.state.clock = db, now
+    app.state.preview_cache = PreviewCache(db)
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(request, exc):
@@ -60,7 +62,7 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
                 return JSONResponse({'detail': '请求来源不受信任'}, status_code=403)
         response = await call_next(request)
         response.headers['X-Content-Type-Options'] = 'nosniff'
-        response.headers['Cache-Control'] = 'no-store'
+        response.headers.setdefault('Cache-Control', 'no-store')
         return response
 
     def user(tx, request):
@@ -621,6 +623,24 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
                     archive.writestr(value['name'] + '/' + a['path'], asset_bytes(db, tx.get('assets', a['id'])))
             output.seek(0)
             return StreamingResponse(output, media_type='application/zip', headers={'Content-Disposition': "attachment; filename*=UTF-8''" + __import__('urllib.parse', fromlist=['quote']).quote(value['name'] + '.zip')})
+
+    @app.get('/api/assets/{id}/preview')
+    def asset_preview(id: str, request: Request, size: int = 320):
+        # Authenticate before cache lookup AND before returning 304.
+        with db.transaction() as tx:
+            actor = user(tx, request)
+            value = tx.get('assets', id)
+            if not value or value['kind'] != 'template' and value['owner'] != actor['id'] and actor['role'] != 'admin':
+                raise HTTPException(404, '文件不存在')
+        if size not in (320, 1280):
+            raise HTTPException(422, '不支持的预览尺寸')
+        cache = app.state.preview_cache
+        etag = cache.etag(value, size)
+        headers = {'Cache-Control': 'private, no-cache', 'Vary': 'Cookie', 'ETag': etag}
+        candidates = [tag.strip().removeprefix('W/') for tag in request.headers.get('if-none-match', '').split(',')]
+        if '*' in candidates or etag.removeprefix('W/') in candidates:
+            return Response(status_code=304, headers=headers)
+        return Response(cache.get(value, size), media_type='image/webp', headers=headers)
 
     @app.get('/api/assets/{id}')
     def asset(id: str, request: Request):
