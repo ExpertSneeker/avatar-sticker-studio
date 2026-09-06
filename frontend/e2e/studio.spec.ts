@@ -47,7 +47,7 @@ test('complete production UI workflow with isolated provider and data', async ({
 
   await page.getByRole('navigation').getByRole('button', { name: '模板库' }).click()
   await page.getByRole('button', { name: '新建套装' }).first().click()
-  const dialog = page.getByRole('dialog')
+  const dialog = page.getByRole('dialog').last()
   await dialog.getByLabel('模板归属').selectOption('public')
   await dialog.getByLabel('套装编号').pressSequentially('B001')
   await expect(dialog.getByLabel('套装编号')).toHaveValue('B001')
@@ -102,13 +102,15 @@ test('complete production UI workflow with isolated provider and data', async ({
   const order = orders.find((o: { name: string }) => o.name === '小满')
   await page.getByRole('button', { name: /小满.*B001/ }).click()
   await expect(page.locator('.artifact')).toHaveCount(2)
-  await expect(page.getByText('已保存到本机', { exact: true })).toBeVisible()
+  await expect(dialog.getByText('已保存到本机', { exact: true })).toBeVisible()
   // New global choices cannot redirect either submitted order.
   await page.evaluate(()=>{(window as Window & {pickerName?:string}).pickerName='e2e-other'})
+  await page.getByRole('dialog',{name:'小满 · 任务详情',exact:true}).getByRole('button',{name:'关闭',exact:true}).click()
   await page.locator('.directory-button').click()
   await expect(page.locator('.directory-button')).toHaveText('e2e-other')
   await page.evaluate(()=>{delete (window as Window & {pickerName?:string}).pickerName})
 
+  await page.getByRole('button', { name: /小满.*B001/ }).click()
   await page.getByRole('button', { name: '单张结果' }).click()
   await page.locator('.result-card').first().click()
   await expect(dialog.getByRole('heading')).toHaveText('B001 · 第 1 张')
@@ -119,7 +121,7 @@ test('complete production UI workflow with isolated provider and data', async ({
   await page.getByRole('button', { name: '重新排版', exact: true }).click()
   await dialog.getByLabel('单张内容长边').fill('85')
   await dialog.getByRole('button', { name: '开始排版' }).click()
-  await expect(dialog).not.toBeVisible()
+  await expect(page.getByRole('dialog',{name:'重新排版',exact:true})).toHaveCount(0)
   await page.getByRole('button', { name: '打印与预览' }).click()
   await expect(page.locator('.artifact')).toHaveCount(3)
   const download = await page.request.get(`/api/orders/${order.id}/download.zip`)
@@ -128,7 +130,7 @@ test('complete production UI workflow with isolated provider and data', async ({
 
   // Initial download is complete; changed results require an explicit download.
   await page.getByRole('button',{name:'保存到本机',exact:true}).click()
-  await expect(page.getByText('已保存到本机',{exact:true})).toBeVisible()
+  await expect(dialog.getByText('已保存到本机',{exact:true})).toBeVisible()
   expect(await page.evaluate(async()=>{
     const root=await navigator.storage.getDirectory()
     const custom=await (await root.getDirectoryHandle('e2e-custom')).getDirectoryHandle('岁岁成品')
@@ -188,6 +190,7 @@ test('complete production UI workflow with isolated provider and data', async ({
     return (await (await dir.getFileHandle('keep.txt')).getFile()).text()
   })).toBe('unrelated')
 
+  await page.getByRole('dialog',{name:'小满 · 任务详情',exact:true}).getByRole('button',{name:'关闭',exact:true}).click()
   await page.getByRole('navigation').getByRole('button', { name: '账号设置' }).click()
   await page.getByLabel('水印文字').fill('仅供客户确认')
   await page.getByRole('button', { name: '保存设置', exact: true }).click()
@@ -308,7 +311,7 @@ test('FAL queue recovery preserves original request and requires confirmation be
   await page.getByRole('button',{name:new RegExp(detail.name+'.*B001')}).click()
   await page.getByRole('button',{name:'单张结果'}).click()
   await page.locator('.result-card').first().click()
-  const dialog=page.getByRole('dialog')
+  const dialog=page.getByRole('dialog').last()
   await expect(dialog.getByText('fal-original-request',{exact:true})).toBeVisible()
   expect(await dialog.locator('.compare-grid figure').first().locator('img').evaluate(image=>image.getBoundingClientRect().bottom<=image.closest('figure')!.getBoundingClientRect().bottom+1)).toBe(true)
   for(const image of await dialog.locator('.compare-grid img').all()){
@@ -347,7 +350,7 @@ test('avatar and template uploads send resized bytes and single-order search kee
   const input=Buffer.from(encoded,'base64')
   await page.getByRole('navigation').getByRole('button',{name:'模板库'}).click()
   await page.getByRole('button',{name:'新建套装',exact:true}).first().click()
-  const dialog=page.getByRole('dialog')
+  const dialog=page.getByRole('dialog').last()
   await dialog.getByLabel('套装编号').fill('R1024')
   await dialog.getByLabel('套装名称').fill('压缩测试套装')
   await dialog.locator('input[type=file]').setInputFiles(Array.from({length:12},(_,i)=>({name:`透明模板${i+1}.png`,mimeType:'image/png',buffer:input})))
@@ -518,7 +521,7 @@ test('admin cleanup previews scope then removes isolated orders while preserving
   await expect(page.getByText('磁盘总容量',{exact:true})).toBeVisible()
   await page.getByLabel('清理此日期之前的订单').fill('2027-01-01')
   await page.getByRole('button',{name:'预览清理范围'}).click()
-  const dialog=page.getByRole('dialog')
+  const dialog=page.getByRole('dialog').last()
   await expect(dialog.getByRole('heading',{name:'确认清理服务器订单'})).toBeVisible()
   await expect(dialog.getByRole('button',{name:'确认永久清理'})).toBeDisabled()
   await page.screenshot({path:evidence('admin-cleanup-confirm.png'),animations:'disabled'})

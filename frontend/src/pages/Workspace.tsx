@@ -16,14 +16,15 @@ function FileAvatar({file}:{file:File}) {
   useEffect(()=>{const value=URL.createObjectURL(file);setUrl(value);return()=>URL.revokeObjectURL(value)},[file])
   return <img className="avatar" src={previewUrl(url||undefined)} alt="上传的头像"/>
 }
-export function Workspace({user,templates,onCreated,addRef,directory}:{directory:FileSystemDirectoryHandle|null;user:User;templates:TemplateSet[];onCreated:()=>void;addRef:React.RefObject<(()=>void)|null>}) {
+export function Workspace({user,templates,onCreated,addRef,directory,onChooseGlobalDirectory}:{onChooseGlobalDirectory:()=>Promise<void>;directory:FileSystemDirectoryHandle|null;user:User;templates:TemplateSet[];onCreated:()=>void;addRef:React.RefObject<(()=>void)|null>}) {
   const [drafts,setDraftsState]=useState<Draft[]>([]),[loaded,setLoaded]=useState(false),[persisted,setPersisted]=useState(false),[selected,setSelected]=useState<string[]>([])
   const [picker,setPicker]=useState<string[]|null>(null),[pickValue,setPickValue]=useState<string[]>([])
   const [printTargets,setPrintTargets]=useState<string[]|null>(null),[print,setPrint]=useState<PrintSettings>(defaultPrint)
   const [busy,setBusy]=useState(false),[states,setStates]=useState<Record<string,string>>({}),[drag,setDrag]=useState(false)
   const setDrafts=useCallback((action:SetStateAction<Draft[]>)=>{setPersisted(false);setDraftsState(action)},[])
+  const outputRequest=useRef(0)
   const input=useRef<HTMLInputElement>(null), batch=useRef<AbortController|null>(null), notice=useNotice()
-  useEffect(()=>()=>batch.current?.abort(),[user.id])
+  useEffect(()=>()=>{outputRequest.current++;batch.current?.abort()},[user.id])
   useEffect(()=>{let active=true;readLocal<Draft[]>('drafts:'+user.id).then(value=>{if(active){setDrafts(prev=>[...(value||[]),...prev.filter(d=>!(value||[]).some(old=>old.id===d.id))]);setSelected(prev=>Array.from(new Set([...(value||[]).map(d=>d.id),...prev])));setLoaded(true)}}).catch(()=>setLoaded(true));return()=>{active=false}},[user.id])
   useEffect(()=>{if(!loaded)return;let active=true;writeLocal('drafts:'+user.id,drafts).then(()=>{if(active)setPersisted(true)}).catch(()=>notice('草稿保存失败，请检查浏览器存储空间','error'));return()=>{active=false}},[drafts,loaded,user.id,notice])
   useEffect(()=>{if(persisted||!drafts.length)return;const warn=(event:BeforeUnloadEvent)=>{event.preventDefault()};window.addEventListener('beforeunload',warn);return()=>window.removeEventListener('beforeunload',warn)},[persisted,drafts.length])
@@ -40,9 +41,12 @@ export function Workspace({user,templates,onCreated,addRef,directory}:{directory
   function choose(ids:string[]) {setPicker(ids);setPickValue(drafts.find(d=>d.id===ids[0])?.template_ids||[])}
   function editPrint(ids:string[]) {setPrintTargets(ids);setPrint(drafts.find(d=>d.id===ids[0])?.print_settings||defaultPrint)}
   async function chooseOutput(draft:Draft) {
+    if(!directory){await onChooseGlobalDirectory();return}
+    const request=++outputRequest.current
     if(!directorySupported()){notice('请使用桌面 Chrome 或 Edge 选择保存目录','error');return}
     try {
       const handle=await window.showDirectoryPicker({mode:'readwrite',startIn:draft.output_directory||directory||'downloads'})
+      if(request!==outputRequest.current)return
       setDrafts(prev=>prev.map(row=>row.id===draft.id?{...row,output_directory:handle}:row))
     } catch(error){if((error as Error).name!=='AbortError')notice((error as Error).message,'error')}
   }

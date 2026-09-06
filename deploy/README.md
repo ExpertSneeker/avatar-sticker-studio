@@ -106,3 +106,9 @@ fall back to their original name. Task IDs and submission tokens still provide
 identity and retry deduplication. Existing local ownership checks remain in force:
 foreign or modified files are never silently overwritten, including files left
 behind after an older order was cleaned from the server.
+
+Task names and “查看详情” now open a task-detail dialog above the filtered list.
+Nested image, layout and repair dialogs close independently. Without a global
+output directory, choosing a draft's location first establishes that global
+default. Subsequent choices override only the chosen draft; submitted destination
+bindings are unchanged. Cancelled native pickers leave drafts and defaults intact.
