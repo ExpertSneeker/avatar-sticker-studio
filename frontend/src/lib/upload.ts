@@ -1,7 +1,10 @@
 import { api, post, sha256 } from './api'
+import { prepareUploadImage } from './image'
 import type { UploadResult } from './types'
 
 export async function uploadFile(file:File,onProgress:(value:number)=>void,signal?:AbortSignal) {
+  file=await prepareUploadImage(file,signal)
+  onProgress(0)
   const hash=await sha256(file)
   signal?.throwIfAborted()
   let state=await post<UploadResult>('/uploads/init',{filename:file.name,size:file.size,sha256:hash},signal)

@@ -2,15 +2,17 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Plus, Search, ArrowUp, ArrowDown, X, Upload, Pencil, Eye } from 'lucide-react'
 import { Empty, Modal, Spinner, useNotice } from '../components/UI'
 import { api, patch } from '../lib/api'
+import { prepareUploadImage } from '../lib/image'
 import type { TemplateImage, TemplateSet } from '../lib/types'
 
 type EditImage={existing?:TemplateImage;file?:File;url:string;key:string}
 function SetEditor({set,onClose,onSaved}:{set:TemplateSet|null;onClose:()=>void;onSaved:()=>void}) {
   const [images,setImages]=useState<EditImage[]>(set?.images.map(im=>({existing:im,url:im.url,key:im.id}))||[])
   const [name,setName]=useState(set?.name||''),[code,setCode]=useState(set?.code||''),[category,setCategory]=useState(set?.category||'boy')
-  const [busy,setBusy]=useState(false),notice=useNotice()
+  const [busy,setBusy]=useState(false),[progress,setProgress]=useState(''),notice=useNotice()
+  const submission=useRef<AbortController|null>(null)
   const imageUrls=useRef<string[]>([])
-  useEffect(()=>()=>imageUrls.current.forEach(url=>URL.revokeObjectURL(url)),[])
+  useEffect(()=>()=>{submission.current?.abort();imageUrls.current.forEach(url=>URL.revokeObjectURL(url))},[])
   function add(files:FileList|null) {
     if(!files)return
     const next=Array.from(files).sort((a,b)=>a.name.localeCompare(b.name,undefined,{numeric:true})).map(file=>({file,url:URL.createObjectURL(file),key:crypto.randomUUID()}))
@@ -23,6 +25,8 @@ function SetEditor({set,onClose,onSaved}:{set:TemplateSet|null;onClose:()=>void;
   async function save() {
     if(images.length!==12){notice('每套必须包含 12 张独立模板','error');return}
     if(!name.trim()||!code.trim()){notice('请填写套装名称和编号','error');return}
+    if(submission.current)return
+    const controller=new AbortController();submission.current=controller
     setBusy(true)
     try {
       const form=new FormData()
@@ -31,12 +35,19 @@ function SetEditor({set,onClose,onSaved}:{set:TemplateSet|null;onClose:()=>void;
       form.append('existing_ids',JSON.stringify(images.filter(im=>im.existing).map(im=>im.existing!.id)))
       const newImages=images.filter(im=>im.file)
       form.append('image_order',JSON.stringify(images.map(im=>im.existing?{id:im.existing.id}:{file_index:newImages.findIndex(n=>n.key===im.key)})))
-      newImages.forEach(im=>form.append('files',im.file!))
-      await api(set?'/templates/'+set.id:'/templates',{method:set?'PUT':'POST',body:form})
+      for(const [index,image] of newImages.entries()) {
+        setProgress(`正在本地压缩 ${index+1} / ${newImages.length}`)
+        const prepared=await prepareUploadImage(image.file!,controller.signal)
+        form.append('files',prepared)
+      }
+      controller.signal.throwIfAborted()
+      setProgress('正在上传模板')
+      await api(set?'/templates/'+set.id:'/templates',{method:set?'PUT':'POST',body:form,signal:controller.signal})
+      controller.signal.throwIfAborted()
       notice(set?'模板新版本已保存，旧任务保持原版本':'模板套装已创建');onSaved();onClose()
-    } catch(e){notice((e as Error).message,'error')} finally{setBusy(false)}
+    } catch(e){if(!controller.signal.aborted)notice((e as Error).message,'error')} finally{submission.current=null;setBusy(false);setProgress('')}
   }
-  return <Modal title={set?'编辑模板套装':'新建模板套装'} onClose={onClose} wide><div className="form-grid template-meta"><label className="field">套装编号<input value={code} onChange={e=>setCode(e.target.value)} placeholder="例如 B001" disabled={!!set}/></label><label className="field">套装名称<input value={name} onChange={e=>setName(e.target.value)} placeholder="例如 春日出游"/></label><label className="field">分类<select value={category} onChange={e=>setCategory(e.target.value)}><option value="boy">男孩</option><option value="girl">女孩</option></select></label></div><label className="upload-template button"><Upload size={16}/>添加模板图片<input type="file" multiple accept="image/png,image/jpeg,image/webp" onChange={e=>{add(e.target.files);e.target.value=''}}/></label><span className="muted">已选 {images.length} / 12 张 · 可调整排列顺序</span><div className="edit-template-grid">{images.map((image,index)=><div className="edit-template" key={image.key}><img src={image.url} alt={'模板 '+(index+1)}/><div><span>{String(index+1).padStart(2,'0')}</span><button className="icon-button" disabled={index===0} onClick={()=>move(index,-1)} title="向前移动"><ArrowUp size={14}/></button><button className="icon-button" disabled={index===images.length-1} onClick={()=>move(index,1)} title="向后移动"><ArrowDown size={14}/></button><button className="icon-button" onClick={()=>setImages(prev=>prev.filter(im=>im.key!==image.key))} title="移除图片"><X size={14}/></button></div></div>)}</div><div className="modal-footer"><p className="hint">替换模板会创建新版本，已提交任务不受影响。</p><button className="button primary" disabled={busy||images.length!==12} onClick={save}>{busy&&<Spinner/>}保存套装</button></div></Modal>
+  return <Modal title={set?'编辑模板套装':'新建模板套装'} onClose={onClose} wide><fieldset className="template-edit-fields" disabled={busy}><div className="form-grid template-meta"><label className="field">套装编号<input value={code} onChange={e=>setCode(e.target.value)} placeholder="例如 B001" disabled={!!set}/></label><label className="field">套装名称<input value={name} onChange={e=>setName(e.target.value)} placeholder="例如 春日出游"/></label><label className="field">分类<select value={category} onChange={e=>setCategory(e.target.value)}><option value="boy">男孩</option><option value="girl">女孩</option></select></label></div><label className="upload-template button"><Upload size={16}/>添加模板图片<input type="file" multiple accept="image/png,image/jpeg,image/webp" onChange={e=>{add(e.target.files);e.target.value=''}}/></label><span className="muted">已选 {images.length} / 12 张 · 可调整排列顺序</span><div className="edit-template-grid">{images.map((image,index)=><div className="edit-template" key={image.key}><img src={image.url} alt={'模板 '+(index+1)}/><div><span>{String(index+1).padStart(2,'0')}</span><button className="icon-button" disabled={index===0} onClick={()=>move(index,-1)} title="向前移动"><ArrowUp size={14}/></button><button className="icon-button" disabled={index===images.length-1} onClick={()=>move(index,1)} title="向后移动"><ArrowDown size={14}/></button><button className="icon-button" onClick={()=>setImages(prev=>prev.filter(im=>im.key!==image.key))} title="移除图片"><X size={14}/></button></div></div>)}</div></fieldset><div className="modal-footer"><p className="hint">上传前在本地按短边 1024 px 缩小并保留透明背景。替换会创建新版本。</p><button className="button primary" disabled={busy||images.length!==12} onClick={save}>{busy&&<Spinner/>}{busy?progress:'保存套装'}</button></div></Modal>
 }
 export function Templates({templates,admin,onRefresh}:{templates:TemplateSet[];admin:boolean;onRefresh:()=>void}) {
   const [category,setCategory]=useState('all'),[search,setSearch]=useState(''),[editor,setEditor]=useState<TemplateSet|null|undefined>(undefined),[preview,setPreview]=useState<TemplateSet|null>(null),notice=useNotice()

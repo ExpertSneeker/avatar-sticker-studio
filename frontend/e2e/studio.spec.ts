@@ -43,7 +43,15 @@ test('complete production UI workflow with isolated provider and data', async ({
   await page.locator('input[type=file]').setInputFiles([{ name: '小满.png', mimeType: 'image/png', buffer: pixel }, { name: '岁岁.png', mimeType: 'image/png', buffer: pixel }])
   await expect(page.getByLabel('订单名称')).toHaveCount(2)
   await page.getByRole('button', { name: '批量选择模板' }).click()
+  await dialog.getByLabel('搜索模板套装').fill('b001')
+  await expect(dialog.getByRole('button', { name: /春日出游/ })).toBeVisible()
   await dialog.getByRole('button', { name: /春日出游/ }).click()
+  await dialog.getByLabel('搜索模板套装').fill('不存在的模板')
+  await expect(dialog.getByText('没有匹配的模板套装')).toBeVisible()
+  await expect(dialog.getByText('已选 1 套 · 12 张')).toBeVisible()
+  await dialog.getByLabel('搜索模板套装').fill(' 春日 ')
+  await expect(dialog.locator('.template-option.selected')).toHaveCount(1)
+
   await dialog.getByRole('button', { name: '应用到 2 个订单' }).click()
   await page.getByRole('button', { name: '打印参数', exact: true }).click()
   await dialog.getByLabel('单张内容长边').fill('50')
@@ -253,4 +261,75 @@ test('FAL queue recovery preserves original request and requires confirmation be
   await expect(dialog.getByRole('button',{name:'重新生成这一张',exact:true})).toBeEnabled()
   expect(mutations).toEqual([`${endpoint}/items/${first.id}/recover`,`${endpoint}/items/${second.id}/resolve`])
   await page.screenshot({path:evidence('fal-recovery.png'),animations:'disabled'})
+})
+
+test('avatar and template uploads send resized bytes and single-order search keeps selections',async({page})=>{
+  await page.request.post('/api/auth/login',{data:{username:'testadmin',password:'local-test-password'}})
+  await page.goto('/')
+  const encoded=await page.evaluate(()=>{
+    const canvas=document.createElement('canvas');canvas.width=2048;canvas.height=3072
+    const ctx=canvas.getContext('2d')!;ctx.fillStyle='rgba(250,120,60,0.5)';ctx.fillRect(128,128,1792,2816)
+    return canvas.toDataURL('image/png').split(',')[1]
+  })
+  const input=Buffer.from(encoded,'base64')
+  await page.getByRole('navigation').getByRole('button',{name:'模板库'}).click()
+  await page.getByRole('button',{name:'新建套装',exact:true}).first().click()
+  const dialog=page.getByRole('dialog')
+  await dialog.getByLabel('套装编号').fill('R1024')
+  await dialog.getByLabel('套装名称').fill('压缩测试套装')
+  await dialog.locator('input[type=file]').setInputFiles(Array.from({length:12},(_,i)=>({name:`透明模板${i+1}.png`,mimeType:'image/png',buffer:input})))
+  // CDP omits multipart file bytes; inspect the actual FormData passed to native fetch.
+  await page.evaluate(()=>{
+    const native=window.fetch.bind(window),record=window as Window & {templateUploadFiles?:File[];avatarUploadChunks?:Blob[]}
+    window.fetch=(url,options)=>{
+      if(url==='/api/templates'&&options?.body instanceof FormData)record.templateUploadFiles=options.body.getAll('files') as File[]
+      if(typeof url==='string'&&url.startsWith('/api/uploads/')&&options?.method==='PUT'&&options.body instanceof Blob)(record.avatarUploadChunks??=[]).push(options.body)
+      return native(url,options)
+    }
+  })
+  const submitted=page.waitForResponse(response=>response.request().method()==='POST'&&new URL(response.url()).pathname==='/api/templates')
+  await dialog.getByRole('button',{name:'保存套装',exact:true}).click()
+  const response=await submitted
+  expect(response.ok()).toBe(true)
+  const dimensions=await page.evaluate(async()=>Promise.all(((window as Window & {templateUploadFiles?:File[]}).templateUploadFiles||[]).map(async file=>{
+    const header=new DataView(await file.slice(0,24).arrayBuffer())
+    return [header.getUint32(16),header.getUint32(20)]
+  })))
+  expect(dimensions).toEqual(Array.from({length:12},()=>[1024,1536]))
+  const saved=await response.json()
+  const stored=await (await page.request.get(saved.images[0].url)).body()
+  expect([stored.readUInt32BE(16),stored.readUInt32BE(20)]).toEqual([1024,1536])
+  await expect(dialog).not.toBeVisible()
+  await page.getByRole('navigation').getByRole('button',{name:'工作台',exact:true}).click()
+  await page.locator('input[type=file]').setInputFiles({name:'订单压缩.png',mimeType:'image/png',buffer:input})
+  await page.getByRole('button',{name:'选择模板',exact:true}).click()
+  await dialog.getByLabel('搜索模板套装').fill('r1024')
+  await dialog.getByRole('button',{name:/压缩测试套装/}).click()
+  await dialog.getByLabel('搜索模板套装').fill('春日')
+  await dialog.getByRole('button',{name:/春日出游/}).click()
+  await dialog.getByLabel('搜索模板套装').fill('匹配不到')
+  await expect(dialog.getByText('已选 2 套 · 24 张')).toBeVisible()
+  await dialog.getByRole('button',{name:'清空搜索',exact:true}).click()
+  await expect(dialog.locator('.template-option.selected')).toHaveCount(2)
+  await page.screenshot({path:evidence('template-search.png'),animations:'disabled'})
+  await page.setViewportSize({width:390,height:844})
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth)).toBe(true)
+  expect(await dialog.evaluate(element=>element.scrollWidth<=element.clientWidth)).toBe(true)
+  await page.screenshot({path:evidence('template-search-mobile.png'),animations:'disabled'})
+  await page.setViewportSize({width:1440,height:1000})
+  await dialog.getByRole('button',{name:'应用到 1 个订单'}).click()
+  await page.getByRole('button',{name:'提交生成',exact:true}).click()
+  await expect(page.getByLabel('订单名称')).toHaveCount(0)
+  const uploaded=await page.evaluate(async()=>{
+    const blob=new Blob((window as Window & {avatarUploadChunks?:Blob[]}).avatarUploadChunks||[])
+    const header=new DataView(await blob.slice(0,24).arrayBuffer())
+    return {dimensions:[header.getUint32(16),header.getUint32(20)],size:blob.size}
+  })
+  expect(uploaded.dimensions).toEqual([1024,1536])
+  expect(uploaded.size).toBeLessThan(input.byteLength)
+  const orders=await(await page.request.get('/api/orders')).json()
+  const order=orders.find((row:{name:string})=>row.name==='订单压缩')
+  expect(order.template_codes).toEqual(['R1024','B001'])
+  const avatar=await(await page.request.get(order.avatar_url)).body()
+  expect([avatar.readUInt32BE(16),avatar.readUInt32BE(20)]).toEqual([1024,1536])
 })

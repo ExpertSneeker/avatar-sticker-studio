@@ -16,3 +16,7 @@
 @media(prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
 
 .fal-request code{overflow-wrap:anywhere;font-size:12px}
+
+.template-edit-fields{border:0;padding:0;margin:0;min-width:0}
+
+.template-search-bar{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:20px}.template-search-bar .search-input{flex:1;min-width:180px}
