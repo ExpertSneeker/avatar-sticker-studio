@@ -92,3 +92,11 @@ npm run test:e2e
 详细范围和限制见 [验收记录](docs/verification.md)，后端接口和环境参数见 [backend/README.md](backend/README.md)。真实 FAL／椰子抠图服务和打印机实打效果，待填写密钥及连接打印机后验证。
 
 FAL 接口依据：[编辑模型参数](https://fal.ai/models/openai/gpt-image-2/edit/api)、[异步队列](https://fal.ai/docs/documentation/model-apis/inference/queue)、[并发限制](https://fal.ai/docs/documentation/model-apis/concurrency-limits)。
+
+## 统计页面
+
+侧栏「我的统计」仅汇总当前账号；管理员额外拥有「全站统计」，包含全部账号的订单及成员制作情况。后端分别通过 `/api/statistics` 和 `/api/admin/statistics` 校验权限，个人接口不能通过指定其他账号扩大范围。
+
+支持最近 24 小时、3 天、7 天、30 天及全部订单。按订单提交时间筛选，展示这些订单当前的计划图片、完成、失败、待确认、启动尝试及模板使用情况；包含归档订单，清理订单后相关统计随之移除。趋势按当前设备时区分日，全部模式的趋势只展示含今天在内的最近 30 个自然日。模板编号和成员名称可搜索。
+
+「追加生图尝试」是各单张首次启动之外的尝试总量，包含重跑及提交重试，不代表实际付费次数；完成率为当前完成单张除以计划图片。历史耗时、费用及跨设备下载次数暂无可靠记录，未纳入统计。统计在进入页面、切换时间或点击刷新时重新获取，避免额外持续轮询。

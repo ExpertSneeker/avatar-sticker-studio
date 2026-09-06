@@ -12,7 +12,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import FastAPI, HTTPException, Request, Response, Query
+from typing import Literal
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from .auth import hash_password, owned, public_user, require_admin, require_user, token_hash, verify_password
@@ -20,6 +21,7 @@ from .db import Database, uid
 from .schemas import AccountPatch, ActivePatch, Credentials, CleanupConfirm, CleanupPreview, OrderCreate, PasswordChange, PrintSettings, Repack, ResolveUnknown, SettingsPatch, Signup, UploadInit, safe_name
 from .storage import asset_bytes, normalize_image, save_asset
 from .maintenance import cleanup_plan, drain_cleanup, stage_cleanup, storage_stats
+from .statistics import summarize
 
 
 def create_app(data_root=None, provider=None, clock=None, start_worker=True):
@@ -90,6 +92,21 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
     def health():
         return {'status': 'ok'}
 
+    @app.get('/api/ready')
+    def ready():
+        worker = getattr(app.state, 'worker', None)
+        try:
+            with db.transaction() as tx:
+                config = tx.get('config', 'settings')
+                lease = tx.get('workers', worker.id) if worker else None
+            active = bool(config and worker and not worker.stopping and
+                          worker.loop_task and not worker.loop_task.done() and
+                          worker.lease_task and not worker.lease_task.done() and
+                          lease and lease['expires'] > now())
+        except Exception:
+            active = False
+        return JSONResponse({'status': 'ready' if active else 'not_ready'}, status_code=200 if active else 503)
+
     @app.get('/api/auth/status')
     def auth_status(request: Request):
         with db.transaction() as tx:
@@ -97,10 +114,12 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
                 value = public_user(user(tx, request))
             except HTTPException:
                 value = None
-            return {'needs_setup': not tx.all('users'), 'user': value}
+            return {'needs_setup': os.environ.get('STUDIO_ALLOW_SETUP') != '0' and not tx.all('users'), 'user': value}
 
     @app.post('/api/auth/setup')
     def setup(data: Signup, response: Response, request: Request):
+        if os.environ.get('STUDIO_ALLOW_SETUP') == '0':
+            raise HTTPException(403, '首次管理员设置已禁用')
         if request.client and request.client.host not in {'127.0.0.1', '::1', 'testclient'}:
             raise HTTPException(403, '首次管理员设置仅允许本机访问')
         with db.transaction() as tx:
@@ -191,6 +210,18 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
             config.update(data.model_dump(exclude_none=True))
             tx.put('config', config)
             return public_settings(config)
+
+    @app.get('/api/statistics')
+    def personal_statistics(request: Request, days: Literal["0", "1", "3", "7", "30"] = "30", offset: int = Query(480, ge=-720, le=840)):
+        with db.transaction() as tx:
+            actor = user(tx, request)
+            return summarize(tx, actor, now(), int(days), offset)
+
+    @app.get('/api/admin/statistics')
+    def global_statistics(request: Request, days: Literal["0", "1", "3", "7", "30"] = "30", offset: int = Query(480, ge=-720, le=840)):
+        with db.transaction() as tx:
+            actor = admin(tx, request)
+            return summarize(tx, actor, now(), int(days), offset, global_scope=True)
 
     @app.get('/api/admin/storage')
     def storage(request: Request):
@@ -418,7 +449,7 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
         result.update(status=status, total=len(items), completed=completed, failed=failed, unknown=unknown, archived=value.get('archived', False), processing_error=value.get('processing_error'))
         result.update(client_token=value.get('client_token'), preview_url=next((a['url'] for a in value.get('artifacts', []) if a['kind'] == 'overview'), None), download_ready=completed == len(items) and bool(value.get('overview_ready')))
         if full:
-            result['items'] = [{k: i.get(k) for k in ('id', 'set_code', 'position', 'status', 'error', 'result_url', 'template_url', 'attempt', 'fal_request_id', 'fal_status', 'queue_position')} | {'recoverable': bool(i.get('fal_request_id')) and i['status'] == 'unknown', 'remote_reserved': bool(i.get('remote_reserved')), 'raw_available': bool(i.get('raw_result_id')), 'processing_stage': i.get('processing_stage', 'generate')} for i in items]
+            result['items'] = [{k: i.get(k) for k in ('id', 'set_code', 'position', 'status', 'error', 'result_url', 'template_url', 'attempt', 'fal_request_id', 'fal_status', 'queue_position')} | {'recoverable': bool(i.get('fal_request_id')) and not i.get('cutout_inflight') and i['status'] == 'unknown', 'remote_reserved': bool(i.get('remote_reserved')), 'raw_available': bool(i.get('raw_result_id')), 'processing_stage': i.get('processing_stage', 'generate')} for i in items]
             result['artifacts'] = value.get('artifacts', [])
         return result
 
@@ -493,7 +524,7 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
                 raise HTTPException(404, '图片不存在')
             if item['status'] in {'running', 'queued'} or item.get('remote_reserved'):
                 raise HTTPException(409, '该图片正在排队或生成')
-            for field in ('fal_request_id', 'fal_status', 'fal_status_url', 'fal_response_url', 'fal_error', 'queue_position', 'raw_result_id'):
+            for field in ('fal_request_id', 'fal_status', 'fal_status_url', 'fal_response_url', 'fal_error', 'queue_position', 'raw_result_id', 'cutout_inflight', 'cutout_started_at'):
                 item.pop(field, None)
             item.update(status='queued', error=None, retry_count=0, next_at=0, processing_stage='generate')
             tx.put('items', item)
@@ -523,6 +554,8 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
             item = tx.get('items', item_id)
             if not item or item['order_id'] != id:
                 raise HTTPException(404, '图片不存在')
+            if item.get('cutout_inflight'):
+                raise HTTPException(409, '抠图结果待确认，请人工选择重新处理原始图片')
             if item['status'] != 'unknown' or not item.get('fal_request_id'):
                 raise HTTPException(409, '仅可恢复有FAL编号的待确认请求')
             item.update(status='queued', next_at=0, error=None, remote_reserved=True)
@@ -540,6 +573,8 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
                 raise HTTPException(409, '该图片正在排队或处理')
             if not item.get('raw_result_id') or not tx.get('assets', item['raw_result_id']):
                 raise HTTPException(409, '没有可恢复的原始生成结果')
+            item.pop('cutout_inflight', None)
+            item.pop('cutout_started_at', None)
             item.update(status='queued', processing_stage='postprocess', error=None, retry_count=0, next_at=0)
             tx.put('items', item)
             value.update(overview_ready=False, processing_error=None, content_version=value['content_version'] + 1)
