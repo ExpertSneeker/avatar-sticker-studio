@@ -1,3 +1,4 @@
+import { CreditsPanel } from '../components/Credits'
 import { useEffect, useState } from 'react'
 import { RefreshCw, BarChart3, Users, ArrowUpRight } from 'lucide-react'
 import { api } from '../lib/api'
@@ -39,7 +40,8 @@ export function Statistics({global=false}:{global?:boolean}) {
     ['失败单张',summary.failed,`${summary.unknown} 张结果待确认`],['追加生图尝试',summary.extra_attempts,`累计启动尝试 ${number(summary.attempts)} 次`],
   ]:[]
   return <div className="statistics-page">
-    <div className="page-heading"><div><h1>{global?'全站统计':'我的统计'}</h1><p>{global?'查看团队的制作量与任务分布。':'每一笔订单，都有清楚的制作记录。'}</p></div><button className="button" disabled={loading} onClick={()=>setRevision(v=>v+1)}><RefreshCw size={16}/>刷新统计</button></div>
+    <div className="page-heading"><div><h1>{global?'全站统计':'统计'}</h1><p>{global?'查看团队的制作量与任务分布。':'每一笔订单，都有清楚的制作记录。'}</p></div><button className="button" disabled={loading} onClick={()=>setRevision(v=>v+1)}><RefreshCw size={16}/>刷新统计</button></div>
+    {!global&&<CreditsPanel days={days}/>}
     <div className="statistics-toolbar"><label className="statistics-period">统计范围<select aria-label="统计时间范围" value={days} onChange={e=>setDays(e.target.value)}>{periods.map(([value,label])=><option key={value} value={value}>{label}</option>)}</select></label><span>按订单提交时间筛选 · 当前结果快照</span></div>
     {loading?<div className="statistics-loading" role="status"><Spinner/>正在汇总统计</div>:error?<div className="error-banner" role="alert">{error}<button className="text-button" onClick={()=>setRevision(v=>v+1)}>重新加载</button></div>:data&&summary&&<>
       <div className="statistics-cards">{cards.map(([label,value,hint])=><article className="statistics-card" key={label}><span>{label}</span><strong>{number(Number(value))}</strong><small>{hint}</small></article>)}</div>

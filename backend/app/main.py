@@ -23,6 +23,9 @@ from .storage import asset_bytes, normalize_image, save_asset
 from .maintenance import cleanup_plan, drain_cleanup, stage_cleanup, storage_stats
 from .statistics import summarize
 from .previews import PreviewCache
+from . import credits
+from .auth import can_read_asset, can_use_template, can_edit_template
+from .schemas import AdminCreateUser, CreditAdjustment, CreditSettlement, RerunRequest
 
 
 def create_app(data_root=None, provider=None, clock=None, start_worker=True):
@@ -86,7 +89,7 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
     def register_user(tx, data, role):
         if any(u['username'].casefold() == data.username.casefold() for u in tx.all('users')):
             raise HTTPException(409, '用户名已存在')
-        value = {'id': uid(), 'username': data.username, 'password': hash_password(data.password), 'display_name': data.display_name.strip(), 'role': role, 'watermark': '', 'print_defaults': PrintSettings().model_dump(), 'active': True}
+        value = {'id': uid(), 'username': data.username, 'password': hash_password(data.password), 'display_name': data.display_name.strip(), 'role': role, 'watermark': '', 'print_defaults': PrintSettings().model_dump(), 'active': True, 'credits':{'available':0,'frozen':0,'spent':0,'version':0}}
         tx.put('users', value)
         return value
 
@@ -244,6 +247,7 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
             plan, records, paths = cleanup_plan(db, tx, data.before)
             if not secrets.compare_digest(plan['preview_token'], data.preview_token):
                 raise HTTPException(409, '订单状态已变化，请重新预览清理范围')
+            credits.cleanup_credits(tx, {o['id'] for o in records['orders']}, now(), admin(tx, request)['id'])
             stage_cleanup(tx, records, paths)
         pending = drain_cleanup(db)
         return {'deleted_orders':plan['order_count'], 'pending_files':pending, 'storage':storage_stats(db)}
@@ -261,6 +265,49 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
             code = secrets.token_urlsafe(18)
             tx.put('invites', {'id': token_hash(code), 'used': False, 'expires': now() + 7 * 86400})
             return {'code': code}
+
+    @app.post('/api/admin/users')
+    def create_member(data: AdminCreateUser, request: Request):
+        with db.transaction() as tx:
+            admin(tx, request)
+            temporary = secrets.token_urlsafe(18)
+            member = register_user(tx, Signup(username=data.username, display_name=data.display_name, password=temporary), 'staff')
+            return {'user': public_user(member) | {'active':True}, 'temporary_password':temporary}
+
+    @app.post('/api/admin/users/{id}/password')
+    def reset_member_password(id: str, request: Request):
+        with db.transaction() as tx:
+            admin(tx, request)
+            target = tx.get('users', id)
+            if not target: raise HTTPException(404, '账号不存在')
+            if target['role']=='admin': raise HTTPException(403, '管理员请在账号设置中修改自己的密码')
+            temporary = secrets.token_urlsafe(18)
+            target['password']=hash_password(temporary)
+            tx.put('users', target)
+            for entry in tx.all('sessions'):
+                if entry['user_id']==id: tx.delete('sessions', entry['id'])
+            return {'temporary_password':temporary}
+
+    @app.get('/api/credits')
+    def own_credits(request: Request, days: int = Query(30, ge=0, le=3650), offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=100)):
+        with db.transaction() as tx:
+            return credits.report(tx, user(tx, request)['id'], now(), days, offset, limit)
+
+    @app.get('/api/admin/users/{id}/credits')
+    def member_credits(id: str, request: Request, days: int = Query(30, ge=0, le=3650), offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=100)):
+        with db.transaction() as tx:
+            admin(tx, request)
+            return credits.report(tx, id, now(), days, offset, limit)
+
+    @app.post('/api/admin/users/{id}/credits')
+    def adjust_credits(id: str, data: CreditAdjustment, request: Request):
+        with db.transaction() as tx:
+            return credits.adjust(tx, admin(tx, request), id, data, now())
+
+    @app.post('/api/admin/generations/{id}/settle')
+    def settle_credits(id: str, data: CreditSettlement, request: Request):
+        with db.transaction() as tx:
+            return credits.manual_settle(tx, admin(tx, request), id, data, now())
 
     @app.get('/api/admin/users')
     def users(request: Request):
@@ -281,25 +328,25 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
             tx.put('users', target)
             return {**public_user(target), 'active': target['active']}
 
-    def template_public(value):
-        return {k: value[k] for k in ('id', 'code', 'name', 'active', 'revision', 'images')} | {'category': {'男孩': 'boy', '女孩': 'girl'}.get(value['category'], value['category'])}
+    def template_public(value, actor):
+        return {k: value[k] for k in ('id', 'code', 'name', 'active', 'revision', 'images')} | {'category': {'男孩': 'boy', '女孩': 'girl', '动物':'animal', '通用':'general'}.get(value['category'], value['category']), 'scope':value.get('scope','public'), 'owner':value.get('owner'), 'editable':can_edit_template(value, actor)}
 
     @app.get('/api/templates')
     def templates(request: Request):
         with db.transaction() as tx:
             actor = user(tx, request)
-            return [template_public(t) for t in tx.all('templates') if t['active'] or actor['role'] == 'admin']
+            return [template_public(t, actor) for t in tx.all('templates') if (t.get('scope','public')=='public' and (t['active'] or actor['role']=='admin')) or t.get('owner')==actor['id']]
 
     async def write_template(request, id=None):
         with db.transaction() as tx:
-            admin(tx, request)
+            user(tx, request)
         form = await request.form(max_files=12, max_fields=10, max_part_size=25 * 1024 * 1024)
         try:
             code, name = safe_name(str(form.get('code', ''))), safe_name(str(form.get('name', '')))
             category = str(form.get('category', '男孩'))
-            if category not in {'男孩', '女孩', 'boy', 'girl'}:
-                raise ValueError('分类必须为男孩或女孩')
-            category = {'男孩': 'boy', '女孩': 'girl'}.get(category, category)
+            if category not in {'男孩', '女孩', '动物', '通用', 'boy', 'girl', 'animal', 'general'}:
+                raise ValueError('分类必须为男孩、女孩、动物或通用')
+            category = {'男孩': 'boy', '女孩': 'girl', '动物':'animal', '通用':'general'}.get(category, category)
             retained = json.loads(str(form.get('existing_ids', '[]')))
             image_order = json.loads(str(form['image_order'])) if form.get('image_order') else None
             if not isinstance(retained, list) or len(set(retained)) != len(retained):
@@ -316,10 +363,18 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
                 raise HTTPException(413, '单张模板不得超过25MB')
             binaries.append(normalize_image(data))
         with db.transaction() as tx:
-            admin(tx, request)
+            actor = user(tx, request)
             old = tx.get('templates', id) if id else None
             if id and not old:
                 raise HTTPException(404, '套装不存在')
+            if old and not can_edit_template(old, actor):
+                raise HTTPException(403 if actor['role']=='admin' else 404, '无权编辑此套装')
+            scope = str(form.get('scope', old.get('scope','public') if old else 'public' if actor['role']=='admin' else 'personal'))
+            if scope not in {'public','personal'} or old and scope!=old.get('scope','public'):
+                raise HTTPException(422, '模板归属创建后不可更改')
+            if scope=='public' and actor['role']!='admin':
+                raise HTTPException(403, '只有管理员可维护公共模板')
+            template_owner = old.get('owner') if old else actor['id'] if scope=='personal' else None
             if any(t['code'].casefold() == code.casefold() and t['id'] != id for t in tx.all('templates')):
                 raise HTTPException(409, '套装编号已存在')
             available = {x['id']: x for x in old['images']} if old else {}
@@ -327,7 +382,9 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
                 raise HTTPException(422, '保留图片不属于当前套装版本')
             images = [dict(available[x]) for x in retained]
             for data in binaries:
-                asset = save_asset(db, tx, data, None, 'template')
+                asset = save_asset(db, tx, data, template_owner, 'template')
+                asset['scope'] = scope
+                tx.put('assets', asset)
                 images.append({'id': asset['id'], 'url': asset['url']})
             if image_order is not None:
                 try:
@@ -342,10 +399,10 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
                     raise HTTPException(422, '图片顺序包含重复或无效引用') from exc
             for position, image in enumerate(images, 1):
                 image['position'] = position
-            value = {'id': id or uid(), 'code': code, 'name': name, 'category': category, 'active': old['active'] if old else True, 'revision': old['revision'] + 1 if old else 1, 'images': images}
+            value = {'scope':scope, 'owner':template_owner, 'id': id or uid(), 'code': code, 'name': name, 'category': category, 'active': old['active'] if old else True, 'revision': old['revision'] + 1 if old else 1, 'images': images}
             tx.put('template_revisions', {**value, 'id': value['id'] + ':' + str(value['revision']), 'template_id': value['id']})
             tx.put('templates', value)
-            return template_public(value)
+            return template_public(value, actor)
 
     @app.post('/api/templates')
     async def add_template(request: Request):
@@ -358,13 +415,15 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
     @app.patch('/api/templates/{id}')
     def toggle_template(id: str, data: ActivePatch, request: Request):
         with db.transaction() as tx:
-            admin(tx, request)
+            actor = user(tx, request)
             value = tx.get('templates', id)
             if not value:
                 raise HTTPException(404, '套装不存在')
+            if not can_edit_template(value, actor):
+                raise HTTPException(403 if actor['role']=='admin' else 404, '无权编辑此套装')
             value['active'] = data.active
             tx.put('templates', value)
-            return template_public(value)
+            return template_public(value, actor)
 
     def upload_public(value):
         return {k: value[k] for k in ('id', 'offset', 'complete')}
@@ -476,14 +535,16 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
             if avatar['owner'] != actor['id'] or not avatar['complete']:
                 raise HTTPException(409, '请先完成自己的头像上传')
             sets = [tx.get('templates', id) for id in data.template_ids]
-            if any(not t or not t['active'] for t in sets):
+            if any(not can_use_template(t, actor) for t in sets):
                 raise HTTPException(422, '所选套装不存在或已下架')
             config = tx.get('config', 'settings')
             value = {'id': uid(), 'owner': actor['id'], 'name': data.name, 'normalized_name': data.name.casefold(), 'client_token': data.client_token, 'created_at': datetime.fromtimestamp(now(), timezone.utc).isoformat(), 'paused': False, 'archived': False, 'avatar_url': avatar['url'], 'avatar_id': avatar['asset_id'], 'template_codes': [t['code'] for t in sets], 'template_snapshots': sets, 'prompt': config['prompt'], 'prompt_version': config['prompt_version'], 'print_settings': data.print_settings.model_dump(), 'artifact_version': 0, 'artifacts': [], 'overview_ready': False, 'content_version': 0}
             tx.put('orders', value)
             for set_index, t in enumerate(sets):
                 for image in t['images']:
-                    tx.put('items', {'id': uid(), 'owner': actor['id'], 'order_id': value['id'], 'set_code': t['code'], 'set_index': set_index, 'position': image['position'], 'template_id': image['id'], 'template_url': image['url'], 'status': 'queued', 'error': None, 'result_url': None, 'result_id': None, 'attempt': 0, 'retry_count': 0, 'next_at': 0})
+                    item = {'id': uid(), 'owner': actor['id'], 'order_id': value['id'], 'set_code': t['code'], 'set_index': set_index, 'position': image['position'], 'template_id': image['id'], 'template_url': image['url'], 'status': 'queued', 'error': None, 'result_url': None, 'result_id': None, 'attempt': 0, 'retry_count': 0, 'next_at': 0}
+                    credits.reserve(tx, item, now())
+                    tx.put('items', item)
             return order_public(tx, value, True)
 
     @app.get('/api/orders/{id}')
@@ -518,14 +579,20 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
         return change_order(id, request, 'archive')
 
     @app.post('/api/orders/{id}/items/{item_id}/rerun')
-    def rerun(id: str, item_id: str, request: Request):
+    def rerun(id: str, item_id: str, data: RerunRequest, request: Request):
         with db.transaction() as tx:
             value = owned(tx, 'orders', id, user(tx, request))
             item = tx.get('items', item_id)
             if not item or item['order_id'] != id:
                 raise HTTPException(404, '图片不存在')
+            operation_id = hashlib.sha256((value['owner']+':'+item_id+':'+data.client_token).encode()).hexdigest()
+            if tx.get('rerun_operations', operation_id):
+                return order_public(tx, value, True)
             if item['status'] in {'running', 'queued'} or item.get('remote_reserved'):
                 raise HTTPException(409, '该图片正在排队或生成')
+            credits.reserve(tx, item, now())
+            item.pop('billing_legacy', None)
+            tx.put('rerun_operations', {'id':operation_id, 'order_id':id, 'generation_id':item['generation_id']})
             for field in ('fal_request_id', 'fal_status', 'fal_status_url', 'fal_response_url', 'fal_error', 'queue_position', 'raw_result_id', 'cutout_inflight', 'cutout_started_at'):
                 item.pop(field, None)
             item.update(status='queued', error=None, retry_count=0, next_at=0, processing_stage='generate')
@@ -630,7 +697,7 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
         with db.transaction() as tx:
             actor = user(tx, request)
             value = tx.get('assets', id)
-            if not value or value['kind'] != 'template' and value['owner'] != actor['id'] and actor['role'] != 'admin':
+            if not can_read_asset(value, actor):
                 raise HTTPException(404, '文件不存在')
         if size not in (320, 1280):
             raise HTTPException(422, '不支持的预览尺寸')
@@ -647,7 +714,7 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
         with db.transaction() as tx:
             actor = user(tx, request)
             value = tx.get('assets', id)
-            if not value or value['kind'] != 'template' and value['owner'] != actor['id'] and actor['role'] != 'admin':
+            if not can_read_asset(value, actor):
                 raise HTTPException(404, '文件不存在')
             return FileResponse(db.root / 'assets' / value['file'], media_type='image/png')
 

@@ -46,6 +46,23 @@ class Database:
             config.pop('rpm', None)
             config.pop('openai_api_key', None)
             tx.put('config', config)
+            if not tx.get('migrations', 'personal-credits-v1'):
+                for user in tx.all('users'):
+                    user.setdefault('credits', {'available':0,'frozen':0,'spent':0,'version':0})
+                    tx.put('users', user)
+                for kind in ('templates', 'template_revisions'):
+                    for template in tx.all(kind):
+                        template.setdefault('scope', 'public')
+                        template.setdefault('owner', None)
+                        tx.put(kind, template)
+                for asset in tx.all('assets'):
+                    if asset['kind']=='template':
+                        asset.setdefault('scope', 'public')
+                        tx.put('assets', asset)
+                for item in tx.all('items'):
+                    item['billing_legacy']=True
+                    tx.put('items', item)
+                tx.put('migrations', {'id':'personal-credits-v1'})
         os.chmod(self.path, 0o600)
 
     @contextmanager

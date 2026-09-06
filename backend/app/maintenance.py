@@ -20,6 +20,7 @@ def cleanup_plan(db, tx, before):
     orders, items, assets = tx.all('orders'), tx.all('items'), tx.all('assets')
     older = [o for o in orders if datetime.fromisoformat(o['created_at']).timestamp() < before.timestamp()]
     blocked = {i['order_id'] for i in items if i['status'] in {'running', 'unknown'} or i.get('remote_reserved')}
+    blocked.update(g['order_id'] for g in tx.all('generations') if g['status']=='review')
     chosen = [o for o in older if o['id'] not in blocked]
     ids = {o['id'] for o in chosen}
     selected_items = [i for i in items if i['order_id'] in ids]
@@ -59,7 +60,8 @@ def cleanup_plan(db, tx, before):
     paths += ['preview-cache/' + id for id in asset_ids]
     fingerprint = json.dumps([before.isoformat(), chosen, selected_items, removable, uploads], sort_keys=True)
     public = {'before': before.isoformat(), 'preview_token': hashlib.sha256(fingerprint.encode()).hexdigest(), 'order_count': len(chosen), 'item_count': len(selected_items), 'file_count': len(sizes) + len(previews), 'file_bytes': sum(sizes) + preview_bytes, 'preview_cache_files': len(previews), 'preview_cache_bytes': preview_bytes, 'blocked_count': sum(o['id'] in blocked for o in older), 'legacy_unassigned_files': len(unassigned), 'orders': [{'id':o['id'],'name':o['name'],'created_at':o['created_at']} for o in chosen[:50]]}
-    return public, {'orders':chosen, 'items':selected_items, 'assets':removable, 'uploads':uploads}, paths
+    reruns = [r for r in tx.all('rerun_operations') if r['order_id'] in ids]
+    return public, {'orders':chosen, 'items':selected_items, 'assets':removable, 'uploads':uploads, 'rerun_operations':reruns}, paths
 
 
 def stage_cleanup(tx, records, paths):

@@ -114,3 +114,41 @@ class CleanupPreview(Model):
 class CleanupConfirm(CleanupPreview):
     preview_token: str = Field(pattern=r'^[0-9a-f]{64}$')
     confirmed: Literal[True]
+
+
+class AdminCreateUser(Model):
+    username: str = Field(min_length=3, max_length=40, pattern=r'^[A-Za-z0-9_.-]+$')
+    display_name: str = Field(min_length=1, max_length=80)
+    @field_validator('display_name')
+    @classmethod
+    def nonblank_name(cls, value):
+        if not value.strip(): raise ValueError('显示名不能为空')
+        return value.strip()
+
+
+class CreditReason(Model):
+    reason: str = Field(min_length=1, max_length=200)
+
+    @field_validator('reason')
+    @classmethod
+    def nonblank_reason(cls, value):
+        if not value.strip(): raise ValueError('请填写调整或核对原因')
+        return value.strip()
+
+
+class CreditAdjustment(CreditReason):
+    operation: Literal['add','set']
+    amount: int = Field(ge=0, le=1_000_000_000, strict=True)
+    reason: str = Field(min_length=1, max_length=200)
+    client_token: str = Field(min_length=1, max_length=120)
+    expected_version: int = Field(ge=0, strict=True)
+
+
+class CreditSettlement(CreditReason):
+    outcome: Literal['charge','release']
+    reason: str = Field(min_length=1, max_length=200)
+    client_token: str = Field(min_length=1, max_length=120)
+
+
+class RerunRequest(Model):
+    client_token: str = Field(min_length=1, max_length=120)

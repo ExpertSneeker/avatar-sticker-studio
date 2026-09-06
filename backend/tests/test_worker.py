@@ -98,7 +98,7 @@ def test_complete_two_sets_repack_watermark_rerun_and_manifest(context):
     assert client.get('/api/orders/' + o['id'] + '/manifest').json()['files'][:-1] == pages_before
     assert len(provider.calls) == before
     item = result['items'][0]
-    assert client.post(f"/api/orders/{o['id']}/items/{item['id']}/rerun").status_code == 200
+    assert client.post(f"/api/orders/{o['id']}/items/{item['id']}/rerun",json={'client_token':'test-rerun'}).status_code == 200
     running = client.get('/api/orders/' + o['id']).json()['items'][0]
     assert running['result_url'] == item['result_url']
     asyncio.run(worker.execute(worker.claim()))
@@ -177,7 +177,7 @@ def test_failed_rerun_retains_previous_result_and_artifact_version(context):
         clock.value += 61
     previous = client.get('/api/orders/' + o['id']).json()
     item = previous['items'][0]
-    client.post(f"/api/orders/{o['id']}/items/{item['id']}/rerun")
+    client.post(f"/api/orders/{o['id']}/items/{item['id']}/rerun",json={'client_token':'test-rerun'})
     provider.error = ProviderFailure('内容被拒绝', 'failed')
     asyncio.run(app.state.worker.execute(app.state.worker.claim()))
     after = client.get('/api/orders/' + o['id']).json()
@@ -332,12 +332,12 @@ def test_known_unknown_recover_and_rerun_identity(context):
     o,_=order(client); item=w.claim(); asyncio.run(w.execute(item)); clock.value+=10
     p.error=ProviderFailure('auth','unknown'); asyncio.run(w.execute(w.claim()))
     endpoint=f"/api/orders/{o['id']}/items/{item['id']}"
-    assert client.post(endpoint+'/rerun').status_code==409
+    assert client.post(endpoint+'/rerun',json={'client_token':'test-rerun'}).status_code==409
     info=client.get('/api/orders/'+o['id']).json()['items'][0]
     assert info['recoverable'] is True
     assert client.post(endpoint+'/recover').status_code==200
     p.error=None; p.state='COMPLETED'; asyncio.run(w.execute(w.claim()))
-    assert client.post(endpoint+'/rerun').status_code==200
+    assert client.post(endpoint+'/rerun',json={'client_token':'test-rerun'}).status_code==200
     asyncio.run(w.execute(w.claim()))
     assert p.submissions==2
     assert client.get('/api/orders/'+o['id']).json()['items'][0]['fal_request_id']=='job-2'
@@ -350,14 +350,14 @@ def test_unknown_requires_explicit_resolution_before_rerun(context):
     provider.error=ProviderFailure('ambiguous','unknown')
     item=app.state.worker.claim(); asyncio.run(app.state.worker.execute(item))
     url=f"/api/orders/{o['id']}/items/{item['id']}"
-    assert client.post(url+'/rerun').status_code==409
+    assert client.post(url+'/rerun',json={'client_token':'test-rerun'}).status_code==409
     assert client.post(url+'/resolve',json={'confirmed_ended':False}).status_code==422
     assert client.post(url+'/resolve',json={'confirmed_ended':True}).status_code==200
     with app.state.db.transaction() as tx:
         saved=tx.get('items',item['id'])
         assert saved['remote_reserved'] is False
         assert saved['resolution_history'][0]['resolved_at']==clock.value
-    assert client.post(url+'/rerun').status_code==200
+    assert client.post(url+'/rerun',json={'client_token':'test-rerun'}).status_code==200
 
 
 def test_download_retry_never_resubmits_and_disabled_owner_keeps_reservation(context):

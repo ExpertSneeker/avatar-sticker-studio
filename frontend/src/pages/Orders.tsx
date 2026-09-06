@@ -1,6 +1,6 @@
 import { ImagePreview } from '../components/ImagePreview'
 import { previewUrl } from '../lib/preview'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Search, ArrowLeft, Download, Pause, Play, RefreshCw, SlidersHorizontal, FolderCheck, Archive, FolderOpen, Image as ImageIcon } from 'lucide-react'
 import { Empty, Modal, PrintFields, Progress, Spinner, Status, useNotice } from '../components/UI'
 import { api, post } from '../lib/api'
@@ -65,9 +65,18 @@ function OrderDetail({id,onBack,onRefresh,onSync,device,review}:{id:string;onBac
     async function refresh(){try{const next=await api<Order>('/orders/'+id);if(active){setOrder(next);setError('');setItem(current=>current?next.items?.find(i=>i.id===current.id)||null:null)}}catch(e){if(active)setError((e as Error).message)}}
     void refresh();const timer=setInterval(refresh,3000);return()=>{active=false;clearInterval(timer)}
   },[id])
+  const rerunTokens=useRef<Record<string,string>>({})
   async function action(path:string,body?:unknown,message='操作已提交') {
     setBusy(path)
-    try{await post('/orders/'+id+path,body);const next=await api<Order>('/orders/'+id);setOrder(next);setItem(current=>current?next.items?.find(i=>i.id===current.id)||null:null);onRefresh();notice(message)}catch(e){notice((e as Error).message,'error')}finally{setBusy('')}
+    const rerunKey='sticker-rerun:'+id+path
+    if(path.endsWith('/rerun')){
+      let token:string|undefined=rerunTokens.current[path]
+      try{token=token||localStorage.getItem(rerunKey)||undefined}catch{}
+      token=token||crypto.randomUUID();rerunTokens.current[path]=token
+      try{localStorage.setItem(rerunKey,token)}catch{}
+      body={client_token:token}
+    }
+    try{await post('/orders/'+id+path,body);const next=await api<Order>('/orders/'+id);setOrder(next);setItem(current=>current?next.items?.find(i=>i.id===current.id)||null:null);onRefresh();notice(message);if(path.endsWith('/rerun')){delete rerunTokens.current[path];try{localStorage.removeItem(rerunKey)}catch{}}}catch(e){notice((e as Error).message,'error')}finally{setBusy('')}
   }
   if(!order)return <>{error?<div className="error-banner">{error}</div>:<Spinner/>}<button className="text-button" onClick={onBack}>返回订单列表</button></>
   const files=order.artifacts||[]

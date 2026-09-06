@@ -27,6 +27,10 @@ def test_statistics_permissions_periods_and_current_results(context):
     client.post('/api/auth/register', json={'username':'member', 'password':'member-password', 'display_name':'成员', 'invite':invite})
     assert client.get('/api/admin/statistics').status_code == 403
     assert client.get('/api/statistics?scope=global').json()['summary']['orders'] == 0
+    from backend.app.credits import record
+    member_id=client.get('/api/auth/me').json()['id']
+    with app.state.db.transaction() as tx:
+        record(tx, member_id, 'adjust', 12, 0, clock(), reason='统计测试初始分配')
     second, _ = order(client, name='成员订单', template_ids=[client.get('/api/templates').json()[0]['id']])
     own = client.get('/api/statistics').json()
     assert own['summary']['orders'] == 1 and own['summary']['completed'] == 0

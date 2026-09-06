@@ -7,6 +7,7 @@ import os
 import threading
 import time
 from .db import uid
+from . import credits
 from .processing import decode, encode, overview, pack_set
 from .providers import FalProvider, ProviderFailure, YeziProvider
 from .schemas import PrintSettings
@@ -43,6 +44,7 @@ class Worker:
                             item.update(status='queued', next_at=0, remote_reserved=True)
                         else:
                             item.update(status='unknown', remote_reserved=True, error='服务中断时请求可能已发出，结果待确认；不会自动重新提交')
+                        credits.progress(tx, item, now)
                         tx.put('items', item)
             for owner in tx.all('workers'):
                 if owner['expires'] < now:
@@ -78,6 +80,7 @@ class Worker:
             item.update(status='running', worker_id=self.id, run_id=uid(), attempt=item['attempt'] + int(new_request), started_at=now, error=None)
             if not postprocess:
                 item['remote_reserved'] = True
+            credits.progress(tx, item, now)
             tx.put('items', item)
             return item
 
@@ -88,7 +91,7 @@ class Worker:
         try:
             with self.db.transaction() as tx:
                 current = tx.get('items', item['id'])
-                if current['status'] != 'running' or current.get('worker_id') != self.id:
+                if not current or current['status'] != 'running' or current.get('worker_id') != self.id or current.get('run_id') != item.get('run_id'):
                     return
                 if current.get('cutout_inflight'):
                     raise ProviderFailure(CUTOUT_UNCERTAIN, 'unknown')
@@ -131,6 +134,7 @@ class Worker:
                     if latest['status'] != 'running' or latest.get('worker_id') != self.id or latest.get('run_id') != item.get('run_id'):
                         return
                     raw = save_asset(self.db, tx, encode(image), item['owner'], 'raw_result', order_id=item['order_id'])
+                    credits.settle(tx, latest.get('generation_id'), 'charge', self.clock())
                     latest.update(raw_result_id=raw['id'], remote_reserved=False, processing_stage='postprocess')
                     tx.put('items', latest)
             if image.getchannel('A').getextrema()[0] == 255:
@@ -179,8 +183,9 @@ class Worker:
     def checkpoint(self, item, **fields):
         with self.db.transaction() as tx:
             latest = tx.get('items', item['id'])
-            if latest.get('run_id') == item.get('run_id') and latest.get('worker_id') == self.id:
+            if latest and latest['status']=='running' and latest.get('run_id') == item.get('run_id') and latest.get('worker_id') == self.id:
                 latest.update(fields)
+                credits.progress(tx, latest, self.clock())
                 tx.put('items', latest)
 
     def defer(self, item, delay):
@@ -207,6 +212,7 @@ class Worker:
                 tx.put('config', config)
             if error.status == 'failed' or (error.status == 'retry' and not known):
                 latest['remote_reserved'] = False
+            credits.progress(tx, latest, self.clock())
             tx.put('items', latest)
 
     def publish(self, order_id, force=False, watermark_only=False):

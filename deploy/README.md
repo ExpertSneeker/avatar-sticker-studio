@@ -60,3 +60,35 @@ cleanup entry is retried via the existing cleanup-retry action and on startup.
 The storage panel reports cache use and the limit; cached bytes are already
 included in the application's total. Cached derivatives are disposable and do
 not replace manual retention management of original orders.
+
+## Personal templates and production credits
+
+The one-time `personal-credits-v1` database migration preserves existing template
+IDs, images and versions as public resources. Existing members begin with zero
+credits; administrators are exempt. Previously submitted items have no billable
+generation record and finish without retroactive charging. New orders and manual
+reruns reserve one credit per image for the order owner. A valid 1024 × 1024 raw
+result saved on the server settles that reservation; subsequent matting, layout,
+watermark and download operations are free. Definitive failures release holds;
+unknown provider results remain held for recovery or administrator reconciliation.
+Do not clear unknown generations directly in the database.
+
+Account management provides member creation, invitations, activation, password
+reset and credit adjustment. Temporary passwords are shown once; password resets
+revoke existing sessions. Setting a balance changes available credits only, leaving
+frozen credits intact. Adjustments use a wallet version and idempotent client token.
+`POST /api/orders/{id}/items/{item_id}/rerun` also requires a JSON `client_token`, retained by clients
+until the operation has been confirmed. A retry with the same token never creates
+a second generation, even after the first finishes. Manual new reruns use new tokens.
+
+Personal templates are editable only by their owner, public templates only by
+administrators. Source and preview endpoints enforce access before cache or 304
+responses. Set codes remain globally unique. Production statistics filter by order
+submission date; credit ledger filters use the transaction's own timestamp.
+
+Date cleanup releases remaining eligible reservations and removes associated
+images, preview cache and generation records, preserving the minimal credit ledger.
+Orders with unresolved credits must be reconciled before cleanup. No paid provider
+requests are needed for regression testing: `uv run pytest backend/tests`,
+`npm test --prefix frontend`, `npm run build --prefix frontend` and
+`npm run test:e2e --prefix frontend` use isolated data and mock generation services.

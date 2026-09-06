@@ -21,7 +21,8 @@ def token_hash(token):
 
 
 def public_user(user):
-    return {key: user[key] for key in ('id', 'username', 'display_name', 'role', 'watermark', 'print_defaults')}
+    from .credits import wallet
+    return {key: user[key] for key in ('id', 'username', 'display_name', 'role', 'watermark', 'print_defaults')} | {'credits':wallet(user)}
 
 
 def require_user(tx, token, now):
@@ -42,3 +43,17 @@ def owned(tx, kind, id, user):
     if not value or (value.get('owner') != user['id'] and user['role'] != 'admin'):
         raise HTTPException(404, '记录不存在')
     return value
+
+
+def can_read_asset(asset, actor):
+    return bool(asset and (actor['role']=='admin' or asset.get('owner')==actor['id'] or
+                asset['kind']=='template' and asset.get('scope','public')=='public'))
+
+
+def can_use_template(template, actor):
+    return bool(template and template['active'] and
+                (template.get('scope','public')=='public' or template.get('owner')==actor['id']))
+
+
+def can_edit_template(template, actor):
+    return (actor['role']=='admin' if template.get('scope','public')=='public' else template.get('owner')==actor['id'])
