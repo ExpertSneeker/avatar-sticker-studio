@@ -36,9 +36,9 @@ export function Orders({orders,review=false,onRefresh,onSync,onRedownload,onOpen
   const filtered=orders.filter(o=>withinPeriod(o.created_at,period)&&(o.name+' '+o.template_codes.join(' ')).toLowerCase().includes(search.toLowerCase())&&(filter==='all'||(filter==='active'?!['completed','complete','ready'].includes(o.status):filter==='issues'?o.failed>0||o.unknown>0||!!o.processing_error:['completed','complete','ready'].includes(o.status))))
   const eligible=filtered.filter(o=>o.download_ready&&!device[o.id]?.busy)
   const checkedOrders=orders.filter(o=>checked.includes(o.id)&&o.download_ready)
-  async function downloadChecked(){
+  async function downloadChecked(ids=checkedOrders.map(order=>order.id)){
     setDownloading(true)
-    try{await onRedownload(checkedOrders.map(order=>order.id))}finally{setDownloading(false)}
+    try{await onRedownload(ids)}finally{setDownloading(false)}
   }
   if(selected)return <OrderDetail id={selected} onBack={()=>{setSelected(null);onBack?.()}} onRefresh={onRefresh} onSync={onSync} device={device[selected]} review={review}/>
   return <>
@@ -51,10 +51,10 @@ export function Orders({orders,review=false,onRefresh,onSync,onRedownload,onOpen
         <button className="task-main" onClick={()=>setSelected(order.id)}><img className="avatar" src={previewUrl(order.avatar_url)} alt=""/><div><h3>{order.name}</h3><p>{order.template_codes.join(' · ')} <span>·</span> {order.total} 张</p><time dateTime={order.created_at}>提交于 {submissionDate(order.created_at)}</time></div></button>
         <div className="task-progress"><div><Status value={order.paused?'paused':order.status}/><span>{order.completed} / {order.total}</span></div><Progress value={order.completed} total={order.total}/></div>
         <div className="task-device"><FolderCheck size={16}/><span className={device[order.id]?.error?'error-text':''}>{device[order.id]?.message||'尚未保存到本机'}</span></div>
-        <div className="task-actions"><button className="order-preview-thumb" disabled={!order.preview_url} aria-label={'预览 '+order.name} title={order.preview_url?'点击查看水印预览':'全部成品完成后显示预览'} onClick={()=>setPreview(order)}>{order.preview_url?<img src={previewUrl(order.preview_url)} alt={order.name+' 水印预览'} loading="lazy"/>:<ImageIcon size={22}/>}</button><button className="button" onClick={()=>setSelected(order.id)}>{review?'检查图片':'查看详情'}</button><button className="button open-order-directory" disabled={!device[order.id]?.saved||device[order.id]?.busy} title="在系统目录窗口中打开此订单的文件夹" onClick={()=>void onOpenDirectory(order.id)}><FolderOpen size={16}/>打开目录</button></div>
+        <div className="task-actions"><button className="order-preview-thumb" disabled={!order.preview_url} aria-label={'预览 '+order.name} title={order.preview_url?'点击查看水印预览':'全部成品完成后显示预览'} onClick={()=>setPreview(order)}>{order.preview_url?<img src={previewUrl(order.preview_url)} alt={order.name+' 水印预览'} loading="lazy"/>:<ImageIcon size={22}/>}</button><button className="button" onClick={()=>setSelected(order.id)}>{review?'检查图片':'查看详情'}</button><button className="button" disabled={downloading||!order.download_ready||device[order.id]?.busy} onClick={()=>void downloadChecked([order.id])}><Download size={16}/>下载</button><button className="button open-order-directory" disabled={!device[order.id]?.saved||device[order.id]?.busy} title="在系统目录窗口中打开此订单的文件夹" onClick={()=>void onOpenDirectory(order.id)}><FolderOpen size={16}/>打开目录</button></div>
       </article>)}</div>
     </>:<Empty title={search?'没有匹配的订单':'这里还没有订单'} description="在工作台上传头像并提交后，处理进度会显示在这里。"/>}
-    {preview?.preview_url&&<Modal title={preview.name+' · 水印预览'} onClose={()=>setPreview(null)} wide><ImagePreview className="order-preview-original" src={preview.preview_url} alt={preview.name+' 水印预览'}/></Modal>}
+    {preview?.preview_url&&<Modal title={preview.name+' · 水印预览'} onClose={()=>setPreview(null)} wide><ImagePreview defaultOriginal className="order-preview-original" src={preview.preview_url} alt={preview.name+' 水印预览'}/></Modal>}
   </>
 }
 

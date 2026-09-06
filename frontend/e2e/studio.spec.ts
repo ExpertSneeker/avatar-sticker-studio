@@ -158,11 +158,6 @@ test('complete production UI workflow with isolated provider and data', async ({
   })).toBe(true)
   await page.getByRole('button',{name:'预览 小满',exact:true}).click()
   await expect(dialog.getByRole('img',{name:'小满 水印预览'})).toBeVisible()
-  await expect(dialog.locator('img')).toHaveAttribute('src', /\/preview\?size=1280$/)
-  await expect.poll(()=>dialog.locator('img').evaluate((image:HTMLImageElement)=>image.complete&&image.naturalWidth>0)).toBe(true)
-  await dialog.locator('img').evaluate(async (image:HTMLImageElement)=>{await image.decode();await new Promise(requestAnimationFrame)})
-  await page.screenshot({path:evidence('order-compressed-preview.png'),animations:'disabled'})
-  await dialog.getByRole('button',{name:'查看原图',exact:true}).click()
   await expect(dialog.locator('img')).toHaveAttribute('src', /^\/api\/assets\/[a-f0-9]{32}$/)
   await expect.poll(()=>dialog.locator('img').evaluate((image:HTMLImageElement)=>image.complete&&image.naturalWidth)).toBe(1024)
   expect(await dialog.locator('img').evaluate((image:HTMLImageElement)=>image.naturalWidth)).toBe(1024)
@@ -413,21 +408,21 @@ test('avatar and template uploads send resized bytes and single-order search kee
 })
 
 
-test('duplicate name rejection stays editable and destination binding is atomic',async({page})=>{
+test('same-name drafts submit independently and destination binding is atomic',async({page})=>{
   await page.request.post('/api/auth/login',{data:{username:'testadmin',password:'local-test-password'}})
   await installDirectoryPicker(page,'retry-output')
   await page.goto('/')
   await page.getByRole('button',{name:'选择保存目录',exact:true}).click()
-  await page.locator('input[type=file]').setInputFiles({name:'小满.png',mimeType:'image/png',buffer:pixel})
-  await page.getByRole('button',{name:'选择模板',exact:true}).click()
+  await page.locator('input[type=file]').setInputFiles([0,1].map(()=>({name:'小满.png',mimeType:'image/png',buffer:pixel})))
+  await page.getByRole('button',{name:'批量选择模板',exact:true}).click()
   await page.getByRole('dialog').getByRole('button',{name:/春日出游/}).click()
-  await page.getByRole('dialog').getByRole('button',{name:'应用到 1 个订单'}).click()
-  await page.getByRole('button',{name:'提交生成',exact:true}).click()
-  await expect(page.locator('.draft-status')).toContainText('修改名称')
-  await expect(page.getByLabel('订单名称')).toBeEnabled()
-  await page.getByLabel('订单名称').fill('改名后成功')
+  await page.getByRole('dialog').getByRole('button',{name:'应用到 2 个订单'}).click()
   await page.getByRole('button',{name:'提交生成',exact:true}).click()
   await expect(page.getByLabel('订单名称')).toHaveCount(0)
+  const same=(await (await page.request.get('/api/orders')).json()).filter((o:{name:string})=>o.name==='小满')
+  expect(same.length).toBeGreaterThanOrEqual(3)
+  const names=await Promise.all(same.map(async(o:{id:string})=>(await (await page.request.get('/api/orders/'+o.id+'/manifest')).json()).name))
+  expect(new Set(names).size).toBe(names.length)
   const binding=await page.evaluate(async()=>{
     const path='/src/lib/device.ts',db='/src/lib/db.ts'
     const {bindDestination}=await import(path),{readLocal}=await import(db)
@@ -462,12 +457,13 @@ test('uncertain submission retry keeps its locked identity after an upload failu
 
 test('batch re-download chooses one destination and cancellation writes nothing',async({page})=>{
   await page.request.post('/api/auth/login',{data:{username:'testadmin',password:'local-test-password'}})
-  const rows=(await(await page.request.get('/api/orders')).json()).filter((order:{download_ready:boolean})=>order.download_ready).slice(0,2)
+  await expect.poll(async()=>{const orders=await(await page.request.get('/api/orders')).json();return orders.slice(0,2).every((order:{download_ready:boolean})=>order.download_ready)},{timeout:60000}).toBe(true)
+  const rows=(await(await page.request.get('/api/orders')).json()).slice(0,2)
   expect(rows).toHaveLength(2)
   await installDirectoryPicker(page,'manual-download')
   await page.goto('/')
   await page.getByRole('navigation').getByRole('button',{name:'任务中心'}).click()
-  for(const order of rows)await page.getByLabel('选择下载 '+order.name,{exact:true}).check()
+  for(let i=0;i<rows.length;i++)await page.locator('.task-row').nth(i).getByRole('checkbox').check()
   await page.getByRole('button',{name:'重新下载所选订单'}).click()
   await expect(page.getByRole('button',{name:'重新下载所选订单'})).toBeEnabled()
   expect(await page.evaluate(()=>(window as Window & {pickerCalls?:number}).pickerCalls)).toBe(1)
@@ -476,14 +472,20 @@ test('batch re-download chooses one destination and cancellation writes nothing'
     const names=[];for await(const name of root.keys())names.push(name)
     return names.sort()
   })
-  expect(savedNames).toEqual(rows.map((order:{name:string})=>order.name).sort())
+  expect(savedNames).toEqual((await Promise.all(rows.map(async(order:{id:string})=>(await(await page.request.get('/api/orders/'+order.id+'/manifest')).json()).name))).sort())
   await expect(page.locator('.directory-button')).toHaveText('选择保存目录')
+  await page.evaluate(()=>{(window as Window & {pickerName?:string}).pickerName='single-download'})
+  await page.locator('.task-row').first().getByRole('button',{name:'下载',exact:true}).click()
+  await expect.poll(()=>page.evaluate(async()=>{
+    try {const root=await(await navigator.storage.getDirectory()).getDirectoryHandle('single-download');const names=[];for await(const name of root.keys())names.push(name);return names.length}catch{return 0}
+  })).toBe(1)
+  await expect(page.getByRole('button',{name:'重新下载所选订单'})).toBeEnabled()
   let manifests=0
   page.on('request',request=>{if(request.url().endsWith('/manifest'))manifests++})
   await page.evaluate(()=>{(window as Window & {pickerCancel?:boolean}).pickerCancel=true})
   await page.getByRole('button',{name:'重新下载所选订单'}).click()
   await expect(page.getByRole('button',{name:'重新下载所选订单'})).toBeEnabled()
-  expect(await page.evaluate(()=>(window as Window & {pickerCalls?:number}).pickerCalls)).toBe(2)
+  expect(await page.evaluate(()=>(window as Window & {pickerCalls?:number}).pickerCalls)).toBe(3)
   expect(manifests).toBe(0)
 })
 

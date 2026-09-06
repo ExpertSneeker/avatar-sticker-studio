@@ -86,7 +86,7 @@ def test_template_revision_and_order_idempotency(client):
     assert len(client.get('/api/orders/' + o['id']).json()['items']) == 12
     assert client.post('/api/orders', json=body).json()['id'] == o['id']
     body['client_token'] = 'another'
-    assert client.post('/api/orders', json=body).status_code == 409
+    assert client.post('/api/orders', json=body).json()['id'] != o['id']
     before = client.get('/api/orders/' + o['id']).json()['items'][0]['template_url']
     response = client.put('/api/templates/' + t['id'], data={'code': 'A01', 'name': '调整', 'category': '女孩', 'existing_ids': __import__('json').dumps([x['id'] for x in reversed(t['images'])])})
     assert response.status_code == 200, response.text
@@ -190,3 +190,34 @@ def test_fal_config_migration_preserves_other_data(tmp_path, monkeypatch):
         assert c['max_inflight']==9 and c['prompt_version']==7
         assert not c.get('fal_api_key')
         assert tx.get('orders','retained-order')
+
+
+def test_same_name_orders_remain_independent_with_distinct_output_folders(client):
+    t = template(client)
+    body = {'upload_id':upload(client)['id'], 'name':'小明', 'template_ids':[t['id']], 'print_settings':{}, 'client_token':'same-name-1'}
+    first = client.post('/api/orders',json=body).json()
+    body['client_token']='same-name-2'
+    response=client.post('/api/orders',json=body)
+    assert response.status_code==200, response.text
+    second=response.json()
+    assert first['id']!=second['id'] and first['name']==second['name']=='小明'
+    assert client.post('/api/orders',json=body).json()['id']==second['id']
+    assert client.get('/api/orders/'+first['id']+'/manifest').json()['name']=='小明'
+    assert client.get('/api/orders/'+second['id']+'/manifest').json()['name']=='小明 (2)'
+    body.update(name='小明 (2)',client_token='literal-folder-name')
+    third=client.post('/api/orders',json=body).json()
+    assert client.get('/api/orders/'+third['id']+'/manifest').json()['name']=='小明 (2) (2)'
+    assert len({i['id'] for o in (first,second,third) for i in o['items']})==36
+    from backend.app.storage import save_asset
+    import io, zipfile
+    db=client.app.state.db
+    with db.transaction() as tx:
+        for result,color in ((first,(255,0,0,255)),(second,(0,255,0,255))):
+            value=tx.get('orders',result['id'])
+            asset=save_asset(db,tx,png(color),value['owner'],'print',order_id=value['id'])
+            value['artifacts']=[{'id':asset['id'],'path':'小明_A01_1.png'}]
+            tx.put('orders',value)
+    response=client.get('/api/orders/'+second['id']+'/download.zip')
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        assert archive.namelist()==['小明 (2)/小明_A01_1.png']
+        assert archive.read(archive.namelist()[0])==png((0,255,0,255))

@@ -529,8 +529,12 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
                 return order_public(tx, previous, True)
             if len(set(data.template_ids)) != len(data.template_ids):
                 raise HTTPException(422, '不能重复选择套装')
-            if any(o['owner'] == actor['id'] and o['normalized_name'] == data.name.casefold() for o in tx.all('orders')):
-                raise HTTPException(409, '当前账号已有同名订单，请修改名称')
+            used_names = {o.get('output_name', o['name']).casefold() for o in tx.all('orders') if o['owner']==actor['id']}
+            output_name, suffix = data.name, 1
+            while output_name.casefold() in used_names:
+                suffix += 1
+                ending = f' ({suffix})'
+                output_name = data.name[:100-len(ending)] + ending
             avatar = owned(tx, 'uploads', data.upload_id, actor)
             if avatar['owner'] != actor['id'] or not avatar['complete']:
                 raise HTTPException(409, '请先完成自己的头像上传')
@@ -538,7 +542,7 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
             if any(not can_use_template(t, actor) for t in sets):
                 raise HTTPException(422, '所选套装不存在或已下架')
             config = tx.get('config', 'settings')
-            value = {'id': uid(), 'owner': actor['id'], 'name': data.name, 'normalized_name': data.name.casefold(), 'client_token': data.client_token, 'created_at': datetime.fromtimestamp(now(), timezone.utc).isoformat(), 'paused': False, 'archived': False, 'avatar_url': avatar['url'], 'avatar_id': avatar['asset_id'], 'template_codes': [t['code'] for t in sets], 'template_snapshots': sets, 'prompt': config['prompt'], 'prompt_version': config['prompt_version'], 'print_settings': data.print_settings.model_dump(), 'artifact_version': 0, 'artifacts': [], 'overview_ready': False, 'content_version': 0}
+            value = {'id': uid(), 'owner': actor['id'], 'name': data.name, 'normalized_name': data.name.casefold(), 'output_name': output_name, 'client_token': data.client_token, 'created_at': datetime.fromtimestamp(now(), timezone.utc).isoformat(), 'paused': False, 'archived': False, 'avatar_url': avatar['url'], 'avatar_id': avatar['asset_id'], 'template_codes': [t['code'] for t in sets], 'template_snapshots': sets, 'prompt': config['prompt'], 'prompt_version': config['prompt_version'], 'print_settings': data.print_settings.model_dump(), 'artifact_version': 0, 'artifacts': [], 'overview_ready': False, 'content_version': 0}
             tx.put('orders', value)
             for set_index, t in enumerate(sets):
                 for image in t['images']:
@@ -676,7 +680,7 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
         with db.transaction() as tx:
             value = owned(tx, 'orders', id, user(tx, request))
             public = order_public(tx, value)
-            return {'order_id': id, 'name': value['name'], 'version': value['artifact_version'], 'complete': public['completed'] == public['total'] and value.get('overview_ready', False), 'files': value['artifacts']}
+            return {'order_id': id, 'name': value.get('output_name', value['name']), 'version': value['artifact_version'], 'complete': public['completed'] == public['total'] and value.get('overview_ready', False), 'files': value['artifacts']}
 
     @app.get('/api/orders/{id}/download.zip')
     def download_zip(id: str, request: Request):
@@ -687,9 +691,9 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
             output = io.BytesIO()
             with zipfile.ZipFile(output, 'w', zipfile.ZIP_DEFLATED) as archive:
                 for a in value['artifacts']:
-                    archive.writestr(value['name'] + '/' + a['path'], asset_bytes(db, tx.get('assets', a['id'])))
+                    archive.writestr(value.get('output_name', value['name']) + '/' + a['path'], asset_bytes(db, tx.get('assets', a['id'])))
             output.seek(0)
-            return StreamingResponse(output, media_type='application/zip', headers={'Content-Disposition': "attachment; filename*=UTF-8''" + __import__('urllib.parse', fromlist=['quote']).quote(value['name'] + '.zip')})
+            return StreamingResponse(output, media_type='application/zip', headers={'Content-Disposition': "attachment; filename*=UTF-8''" + __import__('urllib.parse', fromlist=['quote']).quote(value.get('output_name', value['name']) + '.zip')})
 
     @app.get('/api/assets/{id}/preview')
     def asset_preview(id: str, request: Request, size: int = 320):

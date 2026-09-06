@@ -92,3 +92,17 @@ Orders with unresolved credits must be reconciled before cleanup. No paid provid
 requests are needed for regression testing: `uv run pytest backend/tests`,
 `npm test --prefix frontend`, `npm run build --prefix frontend` and
 `npm run test:e2e --prefix frontend` use isolated data and mock generation services.
+
+## Task previews and repeated names
+
+Task-list preview dialogs open the original watermark overview by default; list
+thumbnails remain compressed. Each task has its own download button that selects
+a destination and downloads only that task, independently of checked rows.
+
+Order display names may repeat. Within an account, a transactional `output_name`
+reserves a distinct folder name (`Name`, `Name (2)`, etc.), including conflicts with
+literal numbered names. Manifests and ZIP roots use this name; pre-existing orders
+fall back to their original name. Task IDs and submission tokens still provide
+identity and retry deduplication. Existing local ownership checks remain in force:
+foreign or modified files are never silently overwritten, including files left
+behind after an older order was cleaned from the server.

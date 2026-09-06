@@ -58,7 +58,6 @@ export function Workspace({user,templates,onCreated,addRef,directory}:{directory
       try {
         signal.throwIfAborted()
         if(!safeFilename(draft.name))throw new Error('请填写有效的订单名称')
-        if(drafts.filter(d=>d.name.normalize('NFC').toLowerCase()===draft.name.normalize('NFC').toLowerCase()).length>1)throw new Error('名称重复，请修改后提交')
         if(!draft.template_ids.length)throw new Error('请先选择模板套装')
         const root=draft.output_directory||directory!
         if(!await directoryPermission(root,true))throw new Error('保存目录尚未授权，请重新选择或授权')
