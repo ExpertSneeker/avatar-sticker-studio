@@ -461,7 +461,7 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
                 raise HTTPException(404, '图片不存在')
             if item['status'] in {'running', 'queued'} or item.get('remote_reserved'):
                 raise HTTPException(409, '该图片正在排队或生成')
-            for field in ('fal_request_id', 'fal_status', 'fal_status_url', 'fal_response_url', 'queue_position', 'raw_result_id'):
+            for field in ('fal_request_id', 'fal_status', 'fal_status_url', 'fal_response_url', 'fal_error', 'queue_position', 'raw_result_id'):
                 item.pop(field, None)
             item.update(status='queued', error=None, retry_count=0, next_at=0, processing_stage='generate')
             tx.put('items', item)

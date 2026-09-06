@@ -92,3 +92,19 @@ def test_malformed_url_port_cannot_discard_valid_request_id(monkeypatch):
     install(monkeypatch,lambda r:httpx.Response(200,json={'request_id':'job-1','status_url':'https://queue.fal.run:invalid/path'}))
     job=asyncio.run(providers.FalProvider('k').submit(b'a',b'b','p'))
     assert job['fal_request_id']=='job-1'
+
+
+def test_completed_queue_failure_is_terminal_and_sanitized(monkeypatch):
+    install(monkeypatch,lambda r:httpx.Response(200,json={'status':'COMPLETED','error':'secret upstream payload','error_type':'content_policy_violation'}))
+    progress=asyncio.run(providers.FalProvider('secret').poll({'fal_status_url':'https://queue.fal.run/job/status'}))
+    assert progress['fal_status']=='COMPLETED'
+    assert progress['fal_error']=='FAL任务失败，请检查输入或内容限制'
+    assert 'secret' not in str(progress)
+
+
+@pytest.mark.parametrize('retry_after,expected',[('Wed, 01 Jan 2031 00:00:45 GMT',45),('inf',30),('NaN',30)])
+def test_retry_after_http_date_and_nonfinite(monkeypatch,retry_after,expected):
+    monkeypatch.setattr(providers.time,'time',lambda:1924992000)
+    install(monkeypatch,lambda r:httpx.Response(429,headers={'retry-after':retry_after}))
+    with pytest.raises(ProviderFailure) as e: asyncio.run(providers.FalProvider('k').submit(b'a',b'b','p'))
+    assert e.value.retry_after==expected

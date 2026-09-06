@@ -415,3 +415,19 @@ def test_queued_raw_postprocess_respects_pause(context):
     client.post('/api/orders/'+o['id']+'/pause')
     assert client.post(f"/api/orders/{o['id']}/items/{item['id']}/reprocess").status_code==200
     assert w.claim() is None
+
+
+def test_completed_remote_failure_releases_slot_without_result_or_resubmit(context):
+    app,client,clock,_=context
+    p=QueueProvider();w=app.state.worker;w.provider=p
+    order(client);item=w.claim();asyncio.run(w.execute(item));clock.value+=10
+    async def terminal(job): return dict(fal_status='COMPLETED',fal_error='FAL任务失败，请检查输入或内容限制',queue_position=None)
+    async def forbidden(job): pytest.fail('terminal failed job must not download')
+    p.poll=terminal;p.result=forbidden
+    asyncio.run(w.execute(w.claim()))
+    with app.state.db.transaction() as tx:
+        value=tx.get('items',item['id'])
+    assert value['status']=='failed'
+    assert value['fal_status']=='COMPLETED'
+    assert value['remote_reserved'] is False
+    assert p.submissions==1

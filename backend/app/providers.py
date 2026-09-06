@@ -1,6 +1,8 @@
 """Real billable providers. Test substitutes are injected at the application boundary."""
 import asyncio
 import base64
+import math
+from email.utils import parsedate_to_datetime
 import time
 from urllib.parse import urlparse
 import httpx
@@ -38,10 +40,15 @@ class FalProvider:
         except httpx.TransportError as exc:
             raise ProviderFailure('FAL连接中断，保留请求等待恢复', 'unknown' if method == 'POST' else 'retry') from exc
         if response.status_code == 429:
+            value = response.headers.get('retry-after', '30')
             try:
-                delay = max(1, float(response.headers.get('retry-after', '30')))
+                delay = float(value)
             except ValueError:
-                delay = 30
+                try:
+                    delay = parsedate_to_datetime(value).timestamp() - time.time()
+                except (ValueError, TypeError, OverflowError):
+                    delay = 30
+            delay = max(1, delay) if math.isfinite(delay) else 30
             raise ProviderFailure('FAL限速，等待退避重试', 'retry', delay)
         if response.status_code >= 500:
             raise ProviderFailure('FAL服务暂不可用', 'unknown' if method == 'POST' else 'retry')
@@ -76,7 +83,8 @@ class FalProvider:
         if status not in ('IN_QUEUE', 'IN_PROGRESS', 'COMPLETED'):
             raise ProviderFailure('FAL队列状态不可识别，保留原请求', 'unknown')
         position = body.get('queue_position')
-        return {'fal_status': status, 'queue_position': position if isinstance(position, int) and position >= 0 else None}
+        return {'fal_status': status, 'queue_position': position if isinstance(position, int) and position >= 0 else None,
+                'fal_error': 'FAL任务失败，请检查输入或内容限制' if status == 'COMPLETED' and (body.get('error') or body.get('error_type')) else None}
 
     async def result(self, job):
         body = await self.request('GET', job['fal_response_url'])

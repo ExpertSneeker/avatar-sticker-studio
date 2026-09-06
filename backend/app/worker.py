@@ -108,6 +108,8 @@ class Worker:
                         item.update(progress)
                         if progress['fal_status'] != 'COMPLETED':
                             return self.defer(item, 2)
+                    if item.get('fal_error'):
+                        raise ProviderFailure(item['fal_error'], 'failed')
                     data = await provider.result(item)
                 else:
                     data = await provider.generate(template=template, avatar=avatar, prompt=order['prompt'])
