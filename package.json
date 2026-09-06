@@ -1,0 +1,12 @@
+{
+  "name": "avatar-sticker-studio-local",
+  "private": true,
+  "scripts": {
+    "setup": "node scripts/studio.mjs setup",
+    "start": "node scripts/studio.mjs start",
+    "dev": "node scripts/studio.mjs dev",
+    "build": "npm run build --prefix frontend",
+    "test": "uv run pytest -q && npm test --prefix frontend",
+    "test:e2e": "npm run test:e2e --prefix frontend"
+  }
+}

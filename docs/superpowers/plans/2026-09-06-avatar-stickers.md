@@ -41,30 +41,30 @@ JSON errors use {detail: string}; session via HttpOnly same-site cookie; unsafe 
 
 Files: backend/app/{main,db,auth,schemas,storage,processing,providers,worker}.py, backend/tests/, pyproject.toml.
 Consumes: approved spec and HTTP contract above. Produces: working documented /api routes, persistent DB, worker lifecycle, tests with injectable provider.
-- [ ] Add dependency config and test fixtures using temporary data root and injectable clock/provider; test registration isolation, uploads resume/hash, immutable template order.
-- [ ] Implement account/session/invite management, owner-scoped assets, strict filenames and print parameter bounds, real multipart OpenAI client and optional Yezi cutout client with independent limiter.
-- [ ] Implement durable claims/admission and lease lifecycle. Persist request starts transactionally. Pause affects only unstarted work. Startup classifies abandoned in-flight request as unknown; no unsafe double billing.
-- [ ] Implement alpha-safe trim/resize/packing, physical DPI, immutable artifacts and manifest hashes, full-order watermark, optional brightness/color processing. Only publish complete per-set pages; keep good previous versions on failures.
-- [ ] Test multiple orders/sets, single rerun and repack without provider calls, global limit across clients, refused/unknown provider errors, queue restart, transparent edges, output names and image dimensions.
-- [ ] Run pytest, self-review, report all implemented endpoints and any gaps to root. Do not commit root-owned frontend files.
+- [x] Add dependency config and test fixtures using temporary data root and injectable clock/provider; test registration isolation, uploads resume/hash, immutable template order.
+- [x] Implement account/session/invite management, owner-scoped assets, strict filenames and print parameter bounds, real multipart OpenAI client and optional Yezi cutout client with independent limiter.
+- [x] Implement durable claims/admission and lease lifecycle. Persist request starts transactionally. Pause affects only unstarted work. Startup classifies abandoned in-flight request as unknown; no unsafe double billing.
+- [x] Implement alpha-safe trim/resize/packing, physical DPI, immutable artifacts and manifest hashes, full-order watermark, optional brightness/color processing. Only publish complete per-set pages; keep good previous versions on failures.
+- [x] Test multiple orders/sets, single rerun and repack without provider calls, global limit across clients, refused/unknown provider errors, queue restart, transparent edges, output names and image dimensions.
+- [x] Run pytest, self-review, report all implemented endpoints and any gaps to root. Do not commit root-owned frontend files.
 
 ### Task 2: Designed React application and directory sync
 
 Files: frontend/, package.json, scripts/dev launcher.
 Consumes: HTTP contract. Produces: all requested working UI surfaces, first-admin onboarding, browser sync and ZIP fallback.
-- [ ] Generate full-workspace concept before coding; save design direction and compare final render.
-- [ ] Build API/session hooks, reusable controls, sidebar and separate functional pages for orders, templates, tasks, review, account, admin.
-- [ ] Implement batch files + resumable uploads, order naming, per-row and bulk template selection, per-row and bulk print settings, task creation idempotency.
-- [ ] Implement real per-item review/rerun, server progress vs device saved distinction, errors, unknown results and pause/resume.
-- [ ] Store directory handle and local manifests in IndexedDB; use SHA256 reconciliation and version-checked writes; recover missing/stale files; refuse unowned name collisions; delete obsolete managed pages only after full new-version sync succeeds and old bytes match tracked hash.
-- [ ] Test desktop and mobile views, keyboard access, no inert buttons, failures and folder permission loss, account/admin/template full forms, ZIP fallback.
+- [x] Generate full-workspace concept before coding; save design direction and compare final render.
+- [x] Build API/session hooks, reusable controls, sidebar and separate functional pages for orders, templates, tasks, review, account, admin.
+- [x] Implement batch files + resumable uploads, order naming, per-row and bulk template selection, per-row and bulk print settings, task creation idempotency.
+- [x] Implement real per-item review/rerun, server progress vs device saved distinction, errors, unknown results and pause/resume.
+- [x] Store directory handle and local manifests in IndexedDB; use SHA256 reconciliation and version-checked writes; recover missing/stale files; refuse unowned name collisions; delete obsolete managed pages only after full new-version sync succeeds and old bytes match tracked hash.
+- [x] Test desktop and mobile views, keyboard access, no inert buttons, failures and folder permission loss, account/admin/template full forms, ZIP fallback.
 
 ### Task 3: Integration, review and delivery
 
 Files: README.md, .env.example, verification docs; bounded fixes in frontend/backend.
-- [ ] Start both servers on loopback, run Python and TypeScript build checks, use real browser UI to set up local admin and import test templates; test full workflow against controlled HTTP provider in isolated test data.
-- [ ] Real API smoke test requires user-provided project API key; synthetic test avatar only. Missing credentials must remain an explicit unverified requirement, never fake success.
-- [ ] Review security isolation, retries, version consistency, all 8 spec acceptance scenarios. Resolve actionable findings then rerun affected tests.
-- [ ] Compare accepted concept and rendered desktop/mobile screenshots. Fix spacing, hierarchy, typography, copy and interaction discrepancies.
-- [ ] Document local run/setup, account invite, template import, API configuration, directory sync, backup and known browser limits. Keep servers local; make local Git commits after verified milestones.
-- [ ] Finish only with source evidence for complete implementation; distinguish automated verification from real paid API validation and physical print measurement.
+- [x] Start both servers on loopback, run Python and TypeScript build checks, use real browser UI to set up local admin and import test templates; test full workflow against controlled HTTP provider in isolated test data.
+- [x] User chose to fill API key later in admin settings. Real paid smoke remains explicitly deferred; no fabricated success. See docs/verification.md.
+- [x] Review security isolation, retries, version consistency, all 8 spec acceptance scenarios. Resolve actionable findings then rerun affected tests.
+- [x] Compare accepted concept and rendered desktop/mobile screenshots. Fix spacing, hierarchy, typography, copy and interaction discrepancies.
+- [x] Document local run/setup, account invite, template import, API configuration, directory sync, backup and known browser limits. Keep servers local; make local Git commits after verified milestones.
+- [x] Finish only with source evidence for complete implementation; distinguish automated verification from real paid API validation and physical print measurement.

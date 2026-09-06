@@ -1,0 +1,48 @@
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { Plus, Search, ArrowUp, ArrowDown, X, Upload, Pencil, Eye } from 'lucide-react'
+import { Empty, Modal, Spinner, useNotice } from '../components/UI'
+import { api, patch } from '../lib/api'
+import type { TemplateImage, TemplateSet } from '../lib/types'
+
+type EditImage={existing?:TemplateImage;file?:File;url:string;key:string}
+function SetEditor({set,onClose,onSaved}:{set:TemplateSet|null;onClose:()=>void;onSaved:()=>void}) {
+  const [images,setImages]=useState<EditImage[]>(set?.images.map(im=>({existing:im,url:im.url,key:im.id}))||[])
+  const [name,setName]=useState(set?.name||''),[code,setCode]=useState(set?.code||''),[category,setCategory]=useState(set?.category||'boy')
+  const [busy,setBusy]=useState(false),notice=useNotice()
+  const imageUrls=useRef<string[]>([])
+  useEffect(()=>()=>imageUrls.current.forEach(url=>URL.revokeObjectURL(url)),[])
+  function add(files:FileList|null) {
+    if(!files)return
+    const next=Array.from(files).sort((a,b)=>a.name.localeCompare(b.name,undefined,{numeric:true})).map(file=>({file,url:URL.createObjectURL(file),key:crypto.randomUUID()}))
+    imageUrls.current.push(...next.map(im=>im.url))
+    setImages(prev=>[...prev,...next])
+  }
+  function move(index:number,offset:number) {
+    setImages(prev=>{const next=[...prev];[next[index],next[index+offset]]=[next[index+offset],next[index]];return next})
+  }
+  async function save() {
+    if(images.length!==12){notice('每套必须包含 12 张独立模板','error');return}
+    if(!name.trim()||!code.trim()){notice('请填写套装名称和编号','error');return}
+    setBusy(true)
+    try {
+      const form=new FormData()
+      form.append('name',name);form.append('code',code);form.append('category',category)
+      // Full ordered multipart sequence: retained entries plus new upload indexes.
+      form.append('existing_ids',JSON.stringify(images.filter(im=>im.existing).map(im=>im.existing!.id)))
+      const newImages=images.filter(im=>im.file)
+      form.append('image_order',JSON.stringify(images.map(im=>im.existing?{id:im.existing.id}:{file_index:newImages.findIndex(n=>n.key===im.key)})))
+      newImages.forEach(im=>form.append('files',im.file!))
+      await api(set?'/templates/'+set.id:'/templates',{method:set?'PUT':'POST',body:form})
+      notice(set?'模板新版本已保存，旧任务保持原版本':'模板套装已创建');onSaved();onClose()
+    } catch(e){notice((e as Error).message,'error')} finally{setBusy(false)}
+  }
+  return <Modal title={set?'编辑模板套装':'新建模板套装'} onClose={onClose} wide><div className="form-grid template-meta"><label className="field">套装编号<input value={code} onChange={e=>setCode(e.target.value)} placeholder="例如 B001" disabled={!!set}/></label><label className="field">套装名称<input value={name} onChange={e=>setName(e.target.value)} placeholder="例如 春日出游"/></label><label className="field">分类<select value={category} onChange={e=>setCategory(e.target.value)}><option value="boy">男孩</option><option value="girl">女孩</option></select></label></div><label className="upload-template button"><Upload size={16}/>添加模板图片<input type="file" multiple accept="image/png,image/jpeg,image/webp" onChange={e=>{add(e.target.files);e.target.value=''}}/></label><span className="muted">已选 {images.length} / 12 张 · 可调整排列顺序</span><div className="edit-template-grid">{images.map((image,index)=><div className="edit-template" key={image.key}><img src={image.url} alt={'模板 '+(index+1)}/><div><span>{String(index+1).padStart(2,'0')}</span><button className="icon-button" disabled={index===0} onClick={()=>move(index,-1)} title="向前移动"><ArrowUp size={14}/></button><button className="icon-button" disabled={index===images.length-1} onClick={()=>move(index,1)} title="向后移动"><ArrowDown size={14}/></button><button className="icon-button" onClick={()=>setImages(prev=>prev.filter(im=>im.key!==image.key))} title="移除图片"><X size={14}/></button></div></div>)}</div><div className="modal-footer"><p className="hint">替换模板会创建新版本，已提交任务不受影响。</p><button className="button primary" disabled={busy||images.length!==12} onClick={save}>{busy&&<Spinner/>}保存套装</button></div></Modal>
+}
+export function Templates({templates,admin,onRefresh}:{templates:TemplateSet[];admin:boolean;onRefresh:()=>void}) {
+  const [category,setCategory]=useState('all'),[search,setSearch]=useState(''),[editor,setEditor]=useState<TemplateSet|null|undefined>(undefined),[preview,setPreview]=useState<TemplateSet|null>(null),notice=useNotice()
+  const filtered=useMemo(()=>templates.filter(t=>(category==='all'||t.category===category)&&(t.name+t.code).toLowerCase().includes(search.toLowerCase())),[templates,category,search])
+  async function toggle(set:TemplateSet) {
+    try {await patch('/templates/'+set.id,{active:!set.active});notice(set.active?'套装已下架':'套装已上架');onRefresh()}catch(e){notice((e as Error).message,'error')}
+  }
+  return <><div className="page-heading"><div><h1>模板库</h1><p>固定的模板，丰富的可能。每套 12 张，按编号快速选择。</p></div>{admin&&<button className="button primary" onClick={()=>setEditor(null)}><Plus size={17}/>新建套装</button>}</div><div className="filter-bar"><div className="tabs">{[['all','全部套装'],['boy','男孩'],['girl','女孩']].map(([id,label])=><button className={category===id?'active':''} onClick={()=>setCategory(id)} key={id}>{label}</button>)}</div><label className="search-input"><Search size={16}/><input aria-label="搜索模板" placeholder="搜索名称或编号" value={search} onChange={e=>setSearch(e.target.value)}/></label></div>{filtered.length?<div className="template-library">{filtered.map(set=><article className="library-set" key={set.id}><button className="library-mosaic" onClick={()=>setPreview(set)}>{set.images.slice(0,12).map(im=><img key={im.id} src={im.url} alt={set.name+' 模板 '+im.position} loading="lazy"/>)}</button><div className="library-details"><div><h3>{set.name}</h3><p>{set.code} <span>·</span> 12 张 <span>·</span> v{set.revision}</p></div><span className={'availability '+(set.active?'on':'')}>{set.active?'已上架':'未上架'}</span></div><div className="library-actions"><button className="text-button" onClick={()=>setPreview(set)}><Eye size={15}/>预览</button>{admin&&<><button className="text-button" onClick={()=>setEditor(set)}><Pencil size={15}/>编辑</button><button className="text-button" onClick={()=>toggle(set)}>{set.active?'下架':'上架'}</button></>}</div></article>)}</div>:<Empty title={search?'没有找到匹配的套装':'模板库等待你的第一套作品'} description={admin?'上传 12 张独立图片，为套装设置编号即可使用。':'管理员上架模板后，会在这里显示。'}>{admin&&<button className="button" onClick={()=>setEditor(null)}><Plus size={16}/>新建套装</button>}</Empty>}{editor!==undefined&&<SetEditor set={editor} onClose={()=>setEditor(undefined)} onSaved={onRefresh}/>} {preview&&<Modal title={preview.code+' · '+preview.name} onClose={()=>setPreview(null)} wide><div className="preview-template-grid">{preview.images.map((im,index)=><figure key={im.id}><img src={im.url} alt={'模板 '+(index+1)}/><figcaption>{String(index+1).padStart(2,'0')}</figcaption></figure>)}</div></Modal>}</>
+}
