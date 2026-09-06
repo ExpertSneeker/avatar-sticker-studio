@@ -20,12 +20,12 @@ from .auth import hash_password, owned, public_user, require_admin, require_user
 from .db import Database, uid
 from .schemas import AccountPatch, ActivePatch, Credentials, CleanupConfirm, CleanupPreview, OrderCreate, PasswordChange, PrintSettings, Repack, ResolveUnknown, SettingsPatch, Signup, UploadInit, safe_name
 from .storage import asset_bytes, normalize_image, save_asset
-from .maintenance import cleanup_plan, drain_cleanup, stage_cleanup, storage_stats
+from .maintenance import account_deletion_plan, cleanup_plan, drain_cleanup, stage_cleanup, storage_stats
 from .statistics import summarize
 from .previews import PreviewCache
 from . import credits
 from .auth import can_read_asset, can_use_template, can_edit_template
-from .schemas import AdminCreateUser, CreditAdjustment, CreditSettlement, RerunRequest
+from .schemas import AccountDeleteConfirm, AdminCreateUser, CreditAdjustment, CreditSettlement, RerunRequest
 
 
 def create_app(data_root=None, provider=None, clock=None, start_worker=True):
@@ -287,6 +287,36 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
             for entry in tx.all('sessions'):
                 if entry['user_id']==id: tx.delete('sessions', entry['id'])
             return {'temporary_password':temporary}
+
+    @app.get('/api/admin/users/{id}/deletion')
+    def preview_member_deletion(id: str, request: Request):
+        with db.transaction() as tx:
+            admin(tx, request)
+            return account_deletion_plan(tx, id)[0]
+
+    @app.delete('/api/admin/users/{id}')
+    def delete_member(id: str, data: AccountDeleteConfirm, request: Request):
+        with db.transaction() as tx:
+            actor = admin(tx, request)
+            plan, records, paths = account_deletion_plan(tx, id)
+            if data.username != records['users'][0]['username']:
+                raise HTTPException(409, '输入的用户名不匹配，请重新确认')
+            if not plan['can_delete']:
+                raise HTTPException(409, '该账号有正在处理或结果待核对的任务，请处理完成后再删除')
+            if not secrets.compare_digest(data.preview_token, plan['preview_token']):
+                raise HTTPException(409, '账号数据已变化，请重新预览删除范围')
+            for generation in records['generations']:
+                credits.settle(tx, generation['id'], 'release', now(), actor['id'])
+            if credits.wallet(tx.get('users', id))['frozen']:
+                raise HTTPException(409, '冻结积分与生图记录不一致，请先核对积分')
+            # Keep only anonymous accounting evidence, never free-form names or remarks.
+            ledger_fields = {'id', 'owner', 'created_at', 'event', 'available_delta', 'frozen_delta',
+                             'available_after', 'frozen_after', 'amount', 'actor', 'generation_id', 'order_id', 'item_id'}
+            for entry in tx.all('credit_ledger'):
+                if entry['owner'] == id:
+                    tx.put('credit_ledger', {k:v for k,v in entry.items() if k in ledger_fields})
+            stage_cleanup(tx, records, paths)
+        return {'deleted':True, 'pending_files':drain_cleanup(db)}
 
     @app.get('/api/credits')
     def own_credits(request: Request, days: int = Query(30, ge=0, le=3650), offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=100)):

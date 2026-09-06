@@ -99,6 +99,12 @@ class ActivePatch(Model):
     active: bool
 
 
+class AccountDeleteConfirm(Model):
+    username: str = Field(min_length=3, max_length=40)
+    preview_token: str = Field(pattern=r'^[0-9a-f]{64}$')
+    confirmed: Literal[True]
+
+
 class Repack(Model):
     print_settings: PrintSettings
 

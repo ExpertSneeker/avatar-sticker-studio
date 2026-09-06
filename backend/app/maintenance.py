@@ -4,6 +4,7 @@ import json
 import re
 import shutil
 from datetime import datetime
+from fastapi import HTTPException
 from .previews import CACHE_LIMIT, cache_lock, cached_files, remove_asset_cache
 
 OUTPUT_KINDS = {'raw_result', 'result', 'print', 'overview'}
@@ -70,6 +71,52 @@ def stage_cleanup(tx, records, paths):
             tx.delete(kind, value['id'])
     for path in paths:
         tx.put('cleanup_files', {'id':hashlib.sha256(path.encode()).hexdigest(), 'path':path})
+
+
+def account_deletion_plan(tx, account_id):
+    """Snapshot deletion scope under the same write lock used by worker claims."""
+    target = tx.get('users', account_id)
+    if not target:
+        raise HTTPException(404, '账号不存在')
+    if target['role'] == 'admin':
+        raise HTTPException(403, '不能删除管理员账号')
+    orders = tx.all('orders')
+    selected_orders = [o for o in orders if o['owner'] == account_id]
+    order_ids = {o['id'] for o in selected_orders}
+    items = tx.all('items')
+    selected_items = [i for i in items if i['order_id'] in order_ids or i.get('owner') == account_id]
+    item_ids = {i['id'] for i in selected_items}
+    generations = [g for g in tx.all('generations') if g.get('owner') == account_id or g['order_id'] in order_ids]
+    records = {'users':[target], 'orders':selected_orders, 'items':selected_items, 'generations':generations}
+    protected = _references([o for o in orders if o['id'] not in order_ids], [i for i in items if i['id'] not in item_ids])
+    private_images = set()
+    for kind in ('templates', 'template_revisions'):
+        records[kind] = []
+        for value in tx.all(kind):
+            personal = value.get('scope') == 'personal' and value.get('owner') == account_id
+            if personal:
+                records[kind].append(value)
+            (private_images if personal else protected).update(image['id'] for image in value['images'])
+    assets = [a for a in tx.all('assets') if a.get('owner') == account_id or a['id'] in private_images]
+    if protected.intersection(a['id'] for a in assets):
+        raise HTTPException(409, '该账号素材仍被其他账号或公共模板引用，请先检查素材归属')
+    records['assets'] = assets
+    asset_ids = {a['id'] for a in assets}
+    records['uploads'] = [u for u in tx.all('uploads') if u.get('owner') == account_id or u.get('asset_id') in asset_ids]
+    records['rerun_operations'] = [r for r in tx.all('rerun_operations') if r['order_id'] in order_ids]
+    records['sessions'] = [s for s in tx.all('sessions') if s['user_id'] == account_id]
+    blocked = {i['id'] for i in selected_items if i['status'] in {'running', 'unknown'} or i.get('remote_reserved')}
+    blocked.update(g['item_id'] for g in generations if g['status'] == 'review')
+    paths = ['assets/' + a['file'] for a in assets]
+    paths += [u['id'] + '.upload' for u in records['uploads']]
+    paths += ['preview-cache/' + asset_id for asset_id in asset_ids]
+    # A login does not change the destructive scope. Revoke every session at commit time.
+    fingerprint = json.dumps({k:v for k,v in records.items() if k != 'sessions'}, sort_keys=True)
+    public = {'preview_token':hashlib.sha256(fingerprint.encode()).hexdigest(), 'order_count':len(selected_orders),
+              'template_count':len(records['templates']), 'revision_count':len(records['template_revisions']),
+              'asset_count':len(assets), 'upload_count':len(records['uploads']), 'blocked_count':len(blocked),
+              'can_delete':not blocked, 'frozen_credits':target.get('credits', {}).get('frozen', 0)}
+    return public, records, paths
 
 
 def drain_cleanup(db):
