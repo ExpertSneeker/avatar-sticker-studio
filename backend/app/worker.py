@@ -207,7 +207,7 @@ class Worker:
                     signatures[code] = signature
             ready = len(binaries) == len(items) and all(i['status'] == 'completed' for i in items)
             watermark = owner['watermark'] or owner['display_name']
-            overview_signature = hashlib.sha256(json.dumps([[i.get('result_id') for i in items], watermark, 'bold-outline-shadow-v2']).encode()).hexdigest()
+            overview_signature = hashlib.sha256(json.dumps([[i.get('result_id') for i in items], watermark, 'bold-outline-shadow-v3']).encode()).hexdigest()
             new_overview = None
             if ready and (force or old_signatures.get('_overview') != overview_signature):
                 new_overview = overview([binaries[i['id']] for i in items], watermark)
@@ -231,7 +231,7 @@ class Worker:
                         by_code[code] = [a for a in artifacts if a.get('set_code') == code]
                 artifacts = [a for code in order['template_codes'] for a in by_code[code]]
                 if new_overview is not None:
-                    latest['overview_style'] = 'bold-outline-shadow-v2'
+                    latest['overview_style'] = 'bold-outline-shadow-v3'
                     a = save_asset(self.db, tx, new_overview, order['owner'], 'overview', order_id=order_id)
                     artifacts.append({k: a[k] for k in ('id', 'url', 'sha256', 'size', 'kind')} | {'path': order['name'] + '_水印总览.png'})
                 else:
@@ -266,7 +266,7 @@ class Worker:
                 self.recover()
                 # Startup or racing publishers may have saved images but not their derived files.
                 with self.db.transaction() as tx:
-                    pending = [o['id'] for o in tx.all('orders') if (not o.get('overview_ready') or o.get('overview_style') != 'bold-outline-shadow-v2') and not o.get('processing_error')]
+                    pending = [o['id'] for o in tx.all('orders') if (not o.get('overview_ready') or o.get('overview_style') != 'bold-outline-shadow-v3') and not o.get('processing_error')]
                 for id in pending:
                     await asyncio.to_thread(self.publish, id)
                 while not self.stopping:

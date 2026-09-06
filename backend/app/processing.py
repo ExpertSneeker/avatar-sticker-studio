@@ -105,12 +105,13 @@ def overview(images, watermark):
         # Two strokes make even fallback CJK fonts visibly bold with a separate white outline.
         draw.text(position, text, font=font, fill=(55, 55, 55, 110), stroke_width=4, stroke_fill=(255, 255, 255, 205))
         draw.text(position, text, font=font, fill=(55, 55, 55, 110), stroke_width=1, stroke_fill=(55, 55, 55, 110))
+    text_tile.putalpha(text_tile.getchannel('A').point(lambda alpha: round(alpha * .65)))
     bbox = text_tile.getbbox()
     if bbox:
         text_tile = text_tile.crop(bbox)
     text_tile = text_tile.rotate(45, resample=Image.Resampling.BICUBIC, expand=True)
     layer = Image.new('RGBA', canvas.size)
-    step_x, step_y = max(260, text_tile.width + 35), max(150, text_tile.height + 25)
+    step_x, step_y = max(230, text_tile.width + 10), max(170, text_tile.height + 50)
     for y in range(-100, canvas.height, step_y):
         for x in range(-100, canvas.width, step_x):
             layer.alpha_composite(text_tile, (x, y))
