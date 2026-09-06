@@ -14,7 +14,7 @@ import { bindDestination, directoryPermission, directorySupported, openOrderDire
 import type { Order, TemplateSet, User } from './lib/types'
 
 type Page='workspace'|'templates'|'tasks'|'account'|'admin'|'statistics'|'global-statistics'|'users'
-const navigation=[{id:'workspace',name:'工作台',icon:House},{id:'templates',name:'模板库',icon:LayoutGrid},{id:'tasks',name:'任务中心',icon:ClipboardList},{id:'statistics',name:'统计',icon:BarChart3},{id:'global-statistics',name:'全站统计',icon:ChartNoAxesCombined},{id:'account',name:'账号设置',icon:UserRound},{id:'users',name:'账户管理',icon:UserRound},{id:'admin',name:'管理设置',icon:Settings2}] as const
+const navigation=[{id:'workspace',name:'工作台',icon:House},{id:'templates',name:'模板库',icon:LayoutGrid},{id:'tasks',name:'任务中心',icon:ClipboardList},{id:'statistics',name:'统计',icon:BarChart3},{id:'account',name:'账号设置',icon:UserRound},{id:'users',name:'账户管理',icon:UserRound},{id:'global-statistics',name:'全站统计',icon:ChartNoAxesCombined},{id:'admin',name:'管理设置',icon:Settings2}] as const
 export default function App() {
   const [user,setUser]=useState<User|null>(null),[needsSetup,setNeedsSetup]=useState(false),[loading,setLoading]=useState(true),[error,setError]=useState('')
   const [page,setPage]=useState<Page>('workspace'),[templates,setTemplates]=useState<TemplateSet[]>([]),[orders,setOrders]=useState<Order[]>([])
