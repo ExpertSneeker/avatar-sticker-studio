@@ -30,7 +30,7 @@ test('account creation, credit conflict, private library, successful billing and
   await expect(dialog.getByRole('alert')).toContainText('余额已变化')
   await expect(dialog.getByText(/当前可用 1 · 冻结 0/)).toBeVisible()
   await dialog.getByRole('button',{name:'确认调整',exact:true}).click()
-  await expect(dialog).toHaveCount(0)
+  await expect(page.getByRole('dialog',{name:'调整可用积分',exact:true})).toHaveCount(0)
   await expect(page.locator('.credits-summary strong').first()).toHaveText('25')
   await page.screenshot({path:join(tmpdir(),'avatar-studio-fal-qa','credits-admin.png'),fullPage:true})
 
@@ -68,7 +68,7 @@ test('account creation, credit conflict, private library, successful billing and
     await member.setViewportSize({width:390,height:844})
     expect(await member.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true)
     await member.screenshot({path:join(tmpdir(),'avatar-studio-fal-qa','credits-mobile.png'),fullPage:true})
-    await page.getByRole('button',{name:'返回账号管理',exact:true}).click()
+    await page.getByRole('dialog',{name:'积分测试成员 · 积分与流水',exact:true}).getByRole('button',{name:'关闭',exact:true}).click()
     await row.getByRole('button',{name:'重置密码',exact:true}).click()
     await dialog.getByRole('button',{name:'确认重置',exact:true}).click()
     await expect(dialog.locator('code')).not.toBeEmpty()

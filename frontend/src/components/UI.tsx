@@ -1,3 +1,4 @@
+import { createPortal } from 'react-dom'
 import { previewUrl } from '../lib/preview'
 import { createContext, useContext, useEffect, useId, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
@@ -13,25 +14,40 @@ export function Spinner(){return <LoaderCircle size={16} className="spin" aria-l
 export function Empty({title,description,children}:{title:string;description?:string;children?:ReactNode}) {
   return <div className="empty"><span className="empty-icon"><ImagePlus size={28} strokeWidth={1.3}/></span><h3>{title}</h3>{description&&<p>{description}</p>}{children}</div>
 }
+const modalStack:HTMLDivElement[]=[]
+let modalBodyOverflow=''
+function updateModalLayers(){modalStack.forEach((modal,index)=>{const backdrop=modal.parentElement;if(backdrop)backdrop.inert=index!==modalStack.length-1})}
 export function Modal({title,children,onClose,wide=false}:{title:string;children:ReactNode;onClose:()=>void;wide?:boolean}) {
   const ref=useRef<HTMLDivElement>(null), id=useId(), closeRef=useRef(onClose)
   closeRef.current=onClose
   useEffect(()=>{
-    const previous=document.activeElement as HTMLElement
+    const previous=document.activeElement as HTMLElement,element=ref.current!
+    if(!modalStack.length)modalBodyOverflow=document.body.style.overflow
+    modalStack.push(element)
+    document.body.style.overflow='hidden'
     const controls=()=>Array.from(ref.current?.querySelectorAll<HTMLElement>('button:not(:disabled),input:not(:disabled),select,textarea,[tabindex="0"]')||[])
     controls()[0]?.focus()
+    updateModalLayers()
     const key=(event:KeyboardEvent)=>{
-      if(event.key==='Escape') closeRef.current()
+      if(modalStack.at(-1)!==element)return
+      if(event.key==='Escape'){event.preventDefault();closeRef.current()}
       if(event.key==='Tab') {
         const elements=controls(),first=elements[0],last=elements.at(-1)
         if(event.shiftKey && document.activeElement===first){event.preventDefault();last?.focus()}
         if(!event.shiftKey && document.activeElement===last){event.preventDefault();first?.focus()}
       }
     }
-    document.addEventListener('keydown',key);const old=document.body.style.overflow;document.body.style.overflow='hidden'
-    return ()=>{document.removeEventListener('keydown',key);document.body.style.overflow=old;previous?.focus()}
+    document.addEventListener('keydown',key)
+    return ()=>{
+      document.removeEventListener('keydown',key)
+      const wasTop=modalStack.at(-1)===element
+      modalStack.splice(modalStack.indexOf(element),1);updateModalLayers()
+      if(!modalStack.length)document.body.style.overflow=modalBodyOverflow
+      if(wasTop&&previous?.isConnected)previous.focus()
+    }
   },[])
-  return <div className="modal-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget)onClose()}}><div className={'modal '+(wide?'modal-wide':'')} role="dialog" aria-modal="true" aria-labelledby={id} ref={ref}><div className="modal-head"><h2 id={id}>{title}</h2><button className="icon-button" onClick={onClose} aria-label="关闭"><X size={20}/></button></div>{children}</div></div>
+  const content=<div className="modal-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget)onClose()}}><div className={'modal '+(wide?'modal-wide':'')} role="dialog" aria-modal="true" aria-labelledby={id} ref={ref}><div className="modal-head"><h2 id={id}>{title}</h2><button className="icon-button" onClick={onClose} aria-label="关闭"><X size={20}/></button></div>{children}</div></div>
+  return typeof document==='undefined'?content:createPortal(content,document.body)
 }
 export const statusNames:Record<string,string>={queued:'排队中',pending:'待处理',processing:'生成中',running:'生成中',generating:'生成中',completed:'已完成',complete:'已完成',ready:'已完成',failed:'需处理',partial:'部分完成',unknown:'结果待确认',paused:'已暂停',repacking:'正在排版',archived:'已归档'}
 export function Status({value}:{value:string}) {return <span className={'status status-'+value}><i/>{statusNames[value]||value}</span>}
