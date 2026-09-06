@@ -27,7 +27,7 @@ function FalRecovery({item,busy,onRecover,onResolve}:{item:Item;busy:boolean;onR
 }
 
 export interface DeviceState {saved?:boolean;message:string;version?:number;busy?:boolean;error?:boolean}
-export function Orders({orders,review=false,onRefresh,onSync,onOpenDirectory,device,initialId,onBack}:{orders:Order[];review?:boolean;onRefresh:()=>void;onSync:(id:string,repair?:boolean)=>Promise<void>;onOpenDirectory:(id:string)=>Promise<void>;device:Record<string,DeviceState>;initialId?:string|null;onBack?:()=>void}) {
+export function Orders({orders,review=false,onRefresh,onSync,onRedownload,onOpenDirectory,device,initialId,onBack}:{orders:Order[];review?:boolean;onRefresh:()=>void;onSync:(id:string,repair?:boolean)=>Promise<void>;onRedownload:(ids:string[])=>Promise<void>;onOpenDirectory:(id:string)=>Promise<void>;device:Record<string,DeviceState>;initialId?:string|null;onBack?:()=>void}) {
   const [selected,setSelected]=useState<string|null>(initialId||null),[search,setSearch]=useState(''),[filter,setFilter]=useState('all'),[period,setPeriod]=useState(0)
   const [checked,setChecked]=useState<string[]>([]),[downloading,setDownloading]=useState(false),[preview,setPreview]=useState<Order|null>(null)
   useEffect(()=>{if(initialId)setSelected(initialId)},[initialId])
@@ -36,7 +36,7 @@ export function Orders({orders,review=false,onRefresh,onSync,onOpenDirectory,dev
   const checkedOrders=orders.filter(o=>checked.includes(o.id)&&o.download_ready)
   async function downloadChecked(){
     setDownloading(true)
-    try{for(const order of checkedOrders)await onSync(order.id)}finally{setDownloading(false)}
+    try{await onRedownload(checkedOrders.map(order=>order.id))}finally{setDownloading(false)}
   }
   if(selected)return <OrderDetail id={selected} onBack={()=>{setSelected(null);onBack?.()}} onRefresh={onRefresh} onSync={onSync} device={device[selected]} review={review}/>
   return <>

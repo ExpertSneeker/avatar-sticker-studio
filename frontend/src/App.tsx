@@ -19,7 +19,7 @@ export default function App() {
   const [directory,setDirectory]=useState<FileSystemDirectoryHandle|null>(null),[device,setDevice]=useState<Record<string,DeviceState>>({})
   const [toast,setToast]=useState<{message:string;kind:string}|null>(null),[mobileNav,setMobileNav]=useState(false)
   const [repair,setRepair]=useState<string|null>(null)
-  const addRef=useRef<(()=>void)|null>(null),attempted=useRef<Record<string,number>>({}),syncing=useRef(false),activeSaves=useRef(new Set<string>())
+  const addRef=useRef<(()=>void)|null>(null),attempted=useRef<Record<string,number>>({}),syncing=useRef(false),activeSaves=useRef(new Set<string>()),pickingDownload=useRef(false)
   const session=useRef(new AbortController()),identity=useRef<string|null>(null),authChannel=useRef<BroadcastChannel|null>(null)
   const updateUser=useCallback((next:User|null)=>{
     if(identity.current!==next?.id){session.current.abort();session.current=new AbortController();identity.current=next?.id||null;setOrders([]);setTemplates([]);setDevice({});setRepair(null)}
@@ -55,14 +55,14 @@ export default function App() {
     if(!directorySupported()){notice('当前浏览器请使用订单中的 ZIP 下载','error');return}
     try{const handle=await pickDirectory(user.id);setDirectory(handle);attempted.current={};notice('保存目录已选择：'+handle.name)}catch(e){if((e as Error).name!=='AbortError')notice((e as Error).message,'error')}
   },[notice,user])
-  const save=useCallback(async(id:string,repairModified=false,automatic=false,forceDownload=false)=>{
+  const save=useCallback(async(id:string,repairModified=false,automatic=false,forceDownload=false,targetRoot?:FileSystemDirectoryHandle)=>{
     if(!user||activeSaves.current.has(id))return
     const order=orders.find(o=>o.id===id)
     if(!order)return
     const signal=session.current.signal
     activeSaves.current.add(id)
     try {
-      let handle=await orderDirectory(user.id,order,directory)
+      let handle=targetRoot||(repairModified?(await savedRecord(user.id,id))?.root:null)||await orderDirectory(user.id,order,directory)
       signal.throwIfAborted()
       if(!handle){
         if(automatic)throw new Error('待选择此订单的保存目录')
@@ -79,6 +79,23 @@ export default function App() {
     }catch(e){if(!signal.aborted&&(e as Error).name!=='AbortError')setDevice(prev=>({...prev,[id]:{message:(e as Error).message,error:true}}))}
     finally{activeSaves.current.delete(id)}
   },[directory,orders,user])
+  async function redownload(ids:string[]) {
+    if(!user||pickingDownload.current||!ids.length)return
+    if(!directorySupported()){notice('请使用桌面 Chrome 或 Edge 选择下载目录，或在详情中下载 ZIP','error');return}
+    const signal=session.current.signal
+    pickingDownload.current=true
+    try {
+      const first=orders.find(order=>order.id===ids[0])
+      if(!first)return
+      const previous=await savedRecord(user.id,first.id)
+      const startIn=previous?.root||await orderDirectory(user.id,first,directory)||directory||'downloads'
+      signal.throwIfAborted()
+      const target=await window.showDirectoryPicker({mode:'readwrite',startIn})
+      signal.throwIfAborted()
+      for(const id of ids){signal.throwIfAborted();await save(id,false,false,true,target)}
+    }catch(error){if(!signal.aborted&&(error as Error).name!=='AbortError')notice((error as Error).message,'error')}
+    finally{pickingDownload.current=false}
+  }
   useEffect(()=>{
     if(!user||syncing.current)return
     const signal=session.current.signal
@@ -109,5 +126,5 @@ export default function App() {
   function changePage(next:Page){setPage(next);setMobileNav(false)}
   if(loading)return <div className="startup"><Brand/><Spinner/></div>
   if(!user)return <NoticeContext.Provider value={notice}>{error?<div className="startup"><Brand/><div className="error-banner">{error}</div><button className="button" onClick={()=>void auth()}>重新连接</button></div>:<Auth needsSetup={needsSetup} onLogin={next=>{updateUser(next);authChannel.current?.postMessage({userId:next.id})}}/>}</NoticeContext.Provider>
-  return <NoticeContext.Provider value={notice}><div className="app-shell"><aside className={'sidebar '+(mobileNav?'open':'')}><Brand/><nav aria-label="主导航">{navigation.filter(n=>n.id!=='admin'||user.role==='admin').map(item=><button key={item.id} className={(page===item.id?'active ':'')+(item.id==='account'?'nav-bottom':'')} onClick={()=>changePage(item.id)}><item.icon size={19} strokeWidth={1.65}/>{item.name}{item.id==='tasks'&&orders.some(o=>o.failed||o.unknown)&&<i className="notification-dot"/>}</button>)}</nav><div className="sidebar-profile"><span className="profile-initial">{user.display_name.slice(0,1)}</span><div><strong>{user.display_name}</strong><small>{user.role==='admin'?'管理员':'制作成员'}</small></div><button className="icon-button" title="退出登录" onClick={async()=>{try{await post('/auth/logout');updateUser(null);authChannel.current?.postMessage({userId:null});setPage('workspace')}catch(e){notice((e as Error).message,'error')}}}><LogOut size={16}/></button></div></aside>{mobileNav&&<button className="nav-shade" onClick={()=>setMobileNav(false)} aria-label="关闭导航"/>}<div className="main-shell"><header className="topbar"><div><button className="icon-button mobile-menu" onClick={()=>setMobileNav(!mobileNav)} aria-label="展开导航"><Menu size={22}/></button><h2>{navigation.find(n=>n.id===page)?.name}</h2></div><div><button className="button directory-button" onClick={chooseDirectory}><FolderOpen size={17}/><span>{directory?directory.name:'选择保存目录'}</span></button><button className="button primary" onClick={()=>{changePage('workspace');if(page==='workspace')addRef.current?.()}}><Plus size={17}/>新建订单</button></div></header><main className="content">{error&&<div className="error-banner">{error}<button className="text-button" onClick={()=>void refresh()}>重试</button></div>}{page==='workspace'&&<Workspace key={user.id} user={user} templates={templates} directory={directory} onCreated={()=>void refresh()} addRef={addRef}/>} {page==='templates'&&<Templates templates={templates} admin={user.role==='admin'} onRefresh={()=>void refresh()}/>} {(page==='tasks'||page==='review')&&<Orders key={page} orders={orders} review={page==='review'} onRefresh={()=>void refresh()} onSync={async(id,repairRequested)=>{if(repairRequested)setRepair(id);else await save(id,false,false,true)}} onOpenDirectory={openDirectory} device={device}/>} {page==='account'&&<Account user={user} onUpdate={updateUser}/>} {page==='admin'&&user.role==='admin'&&<Admin/>}</main><footer className="app-footer"><span>头像贴纸工作台</span><span>1K 生图 · 透明 PNG · 独立订单</span></footer></div></div>{repair&&<Modal title="修复已保存文件" onClose={()=>setRepair(null)}><p>将使用服务器成品覆盖此订单中被修改或损坏的已管理文件。你手动修改过的同一文件也会被替换。</p><p className="hint">未由此订单保存的同名文件仍会保留，请为这些冲突选择其他目录。</p><div className="modal-footer"><button className="button" onClick={()=>setRepair(null)}>取消</button><button className="button primary" onClick={()=>{const id=repair;setRepair(null);void save(id,true)}}>确认修复</button></div></Modal>}{toast&&<div className={'toast '+toast.kind} role={toast.kind==='error'?'alert':'status'}>{toast.kind==='error'?<AlertCircle size={18}/>:<CheckCircle2 size={18}/>}<span>{toast.message}</span><button onClick={()=>setToast(null)} aria-label="关闭提示"><X size={16}/></button></div>}</NoticeContext.Provider>
+  return <NoticeContext.Provider value={notice}><div className="app-shell"><aside className={'sidebar '+(mobileNav?'open':'')}><Brand/><nav aria-label="主导航">{navigation.filter(n=>n.id!=='admin'||user.role==='admin').map(item=><button key={item.id} className={(page===item.id?'active ':'')+(item.id==='account'?'nav-bottom':'')} onClick={()=>changePage(item.id)}><item.icon size={19} strokeWidth={1.65}/>{item.name}{item.id==='tasks'&&orders.some(o=>o.failed||o.unknown)&&<i className="notification-dot"/>}</button>)}</nav><div className="sidebar-profile"><span className="profile-initial">{user.display_name.slice(0,1)}</span><div><strong>{user.display_name}</strong><small>{user.role==='admin'?'管理员':'制作成员'}</small></div><button className="icon-button" title="退出登录" onClick={async()=>{try{await post('/auth/logout');updateUser(null);authChannel.current?.postMessage({userId:null});setPage('workspace')}catch(e){notice((e as Error).message,'error')}}}><LogOut size={16}/></button></div></aside>{mobileNav&&<button className="nav-shade" onClick={()=>setMobileNav(false)} aria-label="关闭导航"/>}<div className="main-shell"><header className="topbar"><div><button className="icon-button mobile-menu" onClick={()=>setMobileNav(!mobileNav)} aria-label="展开导航"><Menu size={22}/></button><h2>{navigation.find(n=>n.id===page)?.name}</h2></div><div><button className="button directory-button" onClick={chooseDirectory}><FolderOpen size={17}/><span>{directory?directory.name:'选择保存目录'}</span></button><button className="button primary" onClick={()=>{changePage('workspace');if(page==='workspace')addRef.current?.()}}><Plus size={17}/>新建订单</button></div></header><main className="content">{error&&<div className="error-banner">{error}<button className="text-button" onClick={()=>void refresh()}>重试</button></div>}{page==='workspace'&&<Workspace key={user.id} user={user} templates={templates} directory={directory} onCreated={()=>void refresh()} addRef={addRef}/>} {page==='templates'&&<Templates templates={templates} admin={user.role==='admin'} onRefresh={()=>void refresh()}/>} {(page==='tasks'||page==='review')&&<Orders key={page} orders={orders} review={page==='review'} onRefresh={()=>void refresh()} onSync={async(id,repairRequested)=>{if(repairRequested)setRepair(id);else await redownload([id])}} onRedownload={redownload} onOpenDirectory={openDirectory} device={device}/>} {page==='account'&&<Account user={user} onUpdate={updateUser}/>} {page==='admin'&&user.role==='admin'&&<Admin/>}</main><footer className="app-footer"><span>头像贴纸工作台</span><span>1K 生图 · 透明 PNG · 独立订单</span></footer></div></div>{repair&&<Modal title="修复已保存文件" onClose={()=>setRepair(null)}><p>将使用服务器成品覆盖此订单中被修改或损坏的已管理文件。你手动修改过的同一文件也会被替换。</p><p className="hint">未由此订单保存的同名文件仍会保留，请为这些冲突选择其他目录。</p><div className="modal-footer"><button className="button" onClick={()=>setRepair(null)}>取消</button><button className="button primary" onClick={()=>{const id=repair;setRepair(null);void save(id,true)}}>确认修复</button></div></Modal>}{toast&&<div className={'toast '+toast.kind} role={toast.kind==='error'?'alert':'status'}>{toast.kind==='error'?<AlertCircle size={18}/>:<CheckCircle2 size={18}/>}<span>{toast.message}</span><button onClick={()=>setToast(null)} aria-label="关闭提示"><X size={16}/></button></div>}</NoticeContext.Provider>
 }

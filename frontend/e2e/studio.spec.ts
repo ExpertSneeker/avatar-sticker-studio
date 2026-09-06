@@ -11,12 +11,15 @@ const files = Array.from({ length: 12 }, (_, i) => ({ name: `template-${i+1}.png
 
 async function installDirectoryPicker(page:Page,name='e2e-output') {
   await page.addInitScript(name=>{
-    const state=window as Window & {pickerName?:string;openedDirectory?:string}
+    const state=window as Window & {pickerName?:string;openedDirectory?:string;pickerCalls?:number;pickerCancel?:boolean}
     window.showDirectoryPicker=async options=>{
       if(options?.mode==='read'&&options.startIn&&typeof options.startIn!=='string'){
         state.openedDirectory=options.startIn.name
         return options.startIn as FileSystemDirectoryHandle
       }
+      state.pickerCalls=(state.pickerCalls||0)+1
+      if(state.pickerCancel)throw new DOMException('Cancelled','AbortError')
+      if(!state.pickerName&&options?.startIn&&typeof options.startIn!=='string')return options.startIn as FileSystemDirectoryHandle
       const chosen=state.pickerName||name
       return (await navigator.storage.getDirectory()).getDirectoryHandle(chosen,{create:true})
     }
@@ -102,6 +105,7 @@ test('complete production UI workflow with isolated provider and data', async ({
   await page.evaluate(()=>{(window as Window & {pickerName?:string}).pickerName='e2e-other'})
   await page.locator('.directory-button').click()
   await expect(page.locator('.directory-button')).toHaveText('e2e-other')
+  await page.evaluate(()=>{delete (window as Window & {pickerName?:string}).pickerName})
 
   await page.getByRole('button', { name: '单张结果' }).click()
   await page.locator('.result-card').first().click()
@@ -437,6 +441,33 @@ test('uncertain submission retry keeps its locked identity after an upload failu
   await expect(page.locator('.draft-status')).toHaveText('模拟上传失败')
   await expect(page.getByLabel('订单名称')).toBeDisabled()
   await expect(page.getByTitle('单独选择此订单的保存位置')).toBeDisabled()
+})
+
+test('batch re-download chooses one destination and cancellation writes nothing',async({page})=>{
+  await page.request.post('/api/auth/login',{data:{username:'testadmin',password:'local-test-password'}})
+  const rows=(await(await page.request.get('/api/orders')).json()).filter((order:{download_ready:boolean})=>order.download_ready).slice(0,2)
+  expect(rows).toHaveLength(2)
+  await installDirectoryPicker(page,'manual-download')
+  await page.goto('/')
+  await page.getByRole('navigation').getByRole('button',{name:'任务中心'}).click()
+  for(const order of rows)await page.getByLabel('选择下载 '+order.name,{exact:true}).check()
+  await page.getByRole('button',{name:'重新下载所选订单'}).click()
+  await expect(page.getByRole('button',{name:'重新下载所选订单'})).toBeEnabled()
+  expect(await page.evaluate(()=>(window as Window & {pickerCalls?:number}).pickerCalls)).toBe(1)
+  const savedNames=await page.evaluate(async()=>{
+    const root=await (await navigator.storage.getDirectory()).getDirectoryHandle('manual-download')
+    const names=[];for await(const name of root.keys())names.push(name)
+    return names.sort()
+  })
+  expect(savedNames).toEqual(rows.map((order:{name:string})=>order.name).sort())
+  await expect(page.locator('.directory-button')).toHaveText('选择保存目录')
+  let manifests=0
+  page.on('request',request=>{if(request.url().endsWith('/manifest'))manifests++})
+  await page.evaluate(()=>{(window as Window & {pickerCancel?:boolean}).pickerCancel=true})
+  await page.getByRole('button',{name:'重新下载所选订单'}).click()
+  await expect(page.getByRole('button',{name:'重新下载所选订单'})).toBeEnabled()
+  expect(await page.evaluate(()=>(window as Window & {pickerCalls?:number}).pickerCalls)).toBe(2)
+  expect(manifests).toBe(0)
 })
 
 test('submission date periods intersect search results',async({page})=>{

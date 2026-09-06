@@ -54,6 +54,15 @@ beforeEach(async()=>{
 })
 
 describe('real directory synchronization flow',()=>{
+  it('can re-download to another directory and then back to its previously managed directory',async()=>{
+    await syncOrder('u','o',root.handle(),()=>{})
+    const alternate=new TestDirectory();alternate.name='alternate-output'
+    await syncOrder('u','o',alternate.handle(),()=>{},{forceDownload:true})
+    root.writes=[]
+    await syncOrder('u','o',root.handle(),()=>{},{forceDownload:true})
+    expect(root.writes).toEqual(['a.png','b.png'])
+    expect(await alternate.files.get('a.png')!.text()).toBe('new-a')
+  })
   it('automatically saves a completed order only once even if files disappear or versions change',async()=>{
     await syncOrder('u','o',root.handle(),()=>{},{automatic:true})
     root.files.delete('a.png');root.writes=[]

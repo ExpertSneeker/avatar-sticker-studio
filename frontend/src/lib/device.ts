@@ -4,7 +4,8 @@ import { planSync, safeFilename } from './sync'
 import type { Manifest, Order } from './types'
 
 type WriteIntent={sha256:string;baseline:string|null}
-export interface SavedRecord {version:number;complete:boolean;downloadedOnce?:boolean;hashes:Record<string,string>;root:FileSystemDirectoryHandle;name:string;intents?:Record<string,WriteIntent>}
+interface SavedLocation {root:FileSystemDirectoryHandle;name:string;hashes:Record<string,string>;intents?:Record<string,WriteIntent>}
+export interface SavedRecord {locations?:SavedLocation[];version:number;complete:boolean;downloadedOnce?:boolean;hashes:Record<string,string>;root:FileSystemDirectoryHandle;name:string;intents?:Record<string,WriteIntent>}
 const active=new Set<string>()
 export const directorySupported=()=> 'showDirectoryPicker' in window
 export async function pickDirectory(userId:string) {
@@ -51,9 +52,16 @@ export async function syncOrder(userId:string,orderId:string,root:FileSystemDire
     if(options.automatic&&(previous?.downloadedOnce||previous?.complete))return previous
     if(options.automatic&&!manifest.complete)throw new Error('等待全部成品完成后再自动下载')
     const downloadedOnce=!!(previous?.downloadedOnce||previous?.complete)
-    const sameRoot=previous && await root.isSameEntry(previous.root) && previous.name===manifest.name
-    const owned:Record<string,string>=Object.assign(Object.create(null),sameRoot?previous.hashes:{})
-    const intents:Record<string,WriteIntent>=Object.assign(Object.create(null),sameRoot?previous.intents:{})
+    // Keep ownership per output location so explicitly returning to an earlier folder stays safe.
+    const locations:SavedLocation[]=[]
+    let matching:SavedLocation|undefined
+    const priorLocations=previous?[{root:previous.root,name:previous.name,hashes:previous.hashes,intents:previous.intents},...(previous.locations||[])]:[]
+    for(const location of priorLocations){
+      if(location.name===manifest.name&&await root.isSameEntry(location.root).catch(()=>false))matching??=location
+      else locations.push(location)
+    }
+    const owned:Record<string,string>=Object.assign(Object.create(null),matching?.hashes)
+    const intents:Record<string,WriteIntent>=Object.assign(Object.create(null),matching?.intents)
     const directory=await root.getDirectoryHandle(manifest.name,{create:true})
     const local:Record<string,string>=Object.create(null)
     for await(const [name,entry] of directory.entries()) {
@@ -67,7 +75,7 @@ export async function syncOrder(userId:string,orderId:string,root:FileSystemDire
     const plan=planSync(manifest.files,local,owned,repairModified)
     if(plan.conflicts.length) throw new Error('发现同名或被修改的文件，请另选保存目录：'+plan.conflicts.join('、'))
     const downloads=options.forceDownload?manifest.files.map(file=>file.path):plan.download
-    const persist=()=>writeLocal('saved:'+key,{version:-1,complete:false,downloadedOnce,hashes:owned,intents,root,name:manifest.name})
+    const persist=()=>writeLocal('saved:'+key,{version:-1,complete:false,downloadedOnce,locations,hashes:owned,intents,root,name:manifest.name})
     const actualHash=async(path:string)=>{
       try{return await sha256(await (await directory.getFileHandle(path)).getFile())}
       catch(error){if((error as Error).name==='NotFoundError')return undefined;throw error}
@@ -111,7 +119,7 @@ export async function syncOrder(userId:string,orderId:string,root:FileSystemDire
       const handle=await directory.getFileHandle(path)
       if(await sha256(await handle.getFile())===owned[path]) await directory.removeEntry(path)
     }
-    const record:SavedRecord={version:manifest.version,complete:manifest.complete,downloadedOnce:downloadedOnce||manifest.complete,hashes:Object.fromEntries(manifest.files.map(f=>[f.path,f.sha256])),root,name:manifest.name}
+    const record:SavedRecord={version:manifest.version,complete:manifest.complete,locations,downloadedOnce:downloadedOnce||manifest.complete,hashes:Object.fromEntries(manifest.files.map(f=>[f.path,f.sha256])),root,name:manifest.name}
     await writeLocal('saved:'+key,record)
     onProgress(manifest.complete?'已保存到本机':'已保存当前成品，等待其余图片')
     return record
