@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test'
+import { test, expect, type Page } from '@playwright/test'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -9,10 +9,25 @@ const evidence = (name:string) => join(tmpdir(), 'avatar-studio-fal-qa', name)
 const pixel = readFileSync(new URL('./fixtures/portrait.png',import.meta.url))
 const files = Array.from({ length: 12 }, (_, i) => ({ name: `template-${i+1}.png`, mimeType: 'image/png', buffer: pixel }))
 
+async function installDirectoryPicker(page:Page,name='e2e-output') {
+  await page.addInitScript(name=>{
+    const state=window as Window & {pickerName?:string;openedDirectory?:string}
+    window.showDirectoryPicker=async options=>{
+      if(options?.mode==='read'&&options.startIn&&typeof options.startIn!=='string'){
+        state.openedDirectory=options.startIn.name
+        return options.startIn as FileSystemDirectoryHandle
+      }
+      const chosen=state.pickerName||name
+      return (await navigator.storage.getDirectory()).getDirectoryHandle(chosen,{create:true})
+    }
+  },name)
+}
+
 test('complete production UI workflow with isolated provider and data', async ({ page }) => {
   const errors: string[] = []
   page.on('pageerror', error => errors.push(error.message))
   page.on('console', message=>{if(message.type()==='error')errors.push(message.text())})
+  await installDirectoryPicker(page)
   await page.goto('/')
   await expect(page.getByRole('heading', { name: '创建管理员账号' })).toBeVisible()
   await page.getByLabel('显示名称', { exact: true }).fill('联调管理员')
@@ -42,6 +57,16 @@ test('complete production UI workflow with isolated provider and data', async ({
   await page.getByRole('navigation').getByRole('button', { name: '工作台', exact: true }).click()
   await page.locator('input[type=file]').setInputFiles([{ name: '小满.png', mimeType: 'image/png', buffer: pixel }, { name: '岁岁.png', mimeType: 'image/png', buffer: pixel }])
   await expect(page.getByLabel('订单名称')).toHaveCount(2)
+  await expect(page.getByText('图片名称／保存文件夹名',{exact:true})).toHaveCount(2)
+  await expect(page.getByRole('button',{name:'提交生成'})).toBeDisabled()
+  await page.getByRole('button',{name:'选择保存目录',exact:true}).click()
+  await expect(page.locator('.directory-button')).toHaveText('e2e-output')
+  await page.getByLabel('订单名称').nth(1).fill('岁岁成品')
+  await page.evaluate(()=>{(window as Window & {pickerName?:string}).pickerName='e2e-custom'})
+  await page.getByTitle('单独选择此订单的保存位置').nth(1).click()
+  await expect(page.getByTitle('单独选择此订单的保存位置').nth(1)).toHaveText('e2e-custom')
+  await page.evaluate(()=>{(window as Window & {pickerName?:string}).pickerName='e2e-output'})
+
   await page.getByRole('button', { name: '批量选择模板' }).click()
   await dialog.getByLabel('搜索模板套装').fill('b001')
   await expect(dialog.getByRole('button', { name: /春日出游/ })).toBeVisible()
@@ -72,7 +97,12 @@ test('complete production UI workflow with isolated provider and data', async ({
   const order = orders.find((o: { name: string }) => o.name === '小满')
   await page.getByRole('button', { name: /小满.*B001/ }).click()
   await expect(page.locator('.artifact')).toHaveCount(2)
-  await expect(page.getByText('尚未保存', { exact: true })).toBeVisible()
+  await expect(page.getByText('已保存到本机', { exact: true })).toBeVisible()
+  // New global choices cannot redirect either submitted order.
+  await page.evaluate(()=>{(window as Window & {pickerName?:string}).pickerName='e2e-other'})
+  await page.locator('.directory-button').click()
+  await expect(page.locator('.directory-button')).toHaveText('e2e-other')
+
   await page.getByRole('button', { name: '单张结果' }).click()
   await page.locator('.result-card').first().click()
   await expect(dialog.getByRole('heading')).toHaveText('B001 · 第 1 张')
@@ -90,13 +120,15 @@ test('complete production UI workflow with isolated provider and data', async ({
   expect(download.status()).toBe(200)
   expect(download.headers()['content-type']).toContain('application/zip')
 
-  // Use real browser FileSystem handles and IndexedDB; only the native chooser is substituted.
-  await page.evaluate(async()=>{
-    const output=await (await navigator.storage.getDirectory()).getDirectoryHandle('e2e-output',{create:true})
-    window.showDirectoryPicker=async()=>output
-  })
-  await page.getByRole('button',{name:'选择保存目录',exact:true}).click()
+  // Initial download is complete; changed results require an explicit download.
+  await page.getByRole('button',{name:'保存到本机',exact:true}).click()
   await expect(page.getByText('已保存到本机',{exact:true})).toBeVisible()
+  expect(await page.evaluate(async()=>{
+    const root=await navigator.storage.getDirectory()
+    const custom=await (await root.getDirectoryHandle('e2e-custom')).getDirectoryHandle('岁岁成品')
+    const names=[];for await(const name of custom.keys())names.push(name)
+    return names.length
+  })).toBe(2)
   await page.evaluate(async()=>{
     const dir=await (await (await navigator.storage.getDirectory()).getDirectoryHandle('e2e-output')).getDirectoryHandle('小满')
     await dir.removeEntry('小满_B001_1.png')
@@ -104,18 +136,39 @@ test('complete production UI workflow with isolated provider and data', async ({
     await writer.write('unrelated');await writer.close()
   })
   await page.reload()
+  await page.getByRole('navigation').getByRole('button',{name:'任务中心'}).click()
+  await expect(page.locator('.task-row').filter({has:page.getByRole('heading',{name:'小满',exact:true})})).toContainText('已保存到本机')
+  expect(await page.evaluate(async()=>{
+    const dir=await (await (await navigator.storage.getDirectory()).getDirectoryHandle('e2e-output')).getDirectoryHandle('小满')
+    try{await dir.getFileHandle('小满_B001_1.png');return true}catch{return false}
+  })).toBe(false)
+  await page.getByLabel('选择下载 小满',{exact:true}).check()
+  await page.getByRole('button',{name:'重新下载所选订单'}).click()
   await expect.poll(()=>page.evaluate(async()=>{
     try{
       const dir=await (await (await navigator.storage.getDirectory()).getDirectoryHandle('e2e-output')).getDirectoryHandle('小满')
       return (await (await dir.getFileHandle('小满_B001_1.png')).getFile()).size>0
     }catch{return false}
   })).toBe(true)
-  await page.getByRole('navigation').getByRole('button',{name:'任务中心'}).click()
+  await page.getByRole('button',{name:'预览 小满',exact:true}).click()
+  await expect(dialog.getByRole('img',{name:'小满 预览原图'})).toBeVisible()
+  expect(await dialog.locator('img').evaluate((image:HTMLImageElement)=>image.naturalWidth)).toBe(1024)
+  await page.screenshot({path:evidence('order-preview.png'),animations:'disabled'})
+  await dialog.getByRole('button',{name:'关闭',exact:true}).click()
+  const row=page.locator('.task-row').filter({has:page.getByRole('heading',{name:'小满',exact:true})})
+  await row.getByRole('button',{name:'打开目录'}).click()
+  await expect.poll(()=>page.evaluate(()=>(window as Window & {openedDirectory?:string}).openedDirectory)).toBe('小满')
+  await page.screenshot({path:evidence('order-downloads.png'),animations:'disabled'})
+  await page.setViewportSize({width:390,height:844})
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true)
+  await page.screenshot({path:evidence('order-downloads-mobile.png'),animations:'disabled'})
+  await page.setViewportSize({width:1440,height:1000})
   await page.getByRole('button',{name:/小满.*B001/}).click()
   await page.getByRole('button',{name:'重新排版',exact:true}).click()
   await dialog.getByLabel('单张内容长边').fill('50')
   await dialog.getByRole('button',{name:'开始排版'}).click()
   await expect(page.locator('.artifact')).toHaveCount(2)
+  await page.getByRole('button',{name:'保存到本机',exact:true}).click()
   await expect.poll(()=>page.evaluate(async()=>{
     const dir=await (await (await navigator.storage.getDirectory()).getDirectoryHandle('e2e-output')).getDirectoryHandle('小满')
     const names=[];for await(const name of dir.keys())names.push(name)
@@ -188,7 +241,9 @@ test('switching accounts in another tab invalidates drafts before another upload
 
 test('logout cancels an in-progress batch before a later draft changes accounts',async({page})=>{
   await page.request.post('/api/auth/login',{data:{username:'testadmin',password:'local-test-password'}})
+  await installDirectoryPicker(page)
   await page.goto('/')
+  await page.getByRole('button',{name:'选择保存目录',exact:true}).click()
   await page.locator('input[type=file]').setInputFiles([{name:'A-first.png',mimeType:'image/png',buffer:pixel},{name:'A-second.png',mimeType:'image/png',buffer:pixel}])
   await page.getByRole('button',{name:'批量选择模板'}).click()
   await page.getByRole('dialog').getByRole('button',{name:/春日出游/}).click()
@@ -265,7 +320,9 @@ test('FAL queue recovery preserves original request and requires confirmation be
 
 test('avatar and template uploads send resized bytes and single-order search keeps selections',async({page})=>{
   await page.request.post('/api/auth/login',{data:{username:'testadmin',password:'local-test-password'}})
+  await installDirectoryPicker(page)
   await page.goto('/')
+  await page.getByRole('button',{name:'选择保存目录',exact:true}).click()
   const encoded=await page.evaluate(()=>{
     const canvas=document.createElement('canvas');canvas.width=2048;canvas.height=3072
     const ctx=canvas.getContext('2d')!;ctx.fillStyle='rgba(250,120,60,0.5)';ctx.fillRect(128,128,1792,2816)
@@ -332,4 +389,94 @@ test('avatar and template uploads send resized bytes and single-order search kee
   expect(order.template_codes).toEqual(['R1024','B001'])
   const avatar=await(await page.request.get(order.avatar_url)).body()
   expect([avatar.readUInt32BE(16),avatar.readUInt32BE(20)]).toEqual([1024,1536])
+})
+
+
+test('duplicate name rejection stays editable and destination binding is atomic',async({page})=>{
+  await page.request.post('/api/auth/login',{data:{username:'testadmin',password:'local-test-password'}})
+  await installDirectoryPicker(page,'retry-output')
+  await page.goto('/')
+  await page.getByRole('button',{name:'选择保存目录',exact:true}).click()
+  await page.locator('input[type=file]').setInputFiles({name:'小满.png',mimeType:'image/png',buffer:pixel})
+  await page.getByRole('button',{name:'选择模板',exact:true}).click()
+  await page.getByRole('dialog').getByRole('button',{name:/春日出游/}).click()
+  await page.getByRole('dialog').getByRole('button',{name:'应用到 1 个订单'}).click()
+  await page.getByRole('button',{name:'提交生成',exact:true}).click()
+  await expect(page.locator('.draft-status')).toContainText('修改名称')
+  await expect(page.getByLabel('订单名称')).toBeEnabled()
+  await page.getByLabel('订单名称').fill('改名后成功')
+  await page.getByRole('button',{name:'提交生成',exact:true}).click()
+  await expect(page.getByLabel('订单名称')).toHaveCount(0)
+  const binding=await page.evaluate(async()=>{
+    const path='/src/lib/device.ts',db='/src/lib/db.ts'
+    const {bindDestination}=await import(path),{readLocal}=await import(db)
+    const root=await navigator.storage.getDirectory()
+    const a=await root.getDirectoryHandle('binding-a',{create:true}),b=await root.getDirectoryHandle('binding-b',{create:true})
+    const [first,second]=await Promise.all([bindDestination('fixture','same-token',a),bindDestination('fixture','same-token',b)])
+    const persisted=await readLocal('destination:fixture:same-token')
+    return await first.isSameEntry(second)&&await first.isSameEntry(persisted)
+  })
+  expect(binding).toBe(true)
+})
+
+test('uncertain submission retry keeps its locked identity after an upload failure',async({page})=>{
+  await page.request.post('/api/auth/login',{data:{username:'testadmin',password:'local-test-password'}})
+  await installDirectoryPicker(page,'uncertain-output')
+  await page.goto('/')
+  await page.getByRole('button',{name:'选择保存目录',exact:true}).click()
+  await page.locator('input[type=file]').setInputFiles({name:'待确认订单.png',mimeType:'image/png',buffer:pixel})
+  await page.getByRole('button',{name:'选择模板',exact:true}).click()
+  await page.getByRole('dialog').getByRole('button',{name:/春日出游/}).click()
+  await page.getByRole('dialog').getByRole('button',{name:'应用到 1 个订单'}).click()
+  await page.route('**/api/orders',route=>route.request().method()==='POST'?route.abort('failed'):route.continue())
+  await page.getByRole('button',{name:'提交生成',exact:true}).click()
+  await expect(page.locator('.draft-status')).toContainText('Failed to fetch')
+  await expect(page.getByLabel('订单名称')).toBeDisabled()
+  await page.route('**/api/uploads/init',route=>route.fulfill({status:400,json:{detail:'模拟上传失败'}}))
+  await page.getByRole('button',{name:'提交生成',exact:true}).click()
+  await expect(page.locator('.draft-status')).toHaveText('模拟上传失败')
+  await expect(page.getByLabel('订单名称')).toBeDisabled()
+  await expect(page.getByTitle('单独选择此订单的保存位置')).toBeDisabled()
+})
+
+test('submission date periods intersect search results',async({page})=>{
+  await page.request.post('/api/auth/login',{data:{username:'testadmin',password:'local-test-password'}})
+  const base=(await(await page.request.get('/api/orders')).json())[0]
+  const rows=[0.5,2,5,15,40].map(days=>({...base,id:'date-'+days,name:'日期测试 '+days,created_at:new Date(Date.now()-days*86400000).toISOString(),download_ready:false,artifact_version:0,preview_url:null}))
+  await page.route('**/api/orders',route=>route.fulfill({json:rows}))
+  await page.goto('/')
+  await page.getByRole('navigation').getByRole('button',{name:'任务中心'}).click()
+  await expect(page.locator('.task-row time')).toHaveCount(5)
+  for(const [days,count]of [['1',1],['3',2],['7',3],['30',4],['0',5]] as const){
+    await page.getByLabel('提交时间范围').selectOption(days)
+    await expect(page.locator('.task-row')).toHaveCount(count)
+  }
+  await page.getByLabel('搜索订单',{exact:true}).fill('日期测试 5')
+  await page.getByLabel('提交时间范围').selectOption('3')
+  await expect(page.locator('.task-row')).toHaveCount(0)
+  await page.getByLabel('提交时间范围').selectOption('7')
+  await expect(page.locator('.task-row')).toHaveCount(1)
+  await page.screenshot({path:evidence('order-date-search.png'),animations:'disabled'})
+})
+
+test('admin cleanup previews scope then removes isolated orders while preserving templates',async({page})=>{
+  await page.request.post('/api/auth/login',{data:{username:'testadmin',password:'local-test-password'}})
+  await expect.poll(async()=>(await(await page.request.get('/api/orders')).json()).every((o:{download_ready:boolean})=>o.download_ready),{timeout:40000}).toBe(true)
+  const templates=await(await page.request.get('/api/templates')).json()
+  await page.goto('/')
+  await page.getByRole('navigation').getByRole('button',{name:'管理设置'}).click()
+  await expect(page.getByText('磁盘总容量',{exact:true})).toBeVisible()
+  await page.getByLabel('清理此日期之前的订单').fill('2027-01-01')
+  await page.getByRole('button',{name:'预览清理范围'}).click()
+  const dialog=page.getByRole('dialog')
+  await expect(dialog.getByRole('heading',{name:'确认清理服务器订单'})).toBeVisible()
+  await expect(dialog.getByRole('button',{name:'确认永久清理'})).toBeDisabled()
+  await page.screenshot({path:evidence('admin-cleanup-confirm.png'),animations:'disabled'})
+  await dialog.getByLabel('我确认永久删除上述服务器订单及文件').check()
+  await dialog.getByRole('button',{name:'确认永久清理'}).click()
+  await expect(dialog).not.toBeVisible()
+  expect(await(await page.request.get('/api/orders')).json()).toEqual([])
+  expect(await(await page.request.get('/api/templates')).json()).toEqual(templates)
+  await page.locator('.maintenance-panel').scrollIntoViewIfNeeded()
+  await page.screenshot({path:evidence('admin-storage.png'),animations:'disabled'})
 })

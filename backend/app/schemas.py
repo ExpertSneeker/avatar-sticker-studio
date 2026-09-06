@@ -1,7 +1,7 @@
 from typing import Literal
 import re
 import unicodedata
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 def safe_name(value):
@@ -105,3 +105,12 @@ class Repack(Model):
 
 class ResolveUnknown(Model):
     confirmed_ended: Literal[True]
+
+
+class CleanupPreview(Model):
+    before: AwareDatetime
+
+
+class CleanupConfirm(CleanupPreview):
+    preview_token: str = Field(pattern=r'^[0-9a-f]{64}$')
+    confirmed: Literal[True]

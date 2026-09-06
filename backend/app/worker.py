@@ -121,7 +121,7 @@ class Worker:
                     latest = tx.get('items', item['id'])
                     if latest['status'] != 'running' or latest.get('worker_id') != self.id or latest.get('run_id') != item.get('run_id'):
                         return
-                    raw = save_asset(self.db, tx, encode(image), item['owner'], 'raw_result')
+                    raw = save_asset(self.db, tx, encode(image), item['owner'], 'raw_result', order_id=item['order_id'])
                     latest.update(raw_result_id=raw['id'], remote_reserved=False, processing_stage='postprocess')
                     tx.put('items', latest)
             if image.getchannel('A').getextrema()[0] == 255:
@@ -136,7 +136,7 @@ class Worker:
                 latest = tx.get('items', item['id'])
                 if latest['status'] != 'running' or latest.get('worker_id') != self.id or latest.get('run_id') != item.get('run_id'):
                     return
-                result = save_asset(self.db, tx, encode(image), item['owner'], 'result')
+                result = save_asset(self.db, tx, encode(image), item['owner'], 'result', order_id=item['order_id'])
                 latest.update(status='completed', remote_reserved=False, result_id=result['id'], result_url=result['url'], error=None)
                 tx.put('items', latest)
                 order = tx.get('orders', item['order_id'])
@@ -185,6 +185,8 @@ class Worker:
         try:
             with self.db.transaction() as tx:
                 order = tx.get('orders', order_id)
+                if not order:
+                    return False
                 owner = tx.get('users', order['owner'])
                 items = sorted([i for i in tx.all('items') if i['order_id'] == order_id], key=lambda i: (i['set_index'], i['position']))
                 snapshot = order['content_version']
@@ -205,7 +207,7 @@ class Worker:
                     signatures[code] = signature
             ready = len(binaries) == len(items) and all(i['status'] == 'completed' for i in items)
             watermark = owner['watermark'] or owner['display_name']
-            overview_signature = hashlib.sha256(json.dumps([[i.get('result_id') for i in items], watermark]).encode()).hexdigest()
+            overview_signature = hashlib.sha256(json.dumps([[i.get('result_id') for i in items], watermark, 'bold-outline-shadow-v2']).encode()).hexdigest()
             new_overview = None
             if ready and (force or old_signatures.get('_overview') != overview_signature):
                 new_overview = overview([binaries[i['id']] for i in items], watermark)
@@ -214,7 +216,7 @@ class Worker:
                 return False
             with self.db.transaction() as tx:
                 latest = tx.get('orders', order_id)
-                if latest['content_version'] != snapshot:
+                if not latest or latest['content_version'] != snapshot:
                     return False
                 artifacts = latest['artifacts']
                 by_code = {}
@@ -222,14 +224,15 @@ class Worker:
                     if code in replacements:
                         group = []
                         for filename, data in replacements[code]:
-                            a = save_asset(self.db, tx, data, order['owner'], 'print')
+                            a = save_asset(self.db, tx, data, order['owner'], 'print', order_id=order_id)
                             group.append({k: a[k] for k in ('id', 'url', 'sha256', 'size', 'kind')} | {'path': filename, 'set_code': code})
                         by_code[code] = group
                     else:
                         by_code[code] = [a for a in artifacts if a.get('set_code') == code]
                 artifacts = [a for code in order['template_codes'] for a in by_code[code]]
                 if new_overview is not None:
-                    a = save_asset(self.db, tx, new_overview, order['owner'], 'overview')
+                    latest['overview_style'] = 'bold-outline-shadow-v2'
+                    a = save_asset(self.db, tx, new_overview, order['owner'], 'overview', order_id=order_id)
                     artifacts.append({k: a[k] for k in ('id', 'url', 'sha256', 'size', 'kind')} | {'path': order['name'] + '_水印总览.png'})
                 else:
                     artifacts.extend(a for a in latest['artifacts'] if a['kind'] == 'overview')
@@ -239,6 +242,8 @@ class Worker:
         except Exception as exc:
             with self.db.transaction() as tx:
                 latest = tx.get('orders', order_id)
+                if not latest:
+                    return False
                 latest['processing_error'] = '排版或总览处理失败：' + (str(exc)[:200] if isinstance(exc, ValueError) else type(exc).__name__) + '；已有文件保留，可重新排版'
                 tx.put('orders', latest)
             return False
@@ -261,7 +266,7 @@ class Worker:
                 self.recover()
                 # Startup or racing publishers may have saved images but not their derived files.
                 with self.db.transaction() as tx:
-                    pending = [o['id'] for o in tx.all('orders') if not o.get('overview_ready') and not o.get('processing_error')]
+                    pending = [o['id'] for o in tx.all('orders') if (not o.get('overview_ready') or o.get('overview_style') != 'bold-outline-shadow-v2') and not o.get('processing_error')]
                 for id in pending:
                     await asyncio.to_thread(self.publish, id)
                 while not self.stopping:

@@ -17,8 +17,9 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from .auth import hash_password, owned, public_user, require_admin, require_user, token_hash, verify_password
 from .db import Database, uid
-from .schemas import AccountPatch, ActivePatch, Credentials, OrderCreate, PasswordChange, PrintSettings, Repack, ResolveUnknown, SettingsPatch, Signup, UploadInit, safe_name
+from .schemas import AccountPatch, ActivePatch, Credentials, CleanupConfirm, CleanupPreview, OrderCreate, PasswordChange, PrintSettings, Repack, ResolveUnknown, SettingsPatch, Signup, UploadInit, safe_name
 from .storage import asset_bytes, normalize_image, save_asset
+from .maintenance import cleanup_plan, drain_cleanup, stage_cleanup, storage_stats
 
 
 def create_app(data_root=None, provider=None, clock=None, start_worker=True):
@@ -28,6 +29,7 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
     @asynccontextmanager
     async def lifespan(app):
         from .worker import Worker
+        drain_cleanup(db)
         app.state.worker = Worker(db, provider=provider, clock=now)
         if start_worker:
             await app.state.worker.start()
@@ -189,6 +191,35 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
             config.update(data.model_dump(exclude_none=True))
             tx.put('config', config)
             return public_settings(config)
+
+    @app.get('/api/admin/storage')
+    def storage(request: Request):
+        with db.transaction() as tx:
+            admin(tx, request)
+        return storage_stats(db)
+
+    @app.post('/api/admin/cleanup/preview')
+    def cleanup_preview(data: CleanupPreview, request: Request):
+        with db.transaction() as tx:
+            admin(tx, request)
+            return cleanup_plan(db, tx, data.before)[0]
+
+    @app.post('/api/admin/cleanup')
+    def cleanup(data: CleanupConfirm, request: Request):
+        with db.transaction() as tx:
+            admin(tx, request)
+            plan, records, paths = cleanup_plan(db, tx, data.before)
+            if not secrets.compare_digest(plan['preview_token'], data.preview_token):
+                raise HTTPException(409, '订单状态已变化，请重新预览清理范围')
+            stage_cleanup(tx, records, paths)
+        pending = drain_cleanup(db)
+        return {'deleted_orders':plan['order_count'], 'pending_files':pending, 'storage':storage_stats(db)}
+
+    @app.post('/api/admin/cleanup/retry')
+    def cleanup_retry(request: Request):
+        with db.transaction() as tx:
+            admin(tx, request)
+        return {'pending_files':drain_cleanup(db), 'storage':storage_stats(db)}
 
     @app.post('/api/admin/invites')
     def invite(request: Request):
@@ -385,6 +416,7 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
         status = 'archived' if value.get('archived') else 'paused' if value['paused'] else 'unknown' if unknown else 'failed' if failed or value.get('processing_error') else 'completed' if completed == len(items) and value.get('overview_ready') else 'processing' if any(i['status'] == 'running' for i in items) or completed else 'queued'
         result = {k: value[k] for k in ('id', 'name', 'created_at', 'paused', 'avatar_url', 'template_codes', 'print_settings', 'artifact_version')}
         result.update(status=status, total=len(items), completed=completed, failed=failed, unknown=unknown, archived=value.get('archived', False), processing_error=value.get('processing_error'))
+        result.update(client_token=value.get('client_token'), preview_url=next((a['url'] for a in value.get('artifacts', []) if a['kind'] == 'overview'), None), download_ready=completed == len(items) and bool(value.get('overview_ready')))
         if full:
             result['items'] = [{k: i.get(k) for k in ('id', 'set_code', 'position', 'status', 'error', 'result_url', 'template_url', 'attempt', 'fal_request_id', 'fal_status', 'queue_position')} | {'recoverable': bool(i.get('fal_request_id')) and i['status'] == 'unknown', 'remote_reserved': bool(i.get('remote_reserved')), 'raw_available': bool(i.get('raw_result_id')), 'processing_stage': i.get('processing_stage', 'generate')} for i in items]
             result['artifacts'] = value.get('artifacts', [])

@@ -54,6 +54,25 @@ beforeEach(async()=>{
 })
 
 describe('real directory synchronization flow',()=>{
+  it('automatically saves a completed order only once even if files disappear or versions change',async()=>{
+    await syncOrder('u','o',root.handle(),()=>{},{automatic:true})
+    root.files.delete('a.png');root.writes=[]
+    manifest={...manifest,version:3}
+    await syncOrder('u','o',root.handle(),()=>{},{automatic:true})
+    expect(root.files.has('a.png')).toBe(false)
+    expect(root.writes).toEqual([])
+  })
+  it('explicit re-download fetches and writes all files even when already current',async()=>{
+    await syncOrder('u','o',root.handle(),()=>{})
+    root.writes=[]
+    await syncOrder('u','o',root.handle(),()=>{},{forceDownload:true})
+    expect(root.writes).toEqual(['a.png','b.png'])
+  })
+  it('does not automatically download partial results',async()=>{
+    manifest.complete=false
+    await expect(syncOrder('u','o',root.handle(),()=>{},{automatic:true})).rejects.toThrow('全部成品')
+    expect(root.writes).toEqual([])
+  })
   it('writes verified files and preserves incomplete manifest status',async()=>{
     manifest.complete=false
     const messages:string[]=[]

@@ -4,7 +4,7 @@ import math
 import os
 from pathlib import Path
 import numpy as np
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageFilter
 from .schemas import PrintSettings
 
 
@@ -93,14 +93,25 @@ def overview(images, watermark):
         lines.append(line)
     ascent, descent = font.getmetrics()
     line_height = ascent + descent + 5
-    text_tile = Image.new('RGBA', (420, max(180, len(lines) * line_height + 50)))
+    text_tile = Image.new('RGBA', (400, max(95, len(lines) * line_height + 30)))
+    shadow = Image.new('RGBA', text_tile.size)
+    shadow_draw = ImageDraw.Draw(shadow)
+    for index, text in enumerate(lines):
+        shadow_draw.text((23, 18 + index * line_height), text, font=font, fill=(0, 0, 0, 105), stroke_width=4, stroke_fill=(0, 0, 0, 105))
+    text_tile = Image.alpha_composite(text_tile, shadow.filter(ImageFilter.GaussianBlur(2)))
     draw = ImageDraw.Draw(text_tile)
     for index, text in enumerate(lines):
-        draw.text((30, 25 + index * line_height), text, font=font, fill=(45, 45, 45, 64))
+        position = (20, 14 + index * line_height)
+        # Two strokes make even fallback CJK fonts visibly bold with a separate white outline.
+        draw.text(position, text, font=font, fill=(55, 55, 55, 110), stroke_width=4, stroke_fill=(255, 255, 255, 205))
+        draw.text(position, text, font=font, fill=(55, 55, 55, 110), stroke_width=1, stroke_fill=(55, 55, 55, 110))
+    bbox = text_tile.getbbox()
+    if bbox:
+        text_tile = text_tile.crop(bbox)
     text_tile = text_tile.rotate(45, resample=Image.Resampling.BICUBIC, expand=True)
     layer = Image.new('RGBA', canvas.size)
-    step_x, step_y = max(350, text_tile.width - 60), max(240, text_tile.height - 60)
-    for y in range(-150, canvas.height, step_y):
+    step_x, step_y = max(260, text_tile.width + 35), max(150, text_tile.height + 25)
+    for y in range(-100, canvas.height, step_y):
         for x in range(-100, canvas.width, step_x):
             layer.alpha_composite(text_tile, (x, y))
     return encode(Image.alpha_composite(canvas, layer).convert('RGB'))
@@ -112,7 +123,7 @@ def watermark_font(text):
         if not path or not Path(path).is_file():
             continue
         try:
-            font = ImageFont.truetype(path, 26)
+            font = ImageFont.truetype(path, 40)
             missing = font.getmask('\uffff')
             missing_signature = (missing.size, bytes(missing))
             supported = True

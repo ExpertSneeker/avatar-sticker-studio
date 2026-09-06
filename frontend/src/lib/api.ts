@@ -1,4 +1,5 @@
 let expectedUser:string|null=null
+export class ApiError extends Error {status:number;constructor(message:string,status:number){super(message);this.status=status}}
 export function expectUser(id:string|null){expectedUser=id}
 export async function api<T>(path:string, options:RequestInit={}):Promise<T> {
   const headers = new Headers(options.headers)
@@ -10,7 +11,7 @@ export async function api<T>(path:string, options:RequestInit={}):Promise<T> {
     let message = '请求失败，请稍后重试'
     try { const error = await response.json(); message = typeof error.detail === 'string' ? error.detail : JSON.stringify(error.detail) } catch { message = '服务暂时不可用（'+response.status+'）' }
     if(response.status===401&&requiresUser&&typeof window!=='undefined')window.dispatchEvent(new Event('studio-session-expired'))
-    throw new Error(message)
+    throw new ApiError(message,response.status)
   }
   if (response.status===204) return undefined as T
   return response.json()

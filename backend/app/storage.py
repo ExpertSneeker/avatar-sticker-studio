@@ -22,7 +22,7 @@ def normalize_image(data):
         raise HTTPException(400, '图片无法解码或尺寸超限') from exc
 
 
-def save_asset(db, tx, data, owner, kind='result'):
+def save_asset(db, tx, data, owner, kind='result', order_id=None):
     id = uid()
     path = db.root / 'assets' / (id + '.png')
     path.parent.mkdir(exist_ok=True, mode=0o700)
@@ -32,6 +32,8 @@ def save_asset(db, tx, data, owner, kind='result'):
         os.fsync(file.fileno())
     os.chmod(path, 0o600)
     doc = {'id': id, 'owner': owner, 'kind': kind, 'file': path.name, 'sha256': hashlib.sha256(data).hexdigest(), 'size': len(data), 'url': '/api/assets/' + id}
+    if order_id:
+        doc['order_id'] = order_id
     tx.put('assets', doc)
     return doc
 
