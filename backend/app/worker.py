@@ -7,7 +7,7 @@ import os
 import time
 from .db import uid
 from .processing import decode, encode, overview, pack_set
-from .providers import OpenAIProvider, ProviderFailure, YeziProvider
+from .providers import FalProvider, ProviderFailure, YeziProvider
 from .schemas import PrintSettings
 from .storage import asset_bytes, save_asset
 
@@ -30,7 +30,12 @@ class Worker:
                 if item['status'] == 'running':
                     owner = tx.get('workers', item.get('worker_id', ''))
                     if not owner or owner['expires'] < now:
-                        item.update(status='unknown', error='服务中断时请求已发出，结果待确认；不会自动重新提交')
+                        if item.get('raw_result_id'):
+                            item.update(status='queued', processing_stage='postprocess', next_at=0, remote_reserved=False)
+                        elif item.get('fal_request_id'):
+                            item.update(status='queued', next_at=0, remote_reserved=True)
+                        else:
+                            item.update(status='unknown', remote_reserved=True, error='服务中断时请求可能已发出，结果待确认；不会自动重新提交')
                         tx.put('items', item)
             for owner in tx.all('workers'):
                 if owner['expires'] < now:
@@ -45,23 +50,28 @@ class Worker:
             now = self.clock()
             tx.put('workers', {'id': self.id, 'expires': now + 30})
             config = tx.get('config', 'settings')
-            configured = self.provider is not None or bool(os.environ.get('OPENAI_API_KEY') or config.get('openai_api_key'))
+            configured = self.provider is not None or bool(os.environ.get('FAL_KEY') or config.get('fal_api_key'))
             items = tx.all('items')
-            generation_inflight = sum(i['status'] == 'running' and i.get('processing_stage', 'generate') == 'generate' for i in items)
+            generation_inflight = sum(bool(i.get('remote_reserved')) for i in items)
             processing_inflight = sum(i['status'] == 'running' and i.get('processing_stage') == 'postprocess' for i in items)
-            starts = tx.conn.execute('SELECT COUNT(*) FROM starts WHERE family=? AND at>?', ('openai', now - 60)).fetchone()[0]
-            generation_admitted = configured and generation_inflight < config['max_inflight'] and starts < config['rpm']
+            generation_admitted = configured and generation_inflight < config['max_inflight'] and now >= config.get('fal_retry_at', 0)
             orders = {o['id']: o for o in tx.all('orders')}
             active_users = {u['id'] for u in tx.all('users') if u['active']}
-            item = next((i for i in items if i['status'] == 'queued' and i.get('next_at', 0) <= now and not orders[i['order_id']]['paused'] and i['owner'] in active_users and (processing_inflight < 2 if i.get('processing_stage') == 'postprocess' else generation_admitted)), None)
+            candidates = [i for i in items if i['status'] == 'queued' and i.get('next_at', 0) <= now]
+            # Recovery and saved-image processing do not compete for new remote slots.
+            candidates.sort(key=lambda i: 0 if i.get('fal_request_id') or i.get('processing_stage') == 'postprocess' else 1)
+            item = next((i for i in candidates if
+                (i.get('processing_stage') == 'postprocess' and processing_inflight < 2 and not orders[i['order_id']]['paused'] and i['owner'] in active_users) or
+                (i.get('fal_request_id') and i.get('processing_stage') != 'postprocess' and configured) or
+                (i.get('processing_stage') != 'postprocess' and generation_admitted and not orders[i['order_id']]['paused'] and i['owner'] in active_users)), None)
             if not item:
                 return None
             postprocess = item.get('processing_stage') == 'postprocess'
-            item.update(status='running', worker_id=self.id, run_id=uid(), attempt=item['attempt'] + (0 if postprocess else 1), started_at=now, error=None)
-            tx.put('items', item)
-            tx.conn.execute('DELETE FROM starts WHERE at<?', (now - 86400,))
+            new_request = not postprocess and not item.get('fal_request_id')
+            item.update(status='running', worker_id=self.id, run_id=uid(), attempt=item['attempt'] + int(new_request), started_at=now, error=None)
             if not postprocess:
-                tx.conn.execute('INSERT INTO starts(family,at) VALUES(?,?)', ('openai', now))
+                item['remote_reserved'] = True
+            tx.put('items', item)
             return item
 
     async def execute(self, item):
@@ -86,8 +96,21 @@ class Worker:
                 response_received = True
                 image = decode(data, require_transparency=False)
             else:
-                provider = self.provider or OpenAIProvider(os.environ.get('OPENAI_API_KEY') or config.get('openai_api_key', ''))
-                data = await provider.generate(template=template, avatar=avatar, prompt=order['prompt'])
+                provider = self.provider or FalProvider(os.environ.get('FAL_KEY') or config.get('fal_api_key', ''))
+                if hasattr(provider, 'submit'):
+                    if not item.get('fal_request_id'):
+                        job = await provider.submit(template=template, avatar=avatar, prompt=order['prompt'])
+                        self.checkpoint(item, **job)
+                        return self.defer(item, 2)
+                    if item.get('fal_status') != 'COMPLETED':
+                        progress = await provider.poll(item)
+                        self.checkpoint(item, **progress)
+                        item.update(progress)
+                        if progress['fal_status'] != 'COMPLETED':
+                            return self.defer(item, 2)
+                    data = await provider.result(item)
+                else:
+                    data = await provider.generate(template=template, avatar=avatar, prompt=order['prompt'])
                 response_received = True
                 image = decode(data, require_transparency=False)
                 if image.size != (1024, 1024):
@@ -97,7 +120,7 @@ class Worker:
                     if latest['status'] != 'running' or latest.get('worker_id') != self.id or latest.get('run_id') != item.get('run_id'):
                         return
                     raw = save_asset(self.db, tx, encode(image), item['owner'], 'raw_result')
-                    latest['raw_result_id'] = raw['id']
+                    latest.update(raw_result_id=raw['id'], remote_reserved=False, processing_stage='postprocess')
                     tx.put('items', latest)
             if image.getchannel('A').getextrema()[0] == 255:
                 key = os.environ.get('YEZI_API_KEY') or config.get('cutout_api_key')
@@ -112,14 +135,14 @@ class Worker:
                 if latest['status'] != 'running' or latest.get('worker_id') != self.id or latest.get('run_id') != item.get('run_id'):
                     return
                 result = save_asset(self.db, tx, encode(image), item['owner'], 'result')
-                latest.update(status='completed', result_id=result['id'], result_url=result['url'], error=None)
+                latest.update(status='completed', remote_reserved=False, result_id=result['id'], result_url=result['url'], error=None)
                 tx.put('items', latest)
                 order = tx.get('orders', item['order_id'])
                 order['content_version'] += 1
                 tx.put('orders', order)
             await asyncio.to_thread(self.publish, item['order_id'])
         except asyncio.CancelledError:
-            self.fail(item, ProviderFailure('请求执行时服务停止，结果待确认', 'unknown'))
+            self.fail(item, ProviderFailure('请求执行时服务停止，保留原请求', 'retry' if item.get('fal_request_id') else 'unknown'))
             raise
         except ProviderFailure as exc:
             self.fail(item, exc)
@@ -127,16 +150,33 @@ class Worker:
             # Once a request starts, unexpected failures must not trigger another paid request.
             self.fail(item, ProviderFailure('结果处理失败：' + (str(exc)[:180] if isinstance(exc, ValueError) else type(exc).__name__) + '；不会自动重新生图', 'failed' if response_received else 'unknown'))
 
+    def checkpoint(self, item, **fields):
+        with self.db.transaction() as tx:
+            latest = tx.get('items', item['id'])
+            if latest.get('run_id') == item.get('run_id') and latest.get('worker_id') == self.id:
+                latest.update(fields)
+                tx.put('items', latest)
+
+    def defer(self, item, delay):
+        self.checkpoint(item, status='queued', next_at=self.clock() + delay)
+
     def fail(self, item, error):
         with self.db.transaction() as tx:
             latest = tx.get('items', item['id'])
             if not latest or latest['status'] != 'running' or latest.get('worker_id') != self.id or latest.get('run_id') != item.get('run_id'):
                 return
             retries = latest.get('retry_count', 0)
-            if error.status == 'retry' and retries < 3:
-                latest.update(status='queued', retry_count=retries + 1, next_at=self.clock() + max(error.retry_after, 15 * 2 ** retries), error=str(error))
+            known = bool(latest.get('fal_request_id'))
+            if error.status == 'retry' and (known or retries < 3):
+                latest.update(status='queued', retry_count=retries + 1, next_at=self.clock() + max(error.retry_after, min(600, 15 * 2 ** min(retries, 6))), error=str(error))
             else:
                 latest.update(status='failed' if error.status == 'retry' else error.status, error=str(error))
+            if error.status == 'retry' and not known:
+                config = tx.get('config', 'settings')
+                config['fal_retry_at'] = max(config.get('fal_retry_at', 0), latest.get('next_at', self.clock() + error.retry_after))
+                tx.put('config', config)
+            if error.status == 'failed' or (error.status == 'retry' and not known):
+                latest['remote_reserved'] = False
             tx.put('items', latest)
 
     def publish(self, order_id, force=False, watermark_only=False):

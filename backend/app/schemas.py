@@ -1,3 +1,4 @@
+from typing import Literal
 import re
 import unicodedata
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -88,10 +89,9 @@ class PasswordChange(Model):
 
 
 class SettingsPatch(Model):
-    rpm: int | None = Field(None, ge=1, le=600)
-    max_inflight: int | None = Field(None, ge=1, le=16)
+    max_inflight: int | None = Field(None, ge=1, le=40)
     prompt: str | None = Field(None, min_length=20, max_length=10000)
-    openai_api_key: str | None = Field(None, max_length=500)
+    fal_api_key: str | None = Field(None, max_length=500)
     cutout_api_key: str | None = Field(None, max_length=500)
 
 
@@ -101,3 +101,7 @@ class ActivePatch(Model):
 
 class Repack(Model):
     print_settings: PrintSettings
+
+
+class ResolveUnknown(Model):
+    confirmed_ended: Literal[True]

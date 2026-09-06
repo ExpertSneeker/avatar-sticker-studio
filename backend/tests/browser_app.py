@@ -30,6 +30,6 @@ def factory():
     app = create_app(root.name, provider=BrowserTestProvider())
     with app.state.db.transaction() as tx:
         settings = tx.get('config', 'settings')
-        settings.update(rpm=600, max_inflight=8)
+        settings.update(max_inflight=8)
         tx.put('config', settings)
     return app

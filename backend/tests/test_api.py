@@ -98,10 +98,10 @@ def test_validation_csrf_and_secret_redaction(client):
     assert client.post('/api/uploads/init', json={'filename': '../escape.png', 'size': 1, 'sha256': '0' * 64}).status_code == 422
     assert client.patch('/api/admin/settings', json={'rpm': 0}).status_code == 422
     assert client.patch('/api/account', json={'watermark': 'x'}, headers={'Origin': 'https://evil.example'}).status_code == 403
-    assert client.patch('/api/admin/settings', json={'openai_api_key': 'test-secret-not-real'}).status_code == 200
+    assert client.patch('/api/admin/settings', json={'fal_api_key': 'test-secret-not-real'}).status_code == 200
     text = client.get('/api/admin/settings').text
     assert 'test-secret' not in text
-    assert '"openai_configured":true' in text
+    assert '"fal_configured":true' in text
 
 
 def test_print_options_are_boolean_and_template_replacement_keeps_slot(client):
@@ -162,7 +162,7 @@ def test_expected_account_header_blocks_cross_tab_cookie_switch_before_mutations
         assert init.json()['detail'] == '登录账号已变化，请重新登录'
         assert client.put('/api/uploads/' + pending['id'], headers={**stale, 'Upload-Offset': '0'}, content=raw).status_code == 401
         assert client.post('/api/orders', headers=stale, json={'upload_id': pending['id'], 'name': '不得创建', 'template_ids': [t['id']], 'print_settings': {}, 'client_token': 'blocked'}).status_code == 401
-        assert client.patch('/api/admin/settings', headers=stale, json={'rpm': 99}).status_code == 401
+        assert client.patch('/api/admin/settings', headers=stale, json={'max_inflight': 9}).status_code == 401
         assert client.patch('/api/account', headers=stale, json={'display_name': '不得修改'}).status_code == 401
         assert client.post('/api/auth/logout', headers=stale).status_code == 401
         own = {'X-Studio-User': member['id']}
@@ -172,5 +172,21 @@ def test_expected_account_header_blocks_cross_tab_cookie_switch_before_mutations
         assert tx.get('uploads', pending['id'])['offset'] == 0
         assert not any(u['filename'] == 'blocked.png' for u in tx.all('uploads'))
         assert not tx.all('orders')
-        assert tx.get('config', 'settings')['rpm'] == 5
+        assert tx.get('config', 'settings')['max_inflight'] == 2
         assert tx.get('users', admin_user['id'])['display_name'] == '管理员'
+
+
+def test_fal_config_migration_preserves_other_data(tmp_path, monkeypatch):
+    from backend.app.db import Database
+    monkeypatch.setenv('OPENAI_API_KEY','must-not-be-used')
+    db=Database(tmp_path)
+    with db.transaction() as tx:
+        tx.put('config', {'id':'settings','rpm':5,'max_inflight':9,'prompt':'retained prompt','prompt_version':7,'openai_api_key':'must-not-be-used'})
+        tx.put('orders', {'id':'retained-order'})
+    db=Database(tmp_path)
+    with db.transaction() as tx:
+        c=tx.get('config','settings')
+        assert 'rpm' not in c and 'openai_api_key' not in c
+        assert c['max_inflight']==9 and c['prompt_version']==7
+        assert not c.get('fal_api_key')
+        assert tx.get('orders','retained-order')

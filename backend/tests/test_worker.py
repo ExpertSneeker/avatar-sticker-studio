@@ -44,7 +44,6 @@ def test_global_claim_pause_rate_and_restart_unknown(context):
     assert a.claim() is None
     client.post('/api/orders/' + o['id'] + '/resume')
     for _ in range(3): asyncio.run(a.execute(a.claim()))
-    assert a.claim() is None
     clock.value += 61
     abandoned = a.claim()
     assert abandoned
@@ -175,7 +174,7 @@ def test_background_lifecycle_publishes_and_shutdown_releases_worker(tmp_path):
     app = create_app(tmp_path, provider=provider, start_worker=True)
     with TestClient(app) as client:
         client.post('/api/auth/setup', json={'username': 'admin', 'password': 'safe-password-123', 'display_name': '管理员'})
-        client.patch('/api/admin/settings', json={'rpm': 600, 'max_inflight': 16})
+        client.patch('/api/admin/settings', json={'max_inflight': 16})
         o, _ = order(client)
         deadline = time.monotonic() + 12
         result = None
@@ -233,12 +232,12 @@ def test_reprocess_recovers_paid_raw_after_restart_without_openai(context, monke
         assert item['processing_stage'] == 'postprocess'
         assert restarted_provider.calls == []
         with restarted.state.db.transaction() as tx:
-            assert tx.conn.execute("SELECT COUNT(*) FROM starts WHERE family='openai'").fetchone()[0] == 1
+            assert tx.conn.execute("SELECT COUNT(*) FROM starts WHERE family='openai'").fetchone()[0] == 0
 
 
 def test_missing_result_does_not_starve_other_orders(context):
     app, client, clock, provider = context
-    client.patch('/api/admin/settings', json={'rpm': 600, 'max_inflight': 16})
+    client.patch('/api/admin/settings', json={'max_inflight': 16})
     t = template(client)
     damaged, _ = order(client, name='损坏订单', template_ids=[t['id']])
     asyncio.run(app.state.worker.execute(app.state.worker.claim()))
@@ -266,3 +265,153 @@ def test_missing_result_does_not_starve_other_orders(context):
     assert 'FileNotFoundError' in broken['processing_error']
     assert broken['items'][0]['result_url'] == asset['url']
     assert (app.state.db.root / 'assets' / raw['file']).exists()
+
+
+class QueueProvider:
+    def __init__(self): self.submissions = 0; self.state = 'IN_QUEUE'; self.error = None
+    async def submit(self, **kwargs):
+        self.submissions += 1
+        return dict(fal_request_id=f'job-{self.submissions}', fal_status='IN_QUEUE', fal_status_url='https://queue.fal.run/status', fal_response_url='https://queue.fal.run/result')
+    async def poll(self, job):
+        if self.error: raise self.error
+        return dict(fal_status=self.state, queue_position=3 if self.state=='IN_QUEUE' else None)
+    async def result(self, job): return png(size=(1024,1024))
+
+
+def test_durable_fal_slots_recovery_pause_and_lower_limit(context):
+    from backend.app.providers import ProviderFailure
+    app, client, clock, _ = context
+    p = QueueProvider(); w = app.state.worker; w.provider = p
+    o,_ = order(client)
+    first = w.claim(); asyncio.run(w.execute(first))
+    second = w.claim(); asyncio.run(w.execute(second))
+    assert p.submissions == 2
+    assert w.claim() is None
+    client.patch('/api/admin/settings', json={'max_inflight':1})
+    client.post('/api/orders/'+o['id']+'/pause')
+    clock.value += 100000
+    recovered = w.claim()
+    assert recovered['fal_request_id']=='job-1'
+    clock.value += 61
+    other = Worker(app.state.db, provider=p, clock=clock); other.recover()
+    same = other.claim()
+    assert same['fal_request_id']=='job-1'
+    p.error = ProviderFailure('timeout','retry',30)
+    asyncio.run(other.execute(same))
+    assert p.submissions==2
+    p.error = None; p.state='COMPLETED'; clock.value += 61
+    for _ in range(2): asyncio.run(other.execute(other.claim()))
+    result=client.get('/api/orders/'+o['id']).json()
+    assert result['completed']==2
+    assert p.submissions==2
+
+
+def test_known_unknown_recover_and_rerun_identity(context):
+    from backend.app.providers import ProviderFailure
+    app,client,clock,_=context
+    p=QueueProvider(); w=app.state.worker; w.provider=p
+    o,_=order(client); item=w.claim(); asyncio.run(w.execute(item)); clock.value+=10
+    p.error=ProviderFailure('auth','unknown'); asyncio.run(w.execute(w.claim()))
+    endpoint=f"/api/orders/{o['id']}/items/{item['id']}"
+    assert client.post(endpoint+'/rerun').status_code==409
+    info=client.get('/api/orders/'+o['id']).json()['items'][0]
+    assert info['recoverable'] is True
+    assert client.post(endpoint+'/recover').status_code==200
+    p.error=None; p.state='COMPLETED'; asyncio.run(w.execute(w.claim()))
+    assert client.post(endpoint+'/rerun').status_code==200
+    asyncio.run(w.execute(w.claim()))
+    assert p.submissions==2
+    assert client.get('/api/orders/'+o['id']).json()['items'][0]['fal_request_id']=='job-2'
+
+
+def test_unknown_requires_explicit_resolution_before_rerun(context):
+    from backend.app.providers import ProviderFailure
+    app,client,clock,provider=context
+    o,_=order(client)
+    provider.error=ProviderFailure('ambiguous','unknown')
+    item=app.state.worker.claim(); asyncio.run(app.state.worker.execute(item))
+    url=f"/api/orders/{o['id']}/items/{item['id']}"
+    assert client.post(url+'/rerun').status_code==409
+    assert client.post(url+'/resolve',json={'confirmed_ended':False}).status_code==422
+    assert client.post(url+'/resolve',json={'confirmed_ended':True}).status_code==200
+    with app.state.db.transaction() as tx:
+        saved=tx.get('items',item['id'])
+        assert saved['remote_reserved'] is False
+        assert saved['resolution_history'][0]['resolved_at']==clock.value
+    assert client.post(url+'/rerun').status_code==200
+
+
+def test_download_retry_never_resubmits_and_disabled_owner_keeps_reservation(context):
+    from backend.app.providers import ProviderFailure
+    app,client,clock,_=context
+    p=QueueProvider(); w=app.state.worker; w.provider=p
+    o,_=order(client); item=w.claim(); asyncio.run(w.execute(item))
+    with app.state.db.transaction() as tx:
+        u=tx.get('users',item['owner']); u['active']=False; tx.put('users',u)
+    p.state='COMPLETED'
+    async def unavailable(job): raise ProviderFailure('download interrupted','retry')
+    p.result=unavailable
+    for _ in range(6):
+        clock.value+=1000
+        claim=w.claim(); assert claim['id']==item['id']
+        asyncio.run(w.execute(claim))
+    assert p.submissions==1
+    with app.state.db.transaction() as tx:
+        saved=tx.get('items',item['id'])
+        assert saved['fal_status']=='COMPLETED' and saved['remote_reserved']
+        assert saved['status']=='queued'
+
+
+def test_fal_key_does_not_fall_back_to_openai(context,monkeypatch):
+    app,client,clock,_=context
+    app.state.worker.provider=None
+    monkeypatch.delenv('FAL_KEY',raising=False)
+    monkeypatch.setenv('OPENAI_API_KEY','not-fal')
+    order(client)
+    assert app.state.worker.claim() is None
+    assert client.get('/api/admin/settings').json()['fal_configured'] is False
+    assert client.patch('/api/admin/settings',json={'max_inflight':40}).status_code==200
+    assert client.patch('/api/admin/settings',json={'max_inflight':41}).status_code==422
+
+
+def test_new_claims_not_limited_by_legacy_minute_starts(context):
+    app,client,clock,_=context
+    order(client)
+    with app.state.db.transaction() as tx:
+        tx.conn.executemany('INSERT INTO starts(family,at) VALUES(?,?)',[('openai',clock.value)]*1000)
+    w=app.state.worker
+    for _ in range(8):
+        item=w.claim(); assert item
+        asyncio.run(w.execute(item))
+
+
+def test_submission_429_cools_down_all_workers(context):
+    from backend.app.providers import ProviderFailure
+    app,client,clock,p=context
+    order(client); w=app.state.worker
+    p.error=ProviderFailure('429','retry',45)
+    asyncio.run(w.execute(w.claim()))
+    assert Worker(app.state.db,provider=p,clock=clock).claim() is None
+    clock.value+=46
+    assert w.claim() is not None
+
+
+def test_cancelled_known_request_is_automatically_recoverable(context):
+    app,client,clock,_=context
+    p=QueueProvider();w=app.state.worker;w.provider=p
+    order(client);asyncio.run(w.execute(w.claim()));clock.value+=10
+    async def cancelled(job): raise asyncio.CancelledError()
+    p.poll=cancelled
+    with pytest.raises(asyncio.CancelledError): asyncio.run(w.execute(w.claim()))
+    clock.value+=61
+    claim=Worker(app.state.db,provider=p,clock=clock).claim()
+    assert claim and claim['fal_request_id']=='job-1'
+
+
+def test_queued_raw_postprocess_respects_pause(context):
+    app,client,clock,_=context
+    o,_=order(client);w=app.state.worker
+    item=w.claim();asyncio.run(w.execute(item))
+    client.post('/api/orders/'+o['id']+'/pause')
+    assert client.post(f"/api/orders/{o['id']}/items/{item['id']}/reprocess").status_code==200
+    assert w.claim() is None

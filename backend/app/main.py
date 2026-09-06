@@ -17,7 +17,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from .auth import hash_password, owned, public_user, require_admin, require_user, token_hash, verify_password
 from .db import Database, uid
-from .schemas import AccountPatch, ActivePatch, Credentials, OrderCreate, PasswordChange, PrintSettings, Repack, SettingsPatch, Signup, UploadInit, safe_name
+from .schemas import AccountPatch, ActivePatch, Credentials, OrderCreate, PasswordChange, PrintSettings, Repack, ResolveUnknown, SettingsPatch, Signup, UploadInit, safe_name
 from .storage import asset_bytes, normalize_image, save_asset
 
 
@@ -171,7 +171,7 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
             return {'ok': True}
 
     def public_settings(config):
-        return {**{k: config[k] for k in ('rpm', 'max_inflight', 'prompt', 'prompt_version')}, 'openai_configured': bool(os.environ.get('OPENAI_API_KEY') or config.get('openai_api_key')), 'cutout_configured': bool(os.environ.get('YEZI_API_KEY') or config.get('cutout_api_key'))}
+        return {**{k: config[k] for k in ('max_inflight', 'prompt', 'prompt_version')}, 'fal_configured': bool(os.environ.get('FAL_KEY') or config.get('fal_api_key')), 'cutout_configured': bool(os.environ.get('YEZI_API_KEY') or config.get('cutout_api_key'))}
 
     @app.get('/api/admin/settings')
     def get_settings(request: Request):
@@ -386,7 +386,7 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
         result = {k: value[k] for k in ('id', 'name', 'created_at', 'paused', 'avatar_url', 'template_codes', 'print_settings', 'artifact_version')}
         result.update(status=status, total=len(items), completed=completed, failed=failed, unknown=unknown, archived=value.get('archived', False), processing_error=value.get('processing_error'))
         if full:
-            result['items'] = [{k: i.get(k) for k in ('id', 'set_code', 'position', 'status', 'error', 'result_url', 'template_url', 'attempt')} | {'raw_available': bool(i.get('raw_result_id')), 'processing_stage': i.get('processing_stage', 'generate')} for i in items]
+            result['items'] = [{k: i.get(k) for k in ('id', 'set_code', 'position', 'status', 'error', 'result_url', 'template_url', 'attempt', 'fal_request_id', 'fal_status', 'queue_position')} | {'recoverable': bool(i.get('fal_request_id')) and i['status'] == 'unknown', 'remote_reserved': bool(i.get('remote_reserved')), 'raw_available': bool(i.get('raw_result_id')), 'processing_stage': i.get('processing_stage', 'generate')} for i in items]
             result['artifacts'] = value.get('artifacts', [])
         return result
 
@@ -459,12 +459,42 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
             item = tx.get('items', item_id)
             if not item or item['order_id'] != id:
                 raise HTTPException(404, '图片不存在')
-            if item['status'] in {'running', 'queued'}:
+            if item['status'] in {'running', 'queued'} or item.get('remote_reserved'):
                 raise HTTPException(409, '该图片正在排队或生成')
+            for field in ('fal_request_id', 'fal_status', 'fal_status_url', 'fal_response_url', 'queue_position', 'raw_result_id'):
+                item.pop(field, None)
             item.update(status='queued', error=None, retry_count=0, next_at=0, processing_stage='generate')
             tx.put('items', item)
             value.update(overview_ready=False, content_version=value['content_version'] + 1)
             tx.put('orders', value)
+            return order_public(tx, value, True)
+
+    @app.post('/api/orders/{id}/items/{item_id}/resolve')
+    def resolve_item(id: str, item_id: str, data: ResolveUnknown, request: Request):
+        with db.transaction() as tx:
+            actor = user(tx, request)
+            value = owned(tx, 'orders', id, actor)
+            item = tx.get('items', item_id)
+            if not item or item['order_id'] != id:
+                raise HTTPException(404, '图片不存在')
+            if item['status'] != 'unknown':
+                raise HTTPException(409, '仅可确认待确认请求已经结束')
+            item.setdefault('resolution_history', []).append({'resolved_at': now(), 'resolved_by': actor['id'], 'fal_request_id': item.get('fal_request_id'), 'fal_status': item.get('fal_status'), 'error': item.get('error')})
+            item.update(status='failed', remote_reserved=False, error='已人工确认原请求结束；可单独选择重跑')
+            tx.put('items', item)
+            return order_public(tx, value, True)
+
+    @app.post('/api/orders/{id}/items/{item_id}/recover')
+    def recover_item(id: str, item_id: str, request: Request):
+        with db.transaction() as tx:
+            value = owned(tx, 'orders', id, user(tx, request))
+            item = tx.get('items', item_id)
+            if not item or item['order_id'] != id:
+                raise HTTPException(404, '图片不存在')
+            if item['status'] != 'unknown' or not item.get('fal_request_id'):
+                raise HTTPException(409, '仅可恢复有FAL编号的待确认请求')
+            item.update(status='queued', next_at=0, error=None, remote_reserved=True)
+            tx.put('items', item)
             return order_public(tx, value, True)
 
     @app.post('/api/orders/{id}/items/{item_id}/reprocess')
@@ -474,7 +504,7 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
             item = tx.get('items', item_id)
             if not item or item['order_id'] != id:
                 raise HTTPException(404, '图片不存在')
-            if item['status'] in {'running', 'queued'}:
+            if item['status'] in {'running', 'queued'} or item.get('remote_reserved'):
                 raise HTTPException(409, '该图片正在排队或处理')
             if not item.get('raw_result_id') or not tx.get('assets', item['raw_result_id']):
                 raise HTTPException(409, '没有可恢复的原始生成结果')

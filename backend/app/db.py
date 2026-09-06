@@ -41,7 +41,11 @@ class Database:
         with self.transaction() as tx:
             tx.conn.executescript('CREATE TABLE IF NOT EXISTS records (kind TEXT NOT NULL,id TEXT NOT NULL,doc TEXT NOT NULL,PRIMARY KEY(kind,id)); CREATE TABLE IF NOT EXISTS starts (family TEXT NOT NULL,at REAL NOT NULL); CREATE INDEX IF NOT EXISTS starts_time ON starts(family,at);')
             if not tx.get('config', 'settings'):
-                tx.put('config', {'id': 'settings', 'rpm': 5, 'max_inflight': 2, 'prompt': DEFAULT_PROMPT, 'prompt_version': 1})
+                tx.put('config', {'id': 'settings', 'max_inflight': 2, 'prompt': DEFAULT_PROMPT, 'prompt_version': 1})
+            config = tx.get('config', 'settings')
+            config.pop('rpm', None)
+            config.pop('openai_api_key', None)
+            tx.put('config', config)
         os.chmod(self.path, 0o600)
 
     @contextmanager
