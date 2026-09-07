@@ -1,3 +1,4 @@
+import './Orders.css'
 import { searchMatcher } from '../lib/search'
 import { ImagePreview } from '../components/ImagePreview'
 import { previewUrl } from '../lib/preview'
@@ -5,7 +6,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Search, Download, Pause, Play, RefreshCw, SlidersHorizontal, FolderCheck, Archive, FolderOpen, Image as ImageIcon } from 'lucide-react'
 import { Empty, Modal, PrintFields, Progress, Spinner, Status, useNotice } from '../components/UI'
 import { api, post } from '../lib/api'
-import { submissionDate, withinPeriod } from '../lib/orders'
+import { submissionDate, dateFilterBounds, withinDateBounds, localDateInput } from '../lib/orders'
 import type { Artifact, Item, Order, PrintSettings } from '../lib/types'
 
 function ItemStatus({item}:{item:Item}) {
@@ -31,11 +32,13 @@ function FalRecovery({item,busy,onRecover,onResolve}:{item:Item;busy:boolean;onR
 
 export interface DeviceState {saved?:boolean;message:string;version?:number;busy?:boolean;error?:boolean}
 export function Orders({orders,review=false,onRefresh,onSync,onRedownload,onOpenDirectory,device,initialId,onBack}:{orders:Order[];review?:boolean;onRefresh:()=>void;onSync:(id:string,repair?:boolean)=>Promise<void>;onRedownload:(ids:string[])=>Promise<void>;onOpenDirectory:(id:string)=>Promise<void>;device:Record<string,DeviceState>;initialId?:string|null;onBack?:()=>void}) {
-  const [selected,setSelected]=useState<string|null>(initialId||null),[search,setSearch]=useState(''),[filter,setFilter]=useState('all'),[period,setPeriod]=useState(0)
+  const [selected,setSelected]=useState<string|null>(initialId||null),[search,setSearch]=useState(''),[filter,setFilter]=useState('all'),[period,setPeriod]=useState('0')
+  const [date,setDate]=useState(()=>localDateInput()),[start,setStart]=useState(()=>localDateInput()),[end,setEnd]=useState(()=>localDateInput())
   const [checked,setChecked]=useState<string[]>([]),[downloading,setDownloading]=useState(false),[preview,setPreview]=useState<Order|null>(null)
   useEffect(()=>{if(initialId)setSelected(initialId)},[initialId])
   const matchesSearch=searchMatcher(search)
-  const filtered=orders.filter(o=>withinPeriod(o.created_at,period)&&matchesSearch(o.name+' '+o.template_codes.join(' '))&&(filter==='all'||(filter==='active'?!['completed','complete','ready'].includes(o.status):filter==='issues'?o.failed>0||o.unknown>0||!!o.processing_error:['completed','complete','ready'].includes(o.status))))
+  const dateBounds=dateFilterBounds({mode:period,date,start,end})
+  const filtered=orders.filter(o=>withinDateBounds(o.created_at,dateBounds)&&matchesSearch(o.name+' '+o.template_codes.join(' '))&&(filter==='all'||(filter==='active'?!['completed','complete','ready'].includes(o.status):filter==='issues'?o.failed>0||o.unknown>0||!!o.processing_error:['completed','complete','ready'].includes(o.status))))
   const eligible=filtered.filter(o=>o.download_ready&&!device[o.id]?.busy)
   const checkedOrders=orders.filter(o=>checked.includes(o.id)&&o.download_ready)
   async function downloadChecked(ids=checkedOrders.map(order=>order.id)){
@@ -45,7 +48,15 @@ export function Orders({orders,review=false,onRefresh,onSync,onRedownload,onOpen
 
   return <>
     <div className="page-heading"><div><h1>{review?'结果检查':'任务中心'}</h1><p>{review?'逐张查看合成效果，有问题的图片可以单独重跑。':'全部成品完成后自动下载一次；需要再次保存时，勾选订单重新下载。'}</p></div><button className="button" onClick={onRefresh}><RefreshCw size={16}/>刷新</button></div>
-    <div className="filter-bar"><div className="tabs">{[['all','全部'],['active','处理中'],['complete','已完成'],['issues','需处理']].map(([id,label])=><button key={id} className={filter===id?'active':''} onClick={()=>setFilter(id)}>{label}{id==='issues'&&orders.some(o=>o.failed||o.unknown)?<i className="notification-dot"/>:null}</button>)}</div><label className="period-filter">提交时间<select aria-label="提交时间范围" value={period} onChange={e=>setPeriod(Number(e.target.value))}>{[[0,'全部时间'],[1,'最近 24 小时'],[3,'最近 3 天'],[7,'最近 7 天'],[30,'最近 30 天']].map(([value,label])=><option key={value} value={value}>{label}</option>)}</select></label><label className="search-input"><Search size={16}/><input placeholder="搜索订单或套装编号" aria-label="搜索订单" value={search} onChange={e=>setSearch(e.target.value)}/></label></div>
+    <div className="filter-bar"><div className="tabs">{[['all','全部'],['active','处理中'],['complete','已完成'],['issues','需处理']].map(([id,label])=><button key={id} className={filter===id?'active':''} onClick={()=>setFilter(id)}>{label}{id==='issues'&&orders.some(o=>o.failed||o.unknown)?<i className="notification-dot"/>:null}</button>)}</div><label className="period-filter">提交时间<select aria-label="提交时间范围" value={period} onChange={e=>setPeriod(e.target.value)}>{[['0','全部时间'],['today','今天'],['date','指定日期'],['range','日期范围'],['1','最近 24 小时'],['3','最近 3 天'],['7','最近 7 天'],['30','最近 30 天']].map(([value,label])=><option key={value} value={value}>{label}</option>)}</select></label><label className="search-input"><Search size={16}/><input placeholder="搜索订单或套装编号" aria-label="搜索订单" value={search} onChange={e=>setSearch(e.target.value)}/></label></div>
+    {(period==='date'||period==='range')&&<div className="order-calendar-filter" role="group" aria-label="订单日期筛选">
+      {period==='date'?<label>提交日期<input type="date" value={date} aria-invalid={!!dateBounds.error} aria-describedby="order-date-hint" onChange={e=>setDate(e.target.value)}/></label>:<>
+        <label>开始日期<input type="date" value={start} aria-invalid={!!dateBounds.error} aria-describedby="order-date-hint" onChange={e=>setStart(e.target.value)}/></label>
+        <span className="order-date-separator" aria-hidden="true">至</span>
+        <label>结束日期<input type="date" value={end} aria-invalid={!!dateBounds.error} aria-describedby="order-date-hint" onChange={e=>setEnd(e.target.value)}/></label>
+      </>}
+      <span className={'hint'+(dateBounds.error?' error-text':'')} id="order-date-hint" role={dateBounds.error?'alert':undefined}>{dateBounds.error||'按本地日期筛选，包含所选日期全天'}</span>
+    </div>}
     {filtered.length?<>
       <div className="toolbar order-download-toolbar"><label className="check-line"><input type="checkbox" aria-label="全选可下载订单" disabled={downloading||!eligible.length} checked={!!eligible.length&&eligible.every(o=>checked.includes(o.id))} onChange={e=>setChecked(prev=>e.target.checked?Array.from(new Set([...prev,...eligible.map(o=>o.id)])):prev.filter(id=>!eligible.some(o=>o.id===id)))}/>全选可下载订单</label><span className="hint">已选 {checkedOrders.length} 个</span><button className="button" disabled={downloading||!checkedOrders.length||checkedOrders.some(o=>device[o.id]?.busy)} onClick={()=>void downloadChecked()}>{downloading?<Spinner/>:<Download size={16}/>}重新下载所选订单</button></div>
       <div className="task-list">{filtered.map(order=><article className="task-row" key={order.id}>
@@ -55,7 +66,7 @@ export function Orders({orders,review=false,onRefresh,onSync,onRedownload,onOpen
         <div className="task-device"><FolderCheck size={16}/><span className={device[order.id]?.error?'error-text':''}>{device[order.id]?.message||'尚未保存到本机'}</span></div>
         <div className="task-actions"><button className="order-preview-thumb" disabled={!order.preview_url} aria-label={'预览 '+order.name} title={order.preview_url?'点击查看水印预览':'全部成品完成后显示预览'} onClick={()=>setPreview(order)}>{order.preview_url?<img src={previewUrl(order.preview_url)} alt={order.name+' 水印预览'} loading="lazy"/>:<ImageIcon size={22}/>}</button><button className="button" onClick={()=>setSelected(order.id)}>{review?'检查图片':'查看详情'}</button><button className="button" disabled={downloading||!order.download_ready||device[order.id]?.busy} onClick={()=>void downloadChecked([order.id])}><Download size={16}/>下载</button><button className="button open-order-directory" disabled={!device[order.id]?.saved||device[order.id]?.busy} title="在系统目录窗口中打开此订单的文件夹" onClick={()=>void onOpenDirectory(order.id)}><FolderOpen size={16}/>打开目录</button></div>
       </article>)}</div>
-    </>:<Empty title={search?'没有匹配的订单':'这里还没有订单'} description="在工作台上传头像并提交后，处理进度会显示在这里。"/>}
+    </>:<Empty title={dateBounds.error?'请调整日期筛选':search||period!=='0'||filter!=='all'?'没有匹配的订单':'这里还没有订单'} description={dateBounds.error|| (search||period!=='0'||filter!=='all'?'可调整日期、任务状态或搜索条件。':'在工作台上传头像并提交后，处理进度会显示在这里。')}/>}
     {selected&&<Modal title={(orders.find(order=>order.id===selected)?.name||'任务')+' · 任务详情'} className="task-detail-dialog" onClose={()=>{setSelected(null);onBack?.()}} wide><OrderDetail key={selected} id={selected} onBack={()=>{setSelected(null);onBack?.()}} onRefresh={onRefresh} onSync={onSync} device={device[selected]} review={review}/></Modal>}
     {preview?.preview_url&&<Modal title={preview.name+' · 水印预览'} onClose={()=>setPreview(null)} wide><ImagePreview defaultOriginal className="order-preview-original" src={preview.preview_url} alt={preview.name+' 水印预览'}/></Modal>}
   </>
