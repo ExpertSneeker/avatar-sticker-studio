@@ -1,3 +1,4 @@
+import { searchMatcher } from '../lib/search'
 import { createPortal } from 'react-dom'
 import { previewUrl } from '../lib/preview'
 import { createContext, useContext, useEffect, useId, useRef, useState } from 'react'
@@ -59,8 +60,8 @@ export const TEMPLATE_CATEGORIES=[['boy','男孩'],['girl','女孩'],['animal','
 export function TemplateChooser({templates,value,onChange}:{templates:TemplateSet[];value:string[];onChange:(value:string[])=>void}) {
   const [search,setSearch]=useState(''),[scope,setScope]=useState('all'),[category,setCategory]=useState('all')
   const available=templates.filter(t=>t.active)
-  const query=search.trim().toLocaleLowerCase()
-  const filtered=available.filter(set=>(scope==='all'||(set.scope||'public')===scope)&&(category==='all'||set.category===category)&&(set.name+' '+set.code).toLocaleLowerCase().includes(query))
+  const matchesSearch=searchMatcher(search)
+  const filtered=available.filter(set=>(scope==='all'||(set.scope||'public')===scope)&&(category==='all'||set.category===category)&&matchesSearch(set.name+' '+set.code))
   if(!available.length)return <Empty title="还没有可用模板" description="可在模板库创建并上架个人套装，或等待管理员上架公共模板。"/>
   return <>
     <div className="template-search-bar">
@@ -70,7 +71,7 @@ export function TemplateChooser({templates,value,onChange}:{templates:TemplateSe
       {search&&<button className="text-button" onClick={()=>setSearch('')}>清空搜索</button>}
       <span className="hint">找到 {filtered.length} 套</span>
     </div>
-    {filtered.length?<div className="template-picker">{filtered.map(set=><button type="button" key={set.id} className={'template-option '+(value.includes(set.id)?'selected':'')} onClick={()=>onChange(value.includes(set.id)?value.filter(id=>id!==set.id):[...value,set.id])}><div className="set-mosaic">{set.images.slice(0,4).map(im=><img key={im.id} src={previewUrl(im.url)} alt=""/>)}</div><div><strong>{set.name}</strong><span>{set.code} · 12 张 · {set.scope==='personal'?'个人':'公共'}</span></div><span className="pick-check">{value.includes(set.id)?<Check size={16}/>:<Plus size={16}/>}</span></button>)}</div>:<Empty title="没有匹配的模板套装" description="试试其他分类、归属或搜索词；已选套装会保留。"/>}
+    {filtered.length?<div className="template-picker">{filtered.map(set=><button type="button" key={set.id} className={'template-option '+(value.includes(set.id)?'selected':'')} onClick={()=>onChange(value.includes(set.id)?value.filter(id=>id!==set.id):[...value,set.id])}><div className="set-mosaic">{set.images.slice(0,4).map(im=><img key={im.id} src={previewUrl(im.url)} alt=""/>)}</div><div><strong>{set.name}</strong><span>{set.code} · {set.images.length} 张 · {set.scope==='personal'?'个人':'公共'}</span></div><span className="pick-check">{value.includes(set.id)?<Check size={16}/>:<Plus size={16}/>}</span></button>)}</div>:<Empty title="没有匹配的模板套装" description="试试其他分类、归属或搜索词；已选套装会保留。"/>}
   </>
 }
 export function Progress({value,total}:{value:number;total:number}) {return <div className="progress-track"><span style={{transform:`scaleX(${total?Math.min(1,value/total):0})`}}/></div>}

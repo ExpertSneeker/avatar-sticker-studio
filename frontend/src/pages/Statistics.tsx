@@ -1,3 +1,4 @@
+import { searchMatcher } from '../lib/search'
 import { CreditsPanel } from '../components/Credits'
 import { useEffect, useState } from 'react'
 import { RefreshCw, BarChart3, Users, ArrowUpRight } from 'lucide-react'
@@ -32,8 +33,9 @@ export function Statistics({global=false}:{global?:boolean}) {
   },[days,global,revision])
   const summary=data?.summary
   const max=Math.max(1,...(data?.daily.map(day=>day[metric])||[]))
-  const templates=data?.templates.filter(row=>row.code.toLocaleLowerCase().includes(templateSearch.trim().toLocaleLowerCase()))||[]
-  const members=data?.members?.filter(row=>(row.display_name+' '+row.username).toLocaleLowerCase().includes(memberSearch.trim().toLocaleLowerCase()))||[]
+  const matchesTemplate=searchMatcher(templateSearch), matchesMember=searchMatcher(memberSearch)
+  const templates=data?.templates.filter(row=>matchesTemplate(row.code))||[]
+  const members=data?.members?.filter(row=>matchesMember(row.display_name+' '+row.username))||[]
   const cards=summary?[
     ['提交订单',summary.orders,'所选时间内提交'],['成品齐全',summary.ready_orders,'单张、拼图与总览已完成'],
     ['计划图片',summary.images,'包含尚未开始的单张'],['单张已完成',summary.completed,`完成率 ${summary.images?(100*summary.completed/summary.images).toFixed(1):'0.0'}%`],

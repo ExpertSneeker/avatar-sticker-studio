@@ -14,6 +14,7 @@ from urllib.parse import urlparse
 
 from fastapi import FastAPI, HTTPException, Request, Response, Query
 from typing import Literal
+from starlette.datastructures import UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from .auth import hash_password, owned, public_user, require_admin, require_user, token_hash, verify_password
@@ -391,69 +392,76 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
     async def write_template(request, id=None):
         with db.transaction() as tx:
             user(tx, request)
-        form = await request.form(max_files=12, max_fields=10, max_part_size=25 * 1024 * 1024)
-        try:
-            code, name = safe_name(str(form.get('code', ''))), safe_name(str(form.get('name', '')))
-            category = str(form.get('category', '男孩'))
-            if category not in {'男孩', '女孩', '动物', '通用', 'boy', 'girl', 'animal', 'general'}:
-                raise ValueError('分类必须为男孩、女孩、动物或通用')
-            category = {'男孩': 'boy', '女孩': 'girl', '动物':'animal', '通用':'general'}.get(category, category)
-            retained = json.loads(str(form.get('existing_ids', '[]')))
-            image_order = json.loads(str(form['image_order'])) if form.get('image_order') else None
-            if not isinstance(retained, list) or len(set(retained)) != len(retained):
-                raise ValueError('保留图片列表无效')
-        except (ValueError, TypeError) as exc:
-            raise HTTPException(422, str(exc)) from exc
-        files = form.getlist('files') or form.getlist('files[]')
-        if len(retained) + len(files) != 12:
-            raise HTTPException(422, '每套必须恰好12张独立图片')
-        binaries = []
-        for f in files:
-            data = await f.read(25 * 1024 * 1024 + 1)
-            if len(data) > 25 * 1024 * 1024:
-                raise HTTPException(413, '单张模板不得超过25MB')
-            binaries.append(normalize_image(data))
-        with db.transaction() as tx:
-            actor = user(tx, request)
-            old = tx.get('templates', id) if id else None
-            if id and not old:
-                raise HTTPException(404, '套装不存在')
-            if old and not can_edit_template(old, actor):
-                raise HTTPException(403 if actor['role']=='admin' else 404, '无权编辑此套装')
-            scope = str(form.get('scope', old.get('scope','public') if old else 'public' if actor['role']=='admin' else 'personal'))
-            if scope not in {'public','personal'} or old and scope!=old.get('scope','public'):
-                raise HTTPException(422, '模板归属创建后不可更改')
-            if scope=='public' and actor['role']!='admin':
-                raise HTTPException(403, '只有管理员可维护公共模板')
-            template_owner = old.get('owner') if old else actor['id'] if scope=='personal' else None
-            if any(t['code'].casefold() == code.casefold() and t['id'] != id for t in tx.all('templates')):
-                raise HTTPException(409, '套装编号已存在')
-            available = {x['id']: x for x in old['images']} if old else {}
-            if any(x not in available for x in retained):
-                raise HTTPException(422, '保留图片不属于当前套装版本')
-            images = [dict(available[x]) for x in retained]
-            for data in binaries:
-                asset = save_asset(db, tx, data, template_owner, 'template')
-                asset['scope'] = scope
-                tx.put('assets', asset)
-                images.append({'id': asset['id'], 'url': asset['url']})
+        async with request.form(max_files=100, max_fields=10, max_part_size=25 * 1024 * 1024) as form:
+            try:
+                code, name = safe_name(str(form.get('code', ''))), safe_name(str(form.get('name', '')))
+                category = str(form.get('category', '男孩'))
+                if category not in {'男孩', '女孩', '动物', '通用', 'boy', 'girl', 'animal', 'general'}:
+                    raise ValueError('分类必须为男孩、女孩、动物或通用')
+                category = {'男孩': 'boy', '女孩': 'girl', '动物':'animal', '通用':'general'}.get(category, category)
+                retained = json.loads(str(form.get('existing_ids', '[]')))
+                image_order = json.loads(str(form['image_order'])) if form.get('image_order') else None
+                if not isinstance(retained, list) or len(set(retained)) != len(retained):
+                    raise ValueError('保留图片列表无效')
+            except (ValueError, TypeError) as exc:
+                raise HTTPException(422, str(exc)) from exc
+            files = form.getlist('files') or form.getlist('files[]')
+            count = len(retained) + len(files)
+            if not 1 <= count <= 100:
+                raise HTTPException(422, '每套需包含1至100张独立图片')
+            order_keys = [('id', x) for x in retained] + [('file_index', i) for i in range(len(files))]
             if image_order is not None:
                 try:
-                    if not isinstance(image_order, list) or len(image_order) != 12:
-                        raise ValueError('图片顺序必须包含12项')
-                    newly_added = images[len(retained):]
-                    ordered = [dict(available[entry['id']]) if set(entry) == {'id'} and entry['id'] in retained else newly_added[entry['file_index']] if set(entry) == {'file_index'} and type(entry['file_index']) is int and 0 <= entry['file_index'] < len(newly_added) else None for entry in image_order]
-                    if any(x is None for x in ordered) or len({x['id'] for x in ordered}) != 12:
-                        raise ValueError('图片顺序包含重复或无效引用')
-                    images = ordered
-                except (KeyError, TypeError, IndexError, ValueError) as exc:
+                    ordered_keys = [next(iter(entry.items())) for entry in image_order if isinstance(entry, dict) and len(entry) == 1]
+                    if not isinstance(image_order, list) or len(ordered_keys) != count or any(k == 'file_index' and type(v) is not int for k, v in ordered_keys) or set(ordered_keys) != set(order_keys):
+                        raise ValueError()
+                    order_keys = ordered_keys
+                except (ValueError, TypeError, StopIteration, AttributeError) as exc:
                     raise HTTPException(422, '图片顺序包含重复或无效引用') from exc
-            for position, image in enumerate(images, 1):
-                image['position'] = position
-            value = {'scope':scope, 'owner':template_owner, 'id': id or uid(), 'code': code, 'name': name, 'category': category, 'active': old['active'] if old else True, 'revision': old['revision'] + 1 if old else 1, 'images': images}
-            tx.put('template_revisions', {**value, 'id': value['id'] + ':' + str(value['revision']), 'template_id': value['id']})
-            tx.put('templates', value)
-            return template_public(value, actor)
+            for f in files:
+                if not isinstance(f, UploadFile):
+                    raise HTTPException(422, '模板图片上传无效')
+                data = await f.read(25 * 1024 * 1024 + 1)
+                if len(data) > 25 * 1024 * 1024:
+                    raise HTTPException(413, '单张模板不得超过25MB')
+                normalized = normalize_image(data)
+                await f.seek(0)
+                await f.write(normalized)
+                f.file.truncate()
+                await f.seek(0)
+                del data, normalized
+            with db.transaction() as tx:
+                actor = user(tx, request)
+                old = tx.get('templates', id) if id else None
+                if id and not old:
+                    raise HTTPException(404, '套装不存在')
+                if old and not can_edit_template(old, actor):
+                    raise HTTPException(403 if actor['role']=='admin' else 404, '无权编辑此套装')
+                scope = str(form.get('scope', old.get('scope','public') if old else 'public' if actor['role']=='admin' else 'personal'))
+                if scope not in {'public','personal'} or old and scope!=old.get('scope','public'):
+                    raise HTTPException(422, '模板归属创建后不可更改')
+                if scope=='public' and actor['role']!='admin':
+                    raise HTTPException(403, '只有管理员可维护公共模板')
+                template_owner = old.get('owner') if old else actor['id'] if scope=='personal' else None
+                if any(t['code'].casefold() == code.casefold() and t['id'] != id for t in tx.all('templates')):
+                    raise HTTPException(409, '套装编号已存在')
+                available = {x['id']: x for x in old['images']} if old else {}
+                if any(x not in available for x in retained):
+                    raise HTTPException(422, '保留图片不属于当前套装版本')
+                images = [dict(available[x]) for x in retained]
+                for f in files:
+                    asset = save_asset(db, tx, f.file.read(), template_owner, 'template')
+                    asset['scope'] = scope
+                    tx.put('assets', asset)
+                    images.append({'id': asset['id'], 'url': asset['url']})
+                lookup = dict(zip([('id', x) for x in retained] + [('file_index', i) for i in range(len(files))], images))
+                images = [lookup[key] for key in order_keys]
+                for position, image in enumerate(images, 1):
+                    image['position'] = position
+                value = {'scope':scope, 'owner':template_owner, 'id': id or uid(), 'code': code, 'name': name, 'category': category, 'active': old['active'] if old else True, 'revision': old['revision'] + 1 if old else 1, 'images': images}
+                tx.put('template_revisions', {**value, 'id': value['id'] + ':' + str(value['revision']), 'template_id': value['id']})
+                tx.put('templates', value)
+                return template_public(value, actor)
 
     @app.post('/api/templates')
     async def add_template(request: Request):
@@ -592,6 +600,8 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
             sets = [tx.get('templates', id) for id in data.template_ids]
             if any(not can_use_template(t, actor) for t in sets):
                 raise HTTPException(422, '所选套装不存在或已下架')
+            if not 1 <= sum(len(t['images']) for t in sets) <= 360:
+                raise HTTPException(422, '每个订单最多生成360张图片，请拆分订单')
             config = tx.get('config', 'settings')
             value = {'id': uid(), 'owner': actor['id'], 'name': data.name, 'normalized_name': data.name.casefold(), 'output_name': output_name, 'client_token': data.client_token, 'created_at': datetime.fromtimestamp(now(), timezone.utc).isoformat(), 'paused': False, 'archived': False, 'avatar_url': avatar['url'], 'avatar_id': avatar['asset_id'], 'template_codes': [t['code'] for t in sets], 'template_snapshots': sets, 'prompt': config['prompt'], 'prompt_version': config['prompt_version'], 'print_settings': data.print_settings.model_dump(), 'artifact_version': 0, 'artifacts': [], 'overview_ready': False, 'content_version': 0}
             tx.put('orders', value)

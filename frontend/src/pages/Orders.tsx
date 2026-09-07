@@ -1,3 +1,4 @@
+import { searchMatcher } from '../lib/search'
 import { ImagePreview } from '../components/ImagePreview'
 import { previewUrl } from '../lib/preview'
 import { useEffect, useRef, useState } from 'react'
@@ -33,7 +34,8 @@ export function Orders({orders,review=false,onRefresh,onSync,onRedownload,onOpen
   const [selected,setSelected]=useState<string|null>(initialId||null),[search,setSearch]=useState(''),[filter,setFilter]=useState('all'),[period,setPeriod]=useState(0)
   const [checked,setChecked]=useState<string[]>([]),[downloading,setDownloading]=useState(false),[preview,setPreview]=useState<Order|null>(null)
   useEffect(()=>{if(initialId)setSelected(initialId)},[initialId])
-  const filtered=orders.filter(o=>withinPeriod(o.created_at,period)&&(o.name+' '+o.template_codes.join(' ')).toLowerCase().includes(search.toLowerCase())&&(filter==='all'||(filter==='active'?!['completed','complete','ready'].includes(o.status):filter==='issues'?o.failed>0||o.unknown>0||!!o.processing_error:['completed','complete','ready'].includes(o.status))))
+  const matchesSearch=searchMatcher(search)
+  const filtered=orders.filter(o=>withinPeriod(o.created_at,period)&&matchesSearch(o.name+' '+o.template_codes.join(' '))&&(filter==='all'||(filter==='active'?!['completed','complete','ready'].includes(o.status):filter==='issues'?o.failed>0||o.unknown>0||!!o.processing_error:['completed','complete','ready'].includes(o.status))))
   const eligible=filtered.filter(o=>o.download_ready&&!device[o.id]?.busy)
   const checkedOrders=orders.filter(o=>checked.includes(o.id)&&o.download_ready)
   async function downloadChecked(ids=checkedOrders.map(order=>order.id)){

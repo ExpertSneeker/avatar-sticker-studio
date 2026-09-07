@@ -506,9 +506,11 @@ test('submission date periods intersect search results',async({page})=>{
   }
   await page.getByLabel('搜索订单',{exact:true}).fill('日期测试 5')
   await page.getByLabel('提交时间范围').selectOption('3')
-  await expect(page.locator('.task-row')).toHaveCount(0)
-  await page.getByLabel('提交时间范围').selectOption('7')
+  // Multi-term substring search also matches the 5 in 0.5 and 15.
   await expect(page.locator('.task-row')).toHaveCount(1)
+  await expect(page.locator('.task-row')).toContainText('日期测试 0.5')
+  await page.getByLabel('提交时间范围').selectOption('7')
+  await expect(page.locator('.task-row')).toHaveCount(2)
   await page.screenshot({path:evidence('order-date-search.png'),animations:'disabled'})
 })
 

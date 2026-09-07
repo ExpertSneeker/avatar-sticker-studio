@@ -72,8 +72,8 @@ def print_header(name, settings, width):
 
 
 def pack_set(images, name, code, settings):
-    if len(images) != 12:
-        raise ValueError('仅发布完整的12张套装')
+    if not images:
+        raise ValueError('套装至少需要一张图片')
     px = lambda mm: round(mm / 25.4 * settings.dpi)
     width, height = px(settings.paper_width_mm), px(settings.paper_height_mm)
     margin, gap = px(settings.margin_mm), px(settings.gap_mm)
@@ -123,14 +123,20 @@ def pack_set(images, name, code, settings):
     return pages
 
 
-def overview(images, watermark):
-    if not images or len(images) % 12:
+def overview(images, watermark, group_sizes=None):
+    group_sizes = [len(images)] if group_sizes is None else group_sizes
+    if not images or not group_sizes or any(type(n) is not int or n < 1 for n in group_sizes) or sum(group_sizes) != len(images):
         raise ValueError('总览必须包含全部完整套装')
-    canvas = Image.new('RGBA', (1024, 768 * (len(images) // 12)), 'white')
-    for index, data in enumerate(images):
-        image = decode(data)
-        image = image.convert('RGBa').resize((256, 256), Image.Resampling.LANCZOS).convert('RGBA')
-        canvas.alpha_composite(image, ((index % 4) * 256, (index // 4) * 256))
+    rows = sum((n + 3) // 4 for n in group_sizes)
+    canvas = Image.new('RGBA', (1024, 256 * rows), 'white')
+    offset, row = 0, 0
+    for size in group_sizes:
+        for index, data in enumerate(images[offset:offset + size]):
+            image = decode(data)
+            image = image.convert('RGBa').resize((256, 256), Image.Resampling.LANCZOS).convert('RGBA')
+            canvas.alpha_composite(image, ((index % 4) * 256, (row + index // 4) * 256))
+        offset += size
+        row += (size + 3) // 4
     font = watermark_font(watermark)
     # Wrap every character into measured lines; never clip the last part of a 100-character watermark.
     lines, line = [], ''

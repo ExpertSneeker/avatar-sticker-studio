@@ -1,3 +1,4 @@
+import { searchMatcher } from '../lib/search'
 import { useEffect, useRef, useState } from 'react'
 import { Copy, Plus, RefreshCw, Search, Users } from 'lucide-react'
 import { api, patch, post } from '../lib/api'
@@ -32,7 +33,8 @@ export function Accounts() {
     return()=>controller.abort()
   },[revision])
   const refresh=()=>setRevision(value=>value+1)
-  const matches=users.filter(user=>(user.display_name+' '+user.username).toLocaleLowerCase().includes(query.trim().toLocaleLowerCase())&&(status==='all'||(status==='active'?user.active!==false:user.active===false)))
+  const matchesSearch=searchMatcher(query)
+  const matches=users.filter(user=>matchesSearch(user.display_name+' '+user.username)&&(status==='all'||(status==='active'?user.active!==false:user.active===false)))
   function closeCreate(){if(busy)return;setCreateOpen(false);setUsername('');setDisplayName('');setFormError('')}
   function closeConfirm(){if(busy)return;setConfirm(null);setFormError('')}
   async function createAccount() {

@@ -241,6 +241,8 @@ class Worker:
                 items = sorted([i for i in tx.all('items') if i['order_id'] == order_id], key=lambda i: (i['set_index'], i['position']))
                 snapshot = order['content_version']
                 binaries = {i['id']: asset_bytes(self.db, tx.get('assets', i['result_id'])) for i in items if i.get('result_id')}
+            set_sizes = {t['code']: len(t['images']) for t in order.get('template_snapshots', [])}
+            group_sizes = [set_sizes.get(code, sum(i['set_code'] == code for i in items)) for code in order['template_codes']]
             settings = PrintSettings(**order['print_settings'])
             old_signatures = order.get('publish_signatures', {})
             signatures = dict(old_signatures)
@@ -248,19 +250,19 @@ class Worker:
             if not watermark_only:
                 for code in order['template_codes']:
                     group = [i for i in items if i['set_code'] == code]
-                    if len(group) != 12 or any(not i.get('result_id') for i in group):
+                    if not group or len(group) != set_sizes.get(code, len(group)) or any(not i.get('result_id') for i in group):
                         continue
                     signature = hashlib.sha256(json.dumps([PRINT_LAYOUT_STYLE, order['name'], settings.model_dump(), [i['result_id'] for i in group]], sort_keys=True).encode()).hexdigest()
                     if not force and signature == old_signatures.get(code):
                         continue
                     replacements[code] = pack_set([binaries[i['id']] for i in group], order['name'], code, settings)
                     signatures[code] = signature
-            ready = len(binaries) == len(items) and all(i['status'] == 'completed' for i in items)
+            ready = bool(items) and all(group_sizes) and len(binaries) == len(items) == sum(group_sizes) and all(i['status'] == 'completed' for i in items)
             watermark = owner['watermark'] or owner['display_name']
-            overview_signature = hashlib.sha256(json.dumps([[i.get('result_id') for i in items], watermark, 'bold-outline-shadow-v3']).encode()).hexdigest()
+            overview_signature = hashlib.sha256(json.dumps([[i.get('result_id') for i in items], group_sizes, watermark, 'bold-outline-shadow-v3']).encode()).hexdigest()
             new_overview = None
             if ready and (force or old_signatures.get('_overview') != overview_signature):
-                new_overview = overview([binaries[i['id']] for i in items], watermark)
+                new_overview = overview([binaries[i['id']] for i in items], watermark, group_sizes)
                 signatures['_overview'] = overview_signature
             if not replacements and new_overview is None:
                 return False
