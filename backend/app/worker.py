@@ -241,6 +241,9 @@ class Worker:
                 items = sorted([i for i in tx.all('items') if i['order_id'] == order_id], key=lambda i: (i['set_index'], i['position']))
                 snapshot = order['content_version']
                 binaries = {i['id']: asset_bytes(self.db, tx.get('assets', i['result_id'])) for i in items if i.get('result_id')}
+            if order.get('selection_version') == 2:
+                from .publication import publish_selection
+                return publish_selection(self.db, order, items, binaries, owner, force, watermark_only)
             set_sizes = {t['code']: len(t['images']) for t in order.get('template_snapshots', [])}
             group_sizes = [set_sizes.get(code, sum(i['set_code'] == code for i in items)) for code in order['template_codes']]
             settings = PrintSettings(**order['print_settings'])

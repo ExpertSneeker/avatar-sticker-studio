@@ -112,3 +112,60 @@ Nested image, layout and repair dialogs close independently. Without a global
 output directory, choosing a draft's location first establishes that global
 default. Subsequent choices override only the chosen draft; submitted destination
 bindings are unchanged. Cancelled native pickers leave drafts and defaults intact.
+
+## Public sticker library release and A1 replacement
+
+The `public-stickers-v1` startup migration preserves legacy template IDs,
+revision records and order snapshots while normalizing the catalog as public
+resources (`owner: null`). Only administrators and members explicitly granted
+`can_edit_library` may edit it. Account removal and date cleanup protect assets
+referenced by current or historical sticker revisions.
+
+Transfer the twelve original `A1-01.png` through `A1-12.png` into a private
+staging directory readable by `sticker`. Validate SHA256 against the local files.
+After tests and the frontend build pass, deploy the new release, wait for no
+running/unknown or remotely reserved items, and stop the service for the switch.
+Run from the new release as the service owner:
+
+```sh
+sudo -u sticker /opt/avatar-sticker-studio/venv/bin/python -m backend.app.import_a1 \
+  --data-dir /var/lib/avatar-sticker-studio \
+  --source-dir /var/lib/avatar-sticker-studio/reference-assets/A1
+```
+
+The importer validates all twelve PNGs and case-insensitive code collisions
+before changing the catalog. It preserves the exact original PNG bytes, stages
+public assets durably with deterministic IDs, then creates twelve sticker rows
+and a fresh `模板A` / `MB-A` in one SQLite transaction. The previous active MB-A
+is archived (`deleted: true`, `active: false`); its IDs, revision rows, assets and
+historical order references remain. This is a replacement of the active catalog
+entry, not an edit of old order snapshots. Missing/invalid input or collisions
+abort without switching the active template. Interrupted staging can be rerun.
+A completed repeat with the same sources returns `already_imported: true` and
+does not create duplicate records. Changed sources require a separately reviewed
+migration rather than silently rerunning this import.
+
+Select the release with an atomic `current` symlink replacement and start the
+service. Verify `/api/ready`, SQLite integrity, all twelve sticker source hashes,
+exactly one unarchived MB-A, preserved old revision and order records, public
+asset access and member editing permissions. Do not overwrite live data with a
+local database. Retain the previous release; reverting code alone does not undo
+this catalog migration, so check backward compatibility before rollback.
+
+During this replacement, migration-derived members used exclusively by the old
+MB-A are archived too. The migration marker records exactly which sticker IDs it
+created. Independently uploaded stickers and members referenced by any surviving
+template remain active; original sticker revisions and assets are preserved.
+
+`deploy/audit_public_library.py` opens SQLite with `mode=ro` and reports record
+hashes and file integrity without printing user credentials or provider settings.
+Before switching, capture its stdout privately as a baseline. After migration,
+pass `--baseline /path/to/baseline.json`; it checks old order, item, generation,
+credit, upload and template-revision hashes plus every old asset file, while
+allowing the intentional catalog additions. Run with in-flight work drained.
+
+```sh
+python3 deploy/audit_public_library.py --data-dir /var/lib/avatar-sticker-studio
+python3 deploy/audit_public_library.py --data-dir /var/lib/avatar-sticker-studio \
+  --baseline /private/path/before-public-library.json
+```

@@ -29,7 +29,8 @@ def cleanup_plan(db, tx, before):
     remaining_items = [i for i in items if i['order_id'] not in ids]
     referenced = _references(chosen, selected_items)
     protected = _references(remaining_orders, remaining_items)
-    protected.update(im['id'] for kind in ('templates', 'template_revisions') for t in tx.all(kind) for im in t['images'])
+    protected.update(im['id'] for kind in ('templates', 'template_revisions') for t in tx.all(kind) for im in t.get('images', []))
+    protected.update(s['image']['id'] for kind in ('stickers', 'sticker_revisions') for s in tx.all(kind))
     surviving_owners = {o['owner'] for o in remaining_orders}
     deleted_owners = {o['owner'] for o in chosen}
     all_refs = _references(orders, items)
@@ -89,15 +90,14 @@ def account_deletion_plan(tx, account_id):
     generations = [g for g in tx.all('generations') if g.get('owner') == account_id or g['order_id'] in order_ids]
     records = {'users':[target], 'orders':selected_orders, 'items':selected_items, 'generations':generations}
     protected = _references([o for o in orders if o['id'] not in order_ids], [i for i in items if i['id'] not in item_ids])
-    private_images = set()
+    protected.update(s['image']['id'] for kind in ('stickers', 'sticker_revisions') for s in tx.all(kind))
+    # Historical snapshots may retain legacy personal ownership metadata. They
+    # are shared catalog history after migration and must outlive that account.
     for kind in ('templates', 'template_revisions'):
         records[kind] = []
         for value in tx.all(kind):
-            personal = value.get('scope') == 'personal' and value.get('owner') == account_id
-            if personal:
-                records[kind].append(value)
-            (private_images if personal else protected).update(image['id'] for image in value['images'])
-    assets = [a for a in tx.all('assets') if a.get('owner') == account_id or a['id'] in private_images]
+            protected.update(image['id'] for image in value.get('images', []))
+    assets = [a for a in tx.all('assets') if a.get('owner') == account_id]
     if protected.intersection(a['id'] for a in assets):
         raise HTTPException(409, '该账号素材仍被其他账号或公共模板引用，请先检查素材归属')
     records['assets'] = assets

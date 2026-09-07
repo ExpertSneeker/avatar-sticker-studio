@@ -28,7 +28,7 @@ def token_hash(token):
 
 def public_user(user):
     from .credits import wallet
-    return {key: user[key] for key in ('id', 'username', 'display_name', 'role', 'watermark', 'print_defaults')} | {'credits':wallet(user), 'generation_concurrency':generation_limit(user)}
+    return {key: user[key] for key in ('id', 'username', 'display_name', 'role', 'watermark', 'print_defaults')} | {'credits':wallet(user), 'generation_concurrency':generation_limit(user), 'can_edit_library':can_edit_library(user)}
 
 
 def require_user(tx, token, now):
@@ -57,9 +57,18 @@ def can_read_asset(asset, actor):
 
 
 def can_use_template(template, actor):
-    return bool(template and template['active'] and
+    return bool(template and template['active'] and not template.get('deleted') and
                 (template.get('scope','public')=='public' or template.get('owner')==actor['id']))
 
 
+def can_edit_library(actor):
+    return actor['role']=='admin' or actor.get('can_edit_library', False) is True
+
+
+def require_library_editor(actor):
+    if not can_edit_library(actor):
+        raise HTTPException(403, '需要公共图库编辑权限')
+
+
 def can_edit_template(template, actor):
-    return (actor['role']=='admin' if template.get('scope','public')=='public' else template.get('owner')==actor['id'])
+    return can_edit_library(actor)

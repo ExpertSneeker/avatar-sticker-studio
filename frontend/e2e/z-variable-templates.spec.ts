@@ -1,9 +1,12 @@
+import {uploadStickers,chooseStickers} from './library-fixtures'
 import {test,expect} from '@playwright/test'
 import {readFileSync} from 'node:fs'
 
 test('variable template counts, edits and multi-term search reach the workbench',async({page})=>{
   const setup=await page.request.post('/api/auth/setup',{data:{username:'variableadmin',password:'variable-test-password',display_name:'变长套装验收'}})
   await page.request.post('/api/auth/login',{data:setup.ok()?{username:'variableadmin',password:'variable-test-password'}:{username:'testadmin',password:'local-test-password'}})
+  const pixel=readFileSync(new URL('./fixtures/portrait.png',import.meta.url))
+  const stickers=await uploadStickers(page.request,Array.from({length:13},(_,i)=>({name:`variable-${i}.png`,mimeType:'image/png',buffer:pixel})))
   await page.goto('/')
   await page.getByRole('navigation').getByRole('button',{name:'模板库',exact:true}).click()
   await page.getByRole('button',{name:'新建套装',exact:true}).first().click()
@@ -11,8 +14,7 @@ test('variable template counts, edits and multi-term search reach the workbench'
   await dialog.getByLabel('套装编号').fill('A1-13')
   await dialog.getByLabel('套装名称').fill('变长动物模板')
   await dialog.getByRole('combobox',{name:/^分类/}).selectOption('animal')
-  const pixel=readFileSync(new URL('./fixtures/portrait.png',import.meta.url))
-  await dialog.locator('input[type=file]').setInputFiles(Array.from({length:13},(_,i)=>({name:`image-${i}.png`,mimeType:'image/png',buffer:pixel})))
+  await chooseStickers(dialog,stickers.map(s=>s.code))
   await expect(dialog.getByText(/已选 13 张/)).toBeVisible()
   await dialog.getByRole('button',{name:'保存套装',exact:true}).click()
   await expect(dialog).toHaveCount(0)
@@ -25,7 +27,7 @@ test('variable template counts, edits and multi-term search reach the workbench'
   await dialog.getByLabel('搜索模板套装').fill('13 a1')
   await expect(dialog.locator('.template-option')).toHaveCount(1)
   await dialog.locator('.template-option').click()
-  await expect(dialog.getByText(/已选 1 套 · 13 张/)).toBeVisible()
+  await expect(dialog.getByText(/已选 1 套 · 实际生成 13 张/)).toBeVisible()
   await dialog.getByRole('button',{name:'应用到 1 个订单'}).click()
   await expect(page.locator('.submit-bar')).toContainText('预计生成 13 张')
   await page.getByRole('navigation').getByRole('button',{name:'模板库',exact:true}).click()
@@ -33,7 +35,7 @@ test('variable template counts, edits and multi-term search reach the workbench'
   await page.getByRole('button',{name:'编辑',exact:true}).click()
   await expect(dialog.getByLabel('套装编号')).toBeEditable()
   await dialog.getByLabel('套装编号').fill('A2-14')
-  for(let i=0;i<12;i++)await dialog.getByTitle('移除图片').last().click()
+  for(let i=0;i<12;i++)await dialog.getByTitle('移除贴纸').last().click()
   await expect(dialog.getByRole('button',{name:'保存套装',exact:true})).toBeEnabled()
   await dialog.getByRole('button',{name:'保存套装',exact:true}).click()
   await expect(dialog).toHaveCount(0)

@@ -39,7 +39,9 @@ def upload(client, data=None):
 
 
 def template(client, code='A01'):
-    response = client.post('/api/templates', data={'code': code, 'name': '测试套装', 'category': '男孩'}, files=[('files', (f'{i}.png', png((i * 10, 50, 20, 200)), 'image/png')) for i in range(12)])
+    response = client.post('/api/stickers', data={'category': 'boy'}, files=[('files', (f'{code}-{i+1:02}.png', png((i * 10, 50, 20, 200)), 'image/png')) for i in range(12)])
+    assert response.status_code == 200, response.text
+    response = client.post('/api/templates', json={'code':code, 'name':'测试套装', 'category':'boy', 'sticker_ids':[s['id'] for s in response.json()]})
     assert response.status_code == 200, response.text
     return response.json()
 
@@ -88,7 +90,7 @@ def test_template_revision_and_order_idempotency(client):
     body['client_token'] = 'another'
     assert client.post('/api/orders', json=body).json()['id'] != o['id']
     before = client.get('/api/orders/' + o['id']).json()['items'][0]['template_url']
-    response = client.put('/api/templates/' + t['id'], data={'code': 'A01', 'name': '调整', 'category': '女孩', 'existing_ids': __import__('json').dumps([x['id'] for x in reversed(t['images'])])})
+    response = client.put('/api/templates/' + t['id'], json={'code': 'A01', 'name': '调整', 'category': 'girl', 'sticker_ids': list(reversed(t['sticker_ids']))})
     assert response.status_code == 200, response.text
     assert response.json()['revision'] == 2
     assert client.get('/api/orders/' + o['id']).json()['items'][0]['template_url'] == before
@@ -109,11 +111,12 @@ def test_print_options_are_boolean_and_template_replacement_keeps_slot(client):
     assert response.status_code == 200, response.text
     assert response.json()['print_defaults']['brightness'] is True
     t = template(client)
-    keep = [x['id'] for x in t['images'] if x['position'] != 5]
-    image_order = [{'id': x['id']} if x['position'] != 5 else {'file_index': 0} for x in t['images']]
-    result = client.put('/api/templates/' + t['id'], data={'code': t['code'], 'name': t['name'], 'category': t['category'], 'existing_ids': json_dumps(keep), 'image_order': json_dumps(image_order)}, files=[('files', ('new.png', png(), 'image/png'))])
+    fresh = client.post('/api/stickers',files=[('files',('new.png',png(),'image/png'))]).json()[0]
+    members = list(t['sticker_ids']); members[4] = fresh['id']
+    result = client.put('/api/templates/' + t['id'], json={'code':t['code'], 'name':t['name'], 'category':t['category'], 'sticker_ids':members})
     assert result.status_code == 200, result.text
     images = result.json()['images']
+    keep = [x['id'] for x in t['images']]
     assert images[3]['id'] == t['images'][3]['id']
     assert images[4]['id'] not in keep
     assert images[5]['id'] == t['images'][5]['id']

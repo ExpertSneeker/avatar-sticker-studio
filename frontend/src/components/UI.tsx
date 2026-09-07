@@ -58,20 +58,19 @@ export function PrintFields({value,onChange}:{value:PrintSettings;onChange:(valu
 }
 export const TEMPLATE_CATEGORIES=[['boy','男孩'],['girl','女孩'],['animal','动物'],['general','通用']] as const
 export function TemplateChooser({templates,value,onChange}:{templates:TemplateSet[];value:string[];onChange:(value:string[])=>void}) {
-  const [search,setSearch]=useState(''),[scope,setScope]=useState('all'),[category,setCategory]=useState('all')
-  const available=templates.filter(t=>t.active)
+  const [search,setSearch]=useState(''),[category,setCategory]=useState('all')
+  const available=templates.filter(t=>t.active&&t.available!==false)
   const matchesSearch=searchMatcher(search)
-  const filtered=available.filter(set=>(scope==='all'||(set.scope||'public')===scope)&&(category==='all'||set.category===category)&&matchesSearch(set.name+' '+set.code))
-  if(!available.length)return <Empty title="还没有可用模板" description="可在模板库创建并上架个人套装，或等待管理员上架公共模板。"/>
+  const filtered=available.filter(set=>(category==='all'||set.category===category)&&matchesSearch(set.name+' '+set.code))
+  if(!available.length)return <Empty title="还没有可用模板" description="等待有编辑权限的成员上架公共模板。"/>
   return <>
     <div className="template-search-bar">
-      <label className="period-filter">归属<select aria-label="筛选模板归属" value={scope} onChange={e=>setScope(e.target.value)}><option value="all">全部模板</option><option value="public">公共模板</option><option value="personal">个人模板</option></select></label>
       <label className="period-filter">分类<select aria-label="筛选模板分类" value={category} onChange={e=>setCategory(e.target.value)}><option value="all">全部分类</option>{TEMPLATE_CATEGORIES.map(([id,label])=><option value={id} key={id}>{label}</option>)}</select></label>
       <label className="search-input"><Search size={16}/><input aria-label="搜索模板套装" placeholder="搜索模板名称或编号" value={search} onChange={e=>setSearch(e.target.value)}/></label>
       {search&&<button className="text-button" onClick={()=>setSearch('')}>清空搜索</button>}
       <span className="hint">找到 {filtered.length} 套</span>
     </div>
-    {filtered.length?<div className="template-picker">{filtered.map(set=><button type="button" key={set.id} className={'template-option '+(value.includes(set.id)?'selected':'')} onClick={()=>onChange(value.includes(set.id)?value.filter(id=>id!==set.id):[...value,set.id])}><div className="set-mosaic">{set.images.slice(0,4).map(im=><img key={im.id} src={previewUrl(im.url)} alt=""/>)}</div><div><strong>{set.name}</strong><span>{set.code} · {set.images.length} 张 · {set.scope==='personal'?'个人':'公共'}</span></div><span className="pick-check">{value.includes(set.id)?<Check size={16}/>:<Plus size={16}/>}</span></button>)}</div>:<Empty title="没有匹配的模板套装" description="试试其他分类、归属或搜索词；已选套装会保留。"/>}
+    {filtered.length?<div className="template-picker">{filtered.map(set=><button type="button" key={set.id} className={'template-option '+(value.includes(set.id)?'selected':'')} onClick={()=>onChange(value.includes(set.id)?value.filter(id=>id!==set.id):[...value,set.id])}><div className="set-mosaic">{set.images.slice(0,4).map(im=><img key={im.id} src={previewUrl(im.url)} alt=""/>)}</div><div><strong>{set.name}</strong><span>{set.code} · {set.images.length} 张</span></div><span className="pick-check">{value.includes(set.id)?<Check size={16}/>:<Plus size={16}/>}</span></button>)}</div>:<Empty title="没有匹配的模板套装" description="试试其他分类或搜索词；已选套装会保留。"/>}
   </>
 }
 export function Progress({value,total}:{value:number;total:number}) {return <div className="progress-track"><span style={{transform:`scaleX(${total?Math.min(1,value/total):0})`}}/></div>}

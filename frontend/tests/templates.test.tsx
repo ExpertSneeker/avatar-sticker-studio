@@ -11,12 +11,12 @@ const inactiveSet={...personalSet,id:'inactive',name:'未上架通用',category:
 const noop=()=>{}
 
 describe('template permissions and availability',()=>{
-  test('members can create sets and manage their personal active and inactive sets',()=>{
-    const html=renderToStaticMarkup(<Templates templates={[publicSet,personalSet,inactiveSet]} admin={false} onRefresh={noop}/> )
+  test('authorized members can create sets and manage editable public sets',()=>{
+    const html=renderToStaticMarkup(<Templates templates={[publicSet,personalSet,inactiveSet]} admin={false} canEdit onRefresh={noop}/> )
     expect(html).toContain('新建套装')
     expect(html.match(/编辑<\/button>/g)).toHaveLength(2)
     expect(html).toContain('未上架通用')
-    expect(html).toContain('aria-label="模板归属"')
+    expect(html).not.toContain('aria-label="模板归属"')
     expect(html).toContain('动物')
     expect(html).toContain('通用')
   })
@@ -35,6 +35,10 @@ describe('template permissions and availability',()=>{
     expect(admin).toContain('编辑</button>')
   })
 
+  test('view-only members cannot create public sets',()=>{
+    const html=renderToStaticMarkup(<Templates templates={[publicSet]} admin={false} onRefresh={noop}/>);expect(html).not.toContain('新建套装');expect(html).not.toContain('编辑</button>')
+  })
+
   test('picker includes active public and personal templates, excluding inactive sets',()=>{
     const html=renderToStaticMarkup(<TemplateChooser templates={[publicSet,personalSet,inactiveSet]} value={['public','personal']} onChange={noop}/> )
     expect(html).toContain('公共男孩')
@@ -43,6 +47,6 @@ describe('template permissions and availability',()=>{
     expect(html.match(/template-option selected/g)).toHaveLength(2)
     expect(html).toContain('value="animal"')
     expect(html).toContain('value="general"')
-    expect(html).toContain('aria-label="筛选模板归属"')
+    expect(html).not.toContain('aria-label="筛选模板归属"')
   })
 })

@@ -34,9 +34,9 @@ export function DeleteAccountDialog({account,onClose,onDeleted}:{account:User;on
     } finally {lock.current=false;if(mounted.current)setBusy(false)}
   }
   return <Modal title="删除成员账号" onClose={close}>
-    <p className="credits-confirm-copy">将永久删除「{account.display_name}」（{account.username}）及其个人模板、全部订单和相关图片，无法恢复。公共模板和其他账号的数据不受影响。</p>
+    <p className="credits-confirm-copy">将永久删除「{account.display_name}」（{account.username}）及其全部订单、个人上传和相关图片，无法恢复。公共贴纸、公共模板和其他账号的数据不受影响。</p>
     {loading?<div className="credits-loading" role="status"><Spinner/>正在核对删除范围</div>:plan&&<>
-      <ul className="account-delete-scope"><li>{plan.template_count} 套个人模板 <span>含 {plan.revision_count} 个历史版本</span></li><li>{plan.order_count} 个订单 <span>含订单信息、日志、原图、成品、拼图与预览缓存</span></li><li>{plan.asset_count} 张图片 <span>同时清理该账号的上传文件与未完成上传</span></li></ul>
+      <ul className="account-delete-scope"><li>{plan.template_count} 套历史个人模板 <span>含 {plan.revision_count} 个历史版本</span></li><li>{plan.order_count} 个订单 <span>含订单信息、日志、原图、成品、拼图与预览缓存</span></li><li>{plan.asset_count} 张图片 <span>同时清理该账号的上传文件与未完成上传</span></li></ul>
       <p className="hint">未消耗的冻结积分（{plan.frozen_credits}）会释放，仅保留不含姓名、备注或图片内容的最小积分记账记录。</p>
       {!plan.can_delete&&<div className="error-banner" role="alert">仍有 {plan.blocked_count} 张图片正在处理或结果待核对。请处理完成后再删除账号。</div>}
     </>}

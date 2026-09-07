@@ -63,6 +63,8 @@ class Database:
                     item['billing_legacy']=True
                     tx.put('items', item)
                 tx.put('migrations', {'id':'personal-credits-v1'})
+            from .library import migrate_library
+            migrate_library(tx)
         os.chmod(self.path, 0o600)
 
     @contextmanager

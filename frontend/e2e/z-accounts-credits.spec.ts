@@ -1,3 +1,4 @@
+import {uploadStickers,chooseStickers} from './library-fixtures'
 import {test,expect} from '@playwright/test'
 import {readFileSync} from 'node:fs'
 import {createHash} from 'node:crypto'
@@ -5,7 +6,7 @@ import {tmpdir} from 'node:os'
 import {join} from 'node:path'
 
 const pixel=readFileSync(new URL('./fixtures/portrait.png',import.meta.url))
-test('account creation, credit conflict, private library, successful billing and password reset',async({page,browser})=>{
+test('account creation, credit conflict, public library permission, successful billing and password reset',async({page,browser})=>{
   const errors:string[]=[];page.on('pageerror',e=>errors.push(e.message))
   await page.request.post('/api/auth/login',{data:{username:'testadmin',password:'local-test-password'}})
   await page.goto('/')
@@ -34,25 +35,32 @@ test('account creation, credit conflict, private library, successful billing and
   await expect(page.locator('.credits-summary strong').first()).toHaveText('25')
   await page.screenshot({path:join(tmpdir(),'avatar-studio-fal-qa','credits-admin.png'),fullPage:true})
 
-  const memberContext=await browser.newContext({baseURL:'http://127.0.0.1:5174',viewport:{width:1440,height:1000}})
+  const memberContext=await browser.newContext({baseURL:`http://127.0.0.1:${process.env.STUDIO_E2E_FRONTEND_PORT||'5174'}`,viewport:{width:1440,height:1000}})
   try {
     const member=await memberContext.newPage()
     await member.request.post('/api/auth/login',{data:{username:'creditmember',password}})
     await member.goto('/')
     await expect(member.getByRole('navigation').getByRole('button',{name:'账户管理',exact:true})).toHaveCount(0)
     await member.getByRole('navigation').getByRole('button',{name:'模板库',exact:true}).click()
+    await expect(member.getByRole('button',{name:'新建套装',exact:true})).toHaveCount(0)
+    expect((await member.request.post('/api/templates',{data:{code:'DENIED',name:'denied',category:'boy',sticker_ids:['permission-probe']}})).status()).toBe(403)
+    await page.getByRole('dialog',{name:'积分测试成员 · 积分与流水',exact:true}).getByRole('button',{name:'关闭',exact:true}).click()
+    await row.getByRole('checkbox',{name:'积分测试成员 公共库编辑权限'}).check()
+    await expect.poll(async()=>(await(await member.request.get('/api/auth/me')).json()).can_edit_library).toBe(true)
+    const assets=await uploadStickers(member.request,Array.from({length:12},(_,i)=>({name:`member-${i}.png`,mimeType:'image/png',buffer:pixel})))
+    await member.reload()
+    await member.getByRole('navigation').getByRole('button',{name:'模板库',exact:true}).click()
     await member.getByRole('button',{name:'新建套装',exact:true}).first().click()
     const edit=member.getByRole('dialog')
     await edit.getByLabel('套装编号').fill('PERSONAL-ANIMAL')
-    await edit.getByLabel('套装名称').fill('动物个人模板')
+    await edit.getByLabel('套装名称').fill('动物公共模板')
     await edit.getByRole('combobox',{name:/^分类/}).selectOption('animal')
-    await edit.locator('input[type=file]').setInputFiles(Array.from({length:12},(_,i)=>({name:`private-${i}.png`,mimeType:'image/png',buffer:pixel})))
+    await chooseStickers(edit,assets.map(s=>s.code))
     await edit.getByRole('button',{name:'保存套装',exact:true}).click()
     await expect(edit).toHaveCount(0)
-    await member.getByRole('button',{name:'个人模板',exact:true}).click()
-    await expect(member.getByRole('heading',{name:'动物个人模板',exact:true})).toBeVisible()
+    await expect(member.getByRole('heading',{name:'动物公共模板',exact:true})).toBeVisible()
     const sets=await (await member.request.get('/api/templates')).json()
-    const personal=sets.find((t:{code:string})=>t.code==='PERSONAL-ANIMAL'),pub=sets.find((t:{scope:string;active:boolean})=>t.scope==='public'&&t.active)
+    const personal=sets.find((t:{code:string})=>t.code==='PERSONAL-ANIMAL'),pub=sets.find((t:{code:string;active:boolean})=>t.active&&t.code==='B001')
     expect(personal.category).toBe('animal');expect(pub).toBeTruthy()
     await member.screenshot({path:join(tmpdir(),'avatar-studio-fal-qa','personal-templates.png'),fullPage:true})
     const u=await (await member.request.post('/api/uploads/init',{data:{filename:'积分头像.png',size:pixel.length,sha256:createHash('sha256').update(pixel).digest('hex')}})).json()
@@ -68,7 +76,6 @@ test('account creation, credit conflict, private library, successful billing and
     await member.setViewportSize({width:390,height:844})
     expect(await member.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true)
     await member.screenshot({path:join(tmpdir(),'avatar-studio-fal-qa','credits-mobile.png'),fullPage:true})
-    await page.getByRole('dialog',{name:'积分测试成员 · 积分与流水',exact:true}).getByRole('button',{name:'关闭',exact:true}).click()
     await row.getByRole('button',{name:'重置密码',exact:true}).click()
     await dialog.getByRole('button',{name:'确认重置',exact:true}).click()
     await expect(dialog.locator('code')).not.toBeEmpty()

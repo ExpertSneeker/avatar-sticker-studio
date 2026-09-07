@@ -63,7 +63,8 @@ class UploadInit(Model):
 class OrderCreate(Model):
     upload_id: str
     name: str
-    template_ids: list[str] = Field(min_length=1, max_length=30)
+    template_ids: list[str] = Field(default_factory=list, max_length=30)
+    sticker_ids: list[str] = Field(default_factory=list, max_length=360)
     print_settings: PrintSettings = Field(default_factory=PrintSettings)
     client_token: str = Field(min_length=1, max_length=120)
     _name = field_validator('name')(safe_name)
@@ -163,3 +164,28 @@ class CreditSettlement(CreditReason):
 
 class RerunRequest(Model):
     client_token: str = Field(min_length=1, max_length=120)
+
+
+class LibraryPermissionPatch(Model):
+    can_edit_library: bool = Field(strict=True)
+
+
+class TemplateWrite(Model):
+    code: str
+    name: str
+    category: str = 'general'
+    sticker_ids: list[str] = Field(min_length=1, max_length=100)
+    _names = field_validator('code', 'name')(safe_name)
+
+    @field_validator('category')
+    @classmethod
+    def valid_category(cls, value):
+        from .library import category
+        return category(value)
+
+    @field_validator('sticker_ids')
+    @classmethod
+    def distinct_stickers(cls, value):
+        if len(set(value)) != len(value):
+            raise ValueError('贴纸不能重复')
+        return value

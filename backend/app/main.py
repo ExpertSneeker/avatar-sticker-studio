@@ -380,109 +380,8 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
             tx.put('users', target)
             return {**public_user(target), 'active': target['active']}
 
-    def template_public(value, actor):
-        return {k: value[k] for k in ('id', 'code', 'name', 'active', 'revision', 'images')} | {'category': {'男孩': 'boy', '女孩': 'girl', '动物':'animal', '通用':'general'}.get(value['category'], value['category']), 'scope':value.get('scope','public'), 'owner':value.get('owner'), 'editable':can_edit_template(value, actor)}
-
-    @app.get('/api/templates')
-    def templates(request: Request):
-        with db.transaction() as tx:
-            actor = user(tx, request)
-            return [template_public(t, actor) for t in tx.all('templates') if (t.get('scope','public')=='public' and (t['active'] or actor['role']=='admin')) or t.get('owner')==actor['id']]
-
-    async def write_template(request, id=None):
-        with db.transaction() as tx:
-            user(tx, request)
-        async with request.form(max_files=100, max_fields=10, max_part_size=25 * 1024 * 1024) as form:
-            try:
-                code, name = safe_name(str(form.get('code', ''))), safe_name(str(form.get('name', '')))
-                category = str(form.get('category', '男孩'))
-                if category not in {'男孩', '女孩', '动物', '通用', 'boy', 'girl', 'animal', 'general'}:
-                    raise ValueError('分类必须为男孩、女孩、动物或通用')
-                category = {'男孩': 'boy', '女孩': 'girl', '动物':'animal', '通用':'general'}.get(category, category)
-                retained = json.loads(str(form.get('existing_ids', '[]')))
-                image_order = json.loads(str(form['image_order'])) if form.get('image_order') else None
-                if not isinstance(retained, list) or len(set(retained)) != len(retained):
-                    raise ValueError('保留图片列表无效')
-            except (ValueError, TypeError) as exc:
-                raise HTTPException(422, str(exc)) from exc
-            files = form.getlist('files') or form.getlist('files[]')
-            count = len(retained) + len(files)
-            if not 1 <= count <= 100:
-                raise HTTPException(422, '每套需包含1至100张独立图片')
-            order_keys = [('id', x) for x in retained] + [('file_index', i) for i in range(len(files))]
-            if image_order is not None:
-                try:
-                    ordered_keys = [next(iter(entry.items())) for entry in image_order if isinstance(entry, dict) and len(entry) == 1]
-                    if not isinstance(image_order, list) or len(ordered_keys) != count or any(k == 'file_index' and type(v) is not int for k, v in ordered_keys) or set(ordered_keys) != set(order_keys):
-                        raise ValueError()
-                    order_keys = ordered_keys
-                except (ValueError, TypeError, StopIteration, AttributeError) as exc:
-                    raise HTTPException(422, '图片顺序包含重复或无效引用') from exc
-            for f in files:
-                if not isinstance(f, UploadFile):
-                    raise HTTPException(422, '模板图片上传无效')
-                data = await f.read(25 * 1024 * 1024 + 1)
-                if len(data) > 25 * 1024 * 1024:
-                    raise HTTPException(413, '单张模板不得超过25MB')
-                normalized = normalize_image(data)
-                await f.seek(0)
-                await f.write(normalized)
-                f.file.truncate()
-                await f.seek(0)
-                del data, normalized
-            with db.transaction() as tx:
-                actor = user(tx, request)
-                old = tx.get('templates', id) if id else None
-                if id and not old:
-                    raise HTTPException(404, '套装不存在')
-                if old and not can_edit_template(old, actor):
-                    raise HTTPException(403 if actor['role']=='admin' else 404, '无权编辑此套装')
-                scope = str(form.get('scope', old.get('scope','public') if old else 'public' if actor['role']=='admin' else 'personal'))
-                if scope not in {'public','personal'} or old and scope!=old.get('scope','public'):
-                    raise HTTPException(422, '模板归属创建后不可更改')
-                if scope=='public' and actor['role']!='admin':
-                    raise HTTPException(403, '只有管理员可维护公共模板')
-                template_owner = old.get('owner') if old else actor['id'] if scope=='personal' else None
-                if any(t['code'].casefold() == code.casefold() and t['id'] != id for t in tx.all('templates')):
-                    raise HTTPException(409, '套装编号已存在')
-                available = {x['id']: x for x in old['images']} if old else {}
-                if any(x not in available for x in retained):
-                    raise HTTPException(422, '保留图片不属于当前套装版本')
-                images = [dict(available[x]) for x in retained]
-                for f in files:
-                    asset = save_asset(db, tx, f.file.read(), template_owner, 'template')
-                    asset['scope'] = scope
-                    tx.put('assets', asset)
-                    images.append({'id': asset['id'], 'url': asset['url']})
-                lookup = dict(zip([('id', x) for x in retained] + [('file_index', i) for i in range(len(files))], images))
-                images = [lookup[key] for key in order_keys]
-                for position, image in enumerate(images, 1):
-                    image['position'] = position
-                value = {'scope':scope, 'owner':template_owner, 'id': id or uid(), 'code': code, 'name': name, 'category': category, 'active': old['active'] if old else True, 'revision': old['revision'] + 1 if old else 1, 'images': images}
-                tx.put('template_revisions', {**value, 'id': value['id'] + ':' + str(value['revision']), 'template_id': value['id']})
-                tx.put('templates', value)
-                return template_public(value, actor)
-
-    @app.post('/api/templates')
-    async def add_template(request: Request):
-        return await write_template(request)
-
-    @app.put('/api/templates/{id}')
-    async def replace_template(id: str, request: Request):
-        return await write_template(request, id)
-
-    @app.patch('/api/templates/{id}')
-    def toggle_template(id: str, data: ActivePatch, request: Request):
-        with db.transaction() as tx:
-            actor = user(tx, request)
-            value = tx.get('templates', id)
-            if not value:
-                raise HTTPException(404, '套装不存在')
-            if not can_edit_template(value, actor):
-                raise HTTPException(403 if actor['role']=='admin' else 404, '无权编辑此套装')
-            value['active'] = data.active
-            tx.put('templates', value)
-            return template_public(value, actor)
+    from .library import register_library
+    register_library(app, db, user)
 
     def upload_public(value):
         return {k: value[k] for k in ('id', 'offset', 'complete')}
@@ -568,8 +467,10 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
         result = {k: value[k] for k in ('id', 'name', 'created_at', 'paused', 'avatar_url', 'template_codes', 'print_settings', 'artifact_version')}
         result.update(status=status, total=len(items), completed=completed, failed=failed, unknown=unknown, archived=value.get('archived', False), processing_error=value.get('processing_error'))
         result.update(client_token=value.get('client_token'), preview_url=next((a['url'] for a in value.get('artifacts', []) if a['kind'] == 'overview'), None), download_ready=completed == len(items) and bool(value.get('overview_ready')))
+        result.update(generation_count=len(items), export_count=len(value.get('export_entries', items)))
         if full:
-            result['items'] = [{k: i.get(k) for k in ('id', 'set_code', 'position', 'status', 'error', 'result_url', 'template_url', 'attempt', 'fal_request_id', 'fal_status', 'queue_position')} | {'recoverable': bool(i.get('fal_request_id')) and not i.get('cutout_inflight') and i['status'] == 'unknown', 'remote_reserved': bool(i.get('remote_reserved')), 'raw_available': bool(i.get('raw_result_id')), 'processing_stage': i.get('processing_stage', 'generate')} for i in items]
+            result['export_entries'] = value.get('export_entries', [])
+            result['items'] = [{k: i.get(k) for k in ('id', 'set_code', 'sticker_id', 'sticker_code', 'position', 'status', 'error', 'result_url', 'template_url', 'attempt', 'fal_request_id', 'fal_status', 'queue_position')} | {'recoverable': bool(i.get('fal_request_id')) and not i.get('cutout_inflight') and i['status'] == 'unknown', 'remote_reserved': bool(i.get('remote_reserved')), 'raw_available': bool(i.get('raw_result_id')), 'processing_stage': i.get('processing_stage', 'generate')} for i in items]
             result['artifacts'] = value.get('artifacts', [])
         return result
 
@@ -586,8 +487,8 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
             previous = next((o for o in tx.all('orders') if o['owner'] == actor['id'] and o['client_token'] == data.client_token), None)
             if previous:
                 return order_public(tx, previous, True)
-            if len(set(data.template_ids)) != len(data.template_ids):
-                raise HTTPException(422, '不能重复选择套装')
+            from .selections import expand_selection
+            sets, generation_items, export_entries = expand_selection(tx, data.template_ids, data.sticker_ids)
             used_names = {o.get('output_name', o['name']).casefold() for o in tx.all('orders') if o['owner']==actor['id']}
             output_name, suffix = data.name, 1
             while output_name.casefold() in used_names:
@@ -597,19 +498,15 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
             avatar = owned(tx, 'uploads', data.upload_id, actor)
             if avatar['owner'] != actor['id'] or not avatar['complete']:
                 raise HTTPException(409, '请先完成自己的头像上传')
-            sets = [tx.get('templates', id) for id in data.template_ids]
-            if any(not can_use_template(t, actor) for t in sets):
-                raise HTTPException(422, '所选套装不存在或已下架')
-            if not 1 <= sum(len(t['images']) for t in sets) <= 360:
-                raise HTTPException(422, '每个订单最多生成360张图片，请拆分订单')
             config = tx.get('config', 'settings')
-            value = {'id': uid(), 'owner': actor['id'], 'name': data.name, 'normalized_name': data.name.casefold(), 'output_name': output_name, 'client_token': data.client_token, 'created_at': datetime.fromtimestamp(now(), timezone.utc).isoformat(), 'paused': False, 'archived': False, 'avatar_url': avatar['url'], 'avatar_id': avatar['asset_id'], 'template_codes': [t['code'] for t in sets], 'template_snapshots': sets, 'prompt': config['prompt'], 'prompt_version': config['prompt_version'], 'print_settings': data.print_settings.model_dump(), 'artifact_version': 0, 'artifacts': [], 'overview_ready': False, 'content_version': 0}
+            value = {'id': uid(), 'owner': actor['id'], 'name': data.name, 'normalized_name': data.name.casefold(), 'output_name': output_name, 'client_token': data.client_token, 'created_at': datetime.fromtimestamp(now(), timezone.utc).isoformat(), 'paused': False, 'archived': False, 'avatar_url': avatar['url'], 'avatar_id': avatar['asset_id'], 'template_codes': [t['code'] for t in sets], 'template_snapshots': sets, 'selection_version': 2, 'export_entries': export_entries, 'sticker_snapshots': [g['sticker'] for g in generation_items], 'prompt': config['prompt'], 'prompt_version': config['prompt_version'], 'print_settings': data.print_settings.model_dump(), 'artifact_version': 0, 'artifacts': [], 'overview_ready': False, 'content_version': 0}
             tx.put('orders', value)
-            for set_index, t in enumerate(sets):
-                for image in t['images']:
-                    item = {'id': uid(), 'owner': actor['id'], 'order_id': value['id'], 'set_code': t['code'], 'set_index': set_index, 'position': image['position'], 'template_id': image['id'], 'template_url': image['url'], 'status': 'queued', 'error': None, 'result_url': None, 'result_id': None, 'attempt': 0, 'retry_count': 0, 'next_at': 0}
-                    credits.reserve(tx, item, now())
-                    tx.put('items', item)
+            for position, generation in enumerate(generation_items, 1):
+                sticker = generation['sticker']
+                image = sticker['image']
+                item = {'id': generation['id'], 'owner': actor['id'], 'order_id': value['id'], 'set_code': sticker['code'], 'set_index': 0, 'position': position, 'sticker_id': sticker['id'], 'sticker_code': sticker['code'], 'sticker_revision': sticker['revision'], 'template_id': image['id'], 'template_url': image['url'], 'status': 'queued', 'error': None, 'result_url': None, 'result_id': None, 'attempt': 0, 'retry_count': 0, 'next_at': 0}
+                credits.reserve(tx, item, now())
+                tx.put('items', item)
             return order_public(tx, value, True)
 
     @app.get('/api/orders/{id}')

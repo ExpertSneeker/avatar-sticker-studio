@@ -6,7 +6,7 @@ test('admin edits account concurrency in a dialog and member sees read-only live
   const setup=await page.request.post('/api/auth/setup',{data:{username:'limitadmin',password:'limit-test-password',display_name:'并行验收管理员'}})
   await page.request.post('/api/auth/login',{data:setup.ok()?{username:'limitadmin',password:'limit-test-password'}:{username:'testadmin',password:'local-test-password'}})
   const member=await(await page.request.post('/api/admin/users',{data:{username:'limitmember',display_name:'并行验收成员'}})).json()
-  const context=await browser.newContext({baseURL:'http://127.0.0.1:5174'})
+  const context=await browser.newContext({baseURL:`http://127.0.0.1:${process.env.STUDIO_E2E_FRONTEND_PORT||'5174'}`})
   try {
     const staff=await context.newPage()
     await staff.request.post('/api/auth/login',{data:{username:'limitmember',password:member.temporary_password}})

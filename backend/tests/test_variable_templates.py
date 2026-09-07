@@ -9,21 +9,24 @@ from backend.app.schemas import PrintSettings
 
 
 def create(client,code,count,scope='public'):
-    response=client.post('/api/templates',data={'code':code,'name':code,'category':'general','scope':scope},files=[('files',(f'{i}.png',png(),'image/png')) for i in range(count)])
+    uploaded=client.post('/api/stickers',data={'codes':json.dumps([f'{code}-{i:02}' for i in range(count)]),'category':'general'},files=[('files',(f'{i}.png',png(),'image/png')) for i in range(count)])
+    assert uploaded.status_code==200,uploaded.text
+    response=client.post('/api/templates',json={'code':code,'name':code,'category':'general','sticker_ids':[s['id'] for s in uploaded.json()]})
     assert response.status_code==200,response.text
     return response.json()
 
 
 def test_actual_counts_snapshot_billing_prints_and_overview(context):
     app,admin,_,provider=context;staff,user=member(admin,app);fund(admin,user,14)
-    public=create(admin,'SINGLE',1);private=create(staff,'A1-13',13,'personal')
+    admin.patch('/api/admin/users/'+user['id']+'/library-permission',json={'can_edit_library':True})
+    public=create(admin,'SINGLE',1);private=create(staff,'A1-13',13)
     def submit(token):
         return staff.post('/api/orders',json={'upload_id':upload(staff)['id'],'name':token,'template_ids':[public['id'],private['id']],'print_settings':{},'client_token':token})
     first=submit('old');assert first.status_code==200,first.text
     o=first.json();assert o['total']==14
     assert staff.get('/api/credits').json()['wallet']['frozen']==14
     kept=private['images'][:2]
-    edit=staff.put('/api/templates/'+private['id'],data={'code':'A2-14','name':private['name'],'category':'general','existing_ids':json.dumps([im['id'] for im in kept]),'image_order':json.dumps([{'id':im['id']} for im in reversed(kept)])})
+    edit=staff.put('/api/templates/'+private['id'],json={'code':'A2-14','name':private['name'],'category':'general','sticker_ids':[im['sticker_id'] for im in reversed(kept)]})
     assert edit.status_code==200,edit.text
     assert len(edit.json()['images'])==2 and edit.json()['images'][0]['id']==kept[1]['id']
     for _ in range(14):asyncio.run(app.state.worker.execute(app.state.worker.claim()))
@@ -31,16 +34,17 @@ def test_actual_counts_snapshot_billing_prints_and_overview(context):
     assert result['status']=='completed',result
     assert len(provider.calls)==14 and result['total']==14
     assert staff.get('/api/credits').json()['wallet']['spent']==14
-    assert {a['set_code'] for a in result['artifacts'] if a['kind']=='print'}=={'SINGLE','A1-13'}
+    assert any(a['kind']=='print' for a in result['artifacts'])
+    assert all('拼版' in a['path'] for a in result['artifacts'] if a['kind']=='print')
     preview=next(a for a in result['artifacts'] if a['kind']=='overview')
-    assert Image.open(io.BytesIO(staff.get(preview['url']).content)).size==(1024,1280)
+    assert Image.open(io.BytesIO(staff.get(preview['url']).content)).size==(1024,1024)
     with app.state.db.transaction() as tx:
         assert len(tx.get('orders',o['id'])['template_snapshots'][1]['images'])==13
         assert len(tx.get('template_revisions',private['id']+':1')['images'])==13
     fund(admin,user,3,'second');new_order=submit('new').json()
     assert new_order['total']==3 and new_order['template_codes']==['SINGLE','A2-14']
-    assert all('A1-13' in a['path'] for a in result['artifacts'] if a.get('set_code')=='A1-13')
-    conflict=staff.put('/api/templates/'+private['id'],data={'code':'single','name':'Collision','category':'general','existing_ids':json.dumps([im['id'] for im in kept])})
+    assert any('A1-13-00' in a['path'] for a in result['artifacts'] if a['kind']=='sticker')
+    conflict=staff.put('/api/templates/'+private['id'],json={'code':'single','name':'Collision','category':'general','sticker_ids':[im['sticker_id'] for im in kept]})
     assert conflict.status_code==409
     with app.state.db.transaction() as tx:
         current=tx.get('templates',private['id'])

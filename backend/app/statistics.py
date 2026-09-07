@@ -53,7 +53,12 @@ def summarize(tx, actor, now, days=30, offset=480, global_scope=False):
             daily[day]['images'] += len(items)
         for code in order['template_codes']:
             entry = templates.setdefault(code, {'code':code, 'orders':0, 'images':0, 'completed':0, 'failed':0})
-            group = [i for i in items if i['set_code'] == code]
+            if order.get('selection_version') == 2:
+                source_ids = {t['id'] for t in order['template_snapshots'] if t['code'] == code}
+                item_ids = {e['item_id'] for e in order['export_entries'] if e['source_type']=='template' and e['source_id'] in source_ids}
+                group = [i for i in items if i['id'] in item_ids]
+            else:
+                group = [i for i in items if i['set_code'] == code]
             entry['orders'] += 1
             entry['images'] += len(group)
             entry['completed'] += sum(i['status'] == 'completed' for i in group)

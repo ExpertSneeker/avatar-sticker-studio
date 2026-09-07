@@ -171,8 +171,8 @@ def test_publish_serializes_across_worker_instances_without_duplicate_pack(conte
         entered.set()
         assert release.wait(5)
         return [('fake.png', png())]
-    monkeypatch.setattr('backend.app.worker.pack_set', pack)
-    monkeypatch.setattr('backend.app.worker.overview', lambda *args: png())
+    monkeypatch.setattr('backend.app.publication.pack_set', pack)
+    monkeypatch.setattr('backend.app.publication.overview', lambda *args: png())
     second = Worker(app.state.db, provider=provider, clock=clock)
     def publish_second():
         second_started.set()

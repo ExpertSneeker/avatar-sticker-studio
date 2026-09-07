@@ -58,6 +58,18 @@ def test_complete_two_sets_repack_watermark_rerun_and_manifest(context):
     app, client, clock, provider = context
     t1, t2 = template(client, 'A01'), template(client, 'B02')
     o, _ = order(client, template_ids=[t2['id'], t1['id']])
+    # Seed the exact pre-migration order shape: existing orders must retain grouped filenames.
+    with app.state.db.transaction() as tx:
+        historical = tx.get('orders', o['id'])
+        historical.pop('selection_version'); historical.pop('export_entries')
+        tx.put('orders', historical)
+        item_by_sticker = {i['sticker_id']:i for i in tx.all('items') if i['order_id']==o['id']}
+        for index, template_set in enumerate([t2,t1]):
+            for position, sid in enumerate(template_set['sticker_ids'],1):
+                item=item_by_sticker[sid]
+                item.update(set_code=template_set['code'],set_index=index,position=position)
+                tx.put('items',item)
+
     listed = client.get('/api/orders').json()[0]
     assert listed['preview_url'] is None
     assert listed['download_ready'] is False
@@ -461,7 +473,7 @@ def test_print_layout_version_rebuilds_pages_from_saved_results_without_generati
     calls=len(provider.calls)
     with app.state.db.transaction() as tx:
         value=tx.get('orders',o['id'])
-        for code in value['template_codes']:value['publish_signatures'][code]='previous-print-layout'
+        value['publish_signatures']['_merged']='previous-print-layout'
         tx.put('orders',value)
     assert w.publish(o['id'])
     after=client.get('/api/orders/'+o['id']).json()

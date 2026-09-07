@@ -5,7 +5,7 @@ import {createHash} from 'node:crypto'
 test('printed files include centered order title and retain original results when repacked',async({page})=>{
   await page.request.post('/api/auth/login',{data:{username:'testadmin',password:'local-test-password'}})
   const sets=await(await page.request.get('/api/templates')).json()
-  const template=sets.find((t:{active:boolean;scope:string})=>t.active&&t.scope==='public')
+  const template=sets.find((t:{active:boolean;available:boolean})=>t.active&&t.available!==false)
   expect(template).toBeTruthy()
   const pixel=readFileSync(new URL('./fixtures/portrait.png',import.meta.url))
   const uploaded=await(await page.request.post('/api/uploads/init',{data:{filename:'标题居中验收.png',size:pixel.length,sha256:createHash('sha256').update(pixel).digest('hex')}})).json()

@@ -1,3 +1,4 @@
+import {uploadStickers,chooseStickers} from './library-fixtures'
 import { test, expect, type Page } from '@playwright/test'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -45,15 +46,16 @@ test('complete production UI workflow with isolated provider and data', async ({
   await page.getByRole('navigation').getByRole('button', { name: '工作台', exact: true }).click()
   await page.screenshot({ path: evidence('workspace-empty.png'), fullPage: true })
 
+  const publicStickers=await uploadStickers(page.request,files)
+  await page.reload()
   await page.getByRole('navigation').getByRole('button', { name: '模板库' }).click()
   await page.getByRole('button', { name: '新建套装' }).first().click()
   const dialog = page.getByRole('dialog').last()
-  await dialog.getByLabel('模板归属').selectOption('public')
   await dialog.getByLabel('套装编号').pressSequentially('B001')
   await expect(dialog.getByLabel('套装编号')).toHaveValue('B001')
   await dialog.getByLabel('套装名称').pressSequentially('春日出游')
   await expect(dialog.getByLabel('套装名称')).toHaveValue('春日出游')
-  await dialog.locator('input[type=file]').setInputFiles(files)
+  await chooseStickers(dialog,publicStickers.map(s=>s.code))
   await dialog.getByRole('button', { name: '保存套装' }).click()
   await expect(dialog).not.toBeVisible()
   await expect(page.getByRole('heading', { name: '春日出游' })).toBeVisible()
@@ -78,7 +80,7 @@ test('complete production UI workflow with isolated provider and data', async ({
   await dialog.getByRole('button', { name: /春日出游/ }).click()
   await dialog.getByLabel('搜索模板套装').fill('不存在的模板')
   await expect(dialog.getByText('没有匹配的模板套装')).toBeVisible()
-  await expect(dialog.getByText('已选 1 套 · 12 张')).toBeVisible()
+  await expect(dialog.getByText(/已选 1 套 · 实际生成 12 张/)).toBeVisible()
   await dialog.getByLabel('搜索模板套装').fill(' 春日 ')
   await expect(dialog.locator('.template-option.selected')).toHaveCount(1)
 
@@ -101,7 +103,7 @@ test('complete production UI workflow with isolated provider and data', async ({
   const orders = await (await page.request.get('/api/orders')).json()
   const order = orders.find((o: { name: string }) => o.name === '小满')
   await page.getByRole('button', { name: /小满.*B001/ }).click()
-  await expect(page.locator('.artifact')).toHaveCount(2)
+  await expect(page.locator('.artifact')).toHaveCount(14)
   await expect(dialog.getByText('已保存到本机', { exact: true })).toBeVisible()
   // New global choices cannot redirect either submitted order.
   await page.evaluate(()=>{(window as Window & {pickerName?:string}).pickerName='e2e-other'})
@@ -113,7 +115,7 @@ test('complete production UI workflow with isolated provider and data', async ({
   await page.getByRole('button', { name: /小满.*B001/ }).click()
   await page.getByRole('button', { name: '单张结果' }).click()
   await page.locator('.result-card').first().click()
-  await expect(dialog.getByRole('heading')).toHaveText('B001 · 第 1 张')
+  await expect(dialog.getByRole('heading')).toHaveText('template-1 · 第 1 张')
   await page.screenshot({path:evidence('result-review.png'),animations:'disabled'})
   await dialog.getByRole('button', { name: '重新生成这一张' }).click()
   await expect.poll(async () => (await (await page.request.get(`/api/orders/${order.id}`)).json()).items.reduce((n: number, i: { attempt: number }) => n+i.attempt, 0)).toBe(13)
@@ -123,7 +125,7 @@ test('complete production UI workflow with isolated provider and data', async ({
   await dialog.getByRole('button', { name: '开始排版' }).click()
   await expect(page.getByRole('dialog',{name:'重新排版',exact:true})).toHaveCount(0)
   await page.getByRole('button', { name: '打印与预览' }).click()
-  await expect(page.locator('.artifact')).toHaveCount(3)
+  await expect(page.locator('.artifact')).toHaveCount(15)
   const download = await page.request.get(`/api/orders/${order.id}/download.zip`)
   expect(download.status()).toBe(200)
   expect(download.headers()['content-type']).toContain('application/zip')
@@ -136,10 +138,10 @@ test('complete production UI workflow with isolated provider and data', async ({
     const custom=await (await root.getDirectoryHandle('e2e-custom')).getDirectoryHandle('岁岁成品')
     const names=[];for await(const name of custom.keys())names.push(name)
     return names.length
-  })).toBe(2)
+  })).toBe(14)
   await page.evaluate(async()=>{
     const dir=await (await (await navigator.storage.getDirectory()).getDirectoryHandle('e2e-output')).getDirectoryHandle('小满')
-    await dir.removeEntry('小满_B001_1.png')
+    await dir.removeEntry('小满_拼版_1.png')
     const writer=await (await dir.getFileHandle('keep.txt',{create:true})).createWritable()
     await writer.write('unrelated');await writer.close()
   })
@@ -148,14 +150,14 @@ test('complete production UI workflow with isolated provider and data', async ({
   await expect(page.locator('.task-row').filter({has:page.getByRole('heading',{name:'小满',exact:true})})).toContainText('已保存到本机')
   expect(await page.evaluate(async()=>{
     const dir=await (await (await navigator.storage.getDirectory()).getDirectoryHandle('e2e-output')).getDirectoryHandle('小满')
-    try{await dir.getFileHandle('小满_B001_1.png');return true}catch{return false}
+    try{await dir.getFileHandle('小满_拼版_1.png');return true}catch{return false}
   })).toBe(false)
   await page.getByLabel('选择下载 小满',{exact:true}).check()
   await page.getByRole('button',{name:'重新下载所选订单'}).click()
   await expect.poll(()=>page.evaluate(async()=>{
     try{
       const dir=await (await (await navigator.storage.getDirectory()).getDirectoryHandle('e2e-output')).getDirectoryHandle('小满')
-      return (await (await dir.getFileHandle('小满_B001_1.png')).getFile()).size>0
+      return (await (await dir.getFileHandle('小满_拼版_1.png')).getFile()).size>0
     }catch{return false}
   })).toBe(true)
   await page.getByRole('button',{name:'预览 小满',exact:true}).click()
@@ -178,13 +180,13 @@ test('complete production UI workflow with isolated provider and data', async ({
   await page.getByRole('button',{name:'重新排版',exact:true}).click()
   await dialog.getByLabel('单张内容长边').fill('50')
   await dialog.getByRole('button',{name:'开始排版'}).click()
-  await expect(page.locator('.artifact')).toHaveCount(2)
+  await expect(page.locator('.artifact')).toHaveCount(14)
   await page.getByRole('button',{name:'保存到本机',exact:true}).click()
   await expect.poll(()=>page.evaluate(async()=>{
     const dir=await (await (await navigator.storage.getDirectory()).getDirectoryHandle('e2e-output')).getDirectoryHandle('小满')
     const names=[];for await(const name of dir.keys())names.push(name)
     return names.sort()
-  })).toEqual(['keep.txt','小满_B001_1.png','小满_水印总览.png'])
+  })).toEqual(['keep.txt',...Array.from({length:12},(_,i)=>`小满_template-${i+1}_1.png`),'小满_拼版_1.png','小满_水印总览.png'].sort())
   expect(await page.evaluate(async()=>{
     const dir=await (await (await navigator.storage.getDirectory()).getDirectoryHandle('e2e-output')).getDirectoryHandle('小满')
     return (await (await dir.getFileHandle('keep.txt')).getFile()).text()
@@ -234,7 +236,7 @@ test('switching accounts in another tab invalidates drafts before another upload
   await page.request.post('/api/auth/login',{data:{username:'testadmin',password:'local-test-password'}})
   const invite=await (await page.request.post('/api/admin/invites')).json()
   const isolated=await browser.newContext()
-  await isolated.request.post('http://127.0.0.1:5174/api/auth/register',{data:{invite:invite.code,username:'seconduser',password:'second-password',display_name:'第二个账号'}})
+  await isolated.request.post(`http://127.0.0.1:${process.env.STUDIO_E2E_FRONTEND_PORT||'5174'}/api/auth/register`,{data:{invite:invite.code,username:'seconduser',password:'second-password',display_name:'第二个账号'}})
   await isolated.close()
   await page.goto('/')
   await page.locator('input[type=file]').setInputFiles({name:'仅属于管理员.png',mimeType:'image/png',buffer:pixel})
@@ -348,23 +350,21 @@ test('avatar and template uploads send resized bytes and single-order search kee
     return canvas.toDataURL('image/png').split(',')[1]
   })
   const input=Buffer.from(encoded,'base64')
-  await page.getByRole('navigation').getByRole('button',{name:'模板库'}).click()
-  await page.getByRole('button',{name:'新建套装',exact:true}).first().click()
+  await page.getByRole('navigation').getByRole('button',{name:'贴纸库',exact:true}).click()
+  await page.getByRole('button',{name:'批量上传',exact:true}).click()
   const dialog=page.getByRole('dialog').last()
-  await dialog.getByLabel('套装编号').fill('R1024')
-  await dialog.getByLabel('套装名称').fill('压缩测试套装')
   await dialog.locator('input[type=file]').setInputFiles(Array.from({length:12},(_,i)=>({name:`透明模板${i+1}.png`,mimeType:'image/png',buffer:input})))
   // CDP omits multipart file bytes; inspect the actual FormData passed to native fetch.
   await page.evaluate(()=>{
     const native=window.fetch.bind(window),record=window as Window & {templateUploadFiles?:File[];avatarUploadChunks?:Blob[]}
     window.fetch=(url,options)=>{
-      if(url==='/api/templates'&&options?.body instanceof FormData)record.templateUploadFiles=options.body.getAll('files') as File[]
+      if(url==='/api/stickers'&&options?.body instanceof FormData)record.templateUploadFiles=options.body.getAll('files') as File[]
       if(typeof url==='string'&&url.startsWith('/api/uploads/')&&options?.method==='PUT'&&options.body instanceof Blob)(record.avatarUploadChunks??=[]).push(options.body)
       return native(url,options)
     }
   })
-  const submitted=page.waitForResponse(response=>response.request().method()==='POST'&&new URL(response.url()).pathname==='/api/templates')
-  await dialog.getByRole('button',{name:'保存套装',exact:true}).click()
+  const submitted=page.waitForResponse(response=>response.request().method()==='POST'&&new URL(response.url()).pathname==='/api/stickers')
+  await dialog.getByRole('button',{name:'保存贴纸',exact:true}).click()
   const response=await submitted
   expect(response.ok()).toBe(true)
   const dimensions=await page.evaluate(async()=>Promise.all(((window as Window & {templateUploadFiles?:File[]}).templateUploadFiles||[]).map(async file=>{
@@ -373,8 +373,15 @@ test('avatar and template uploads send resized bytes and single-order search kee
   })))
   expect(dimensions).toEqual(Array.from({length:12},()=>[1024,1536]))
   const saved=await response.json()
-  const stored=await (await page.request.get(saved.images[0].url)).body()
+  const stored=await (await page.request.get(saved[0].image.url)).body()
   expect([stored.readUInt32BE(16),stored.readUInt32BE(20)]).toEqual([1024,1536])
+  await expect(dialog).not.toBeVisible()
+  await page.getByRole('navigation').getByRole('button',{name:'模板库',exact:true}).click()
+  await page.getByRole('button',{name:'新建套装',exact:true}).first().click()
+  await dialog.getByLabel('套装编号').fill('R1024')
+  await dialog.getByLabel('套装名称').fill('压缩测试套装')
+  await chooseStickers(dialog,saved.map((s:{code:string})=>s.code))
+  await dialog.getByRole('button',{name:'保存套装',exact:true}).click()
   await expect(dialog).not.toBeVisible()
   await page.getByRole('navigation').getByRole('button',{name:'工作台',exact:true}).click()
   await page.locator('input[type=file]').setInputFiles({name:'订单压缩.png',mimeType:'image/png',buffer:input})
@@ -384,7 +391,7 @@ test('avatar and template uploads send resized bytes and single-order search kee
   await dialog.getByLabel('搜索模板套装').fill('春日')
   await dialog.getByRole('button',{name:/春日出游/}).click()
   await dialog.getByLabel('搜索模板套装').fill('匹配不到')
-  await expect(dialog.getByText('已选 2 套 · 24 张')).toBeVisible()
+  await expect(dialog.getByText(/已选 2 套 · 实际生成 24 张/)).toBeVisible()
   await dialog.getByRole('button',{name:'清空搜索',exact:true}).click()
   await expect(dialog.locator('.template-option.selected')).toHaveCount(2)
   await page.screenshot({path:evidence('template-search.png'),animations:'disabled'})
