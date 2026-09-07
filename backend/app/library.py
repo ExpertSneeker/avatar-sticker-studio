@@ -137,7 +137,7 @@ def register_library(app, db, user):
                             saved_paths.append(db.root/'assets'/asset['file'])
                             asset['scope']='public';tx.put('assets',asset)
                             image={'id':asset['id'],'url':asset['url']}
-                        value={'id':id or uid(),'code':code,'name':name if 'name' in form or old else code,'category':cat,'active':old['active'] if old else True,'revision':old['revision']+1 if old else 1,'image':image}
+                        value={'id':id or uid(),'code':code,'name':name if 'name' in form or old else code,'category':cat,'active':True,'revision':old['revision']+1 if old else 1,'image':image}
                         tx.put('stickers',value);snapshot(tx,'stickers',value);values.append(value)
                     return sticker_public(values[0],user(tx,request)) if id else [sticker_public(value,user(tx,request)) for value in values]
             except BaseException:
@@ -152,15 +152,10 @@ def register_library(app, db, user):
     async def edit_sticker(id: str,request: Request): return await write_stickers(request,id)
 
     @app.patch('/api/stickers/{id}')
-    def toggle_sticker(id: str,data: ActivePatch,request: Request):
+    def retired_sticker_status(id: str,data: ActivePatch,request: Request):
         with db.transaction() as tx:
             require_library_editor(user(tx,request))
-            value=tx.get('stickers',id)
-            if not value or value.get('deleted'): raise HTTPException(404,'贴纸不存在')
-            if value['active']!=data.active:
-                value.update(active=data.active,revision=value['revision']+1)
-                tx.put('stickers',value);snapshot(tx,'stickers',value)
-            return sticker_public(value,user(tx,request))
+            raise HTTPException(410,'贴纸和模板已取消停用功能，请刷新页面；需要移除资源时请使用删除。')
 
     @app.get('/api/templates')
     def templates(request: Request):
@@ -174,8 +169,8 @@ def register_library(app, db, user):
             old=tx.get('templates',id) if id else None
             if id and (not old or old.get('deleted')): raise HTTPException(404,'套装不存在')
             if any(t['code'].casefold()==data.code.casefold() and t['id']!=id and not t.get('deleted') for t in tx.all('templates')): raise HTTPException(409,'套装编号已存在')
-            if any(not (s:=tx.get('stickers',sid)) or not s['active'] or s.get('deleted') for sid in data.sticker_ids): raise HTTPException(422,'套装包含不存在或已停用的贴纸')
-            value={**data.model_dump(),'category':resolve_category(tx,data.category),'id':id or uid(),'scope':'public','owner':None,'active':old['active'] if old else True,'revision':old['revision']+1 if old else 1}
+            if any(not (s:=tx.get('stickers',sid)) or not s['active'] or s.get('deleted') for sid in data.sticker_ids): raise HTTPException(422,'套装包含不存在或不可用的贴纸')
+            value={**data.model_dump(),'category':resolve_category(tx,data.category),'id':id or uid(),'scope':'public','owner':None,'active':True,'revision':old['revision']+1 if old else 1}
             value=hydrate_template(tx,value)
             tx.put('templates',value);snapshot(tx,'templates',value)
             return template_public(tx,value,actor)
@@ -187,16 +182,10 @@ def register_library(app, db, user):
     def edit_template(id: str,data: TemplateWrite,request: Request): return write_template(data,request,id)
 
     @app.patch('/api/templates/{id}')
-    def toggle_template(id: str,data: ActivePatch,request: Request):
+    def retired_template_status(id: str,data: ActivePatch,request: Request):
         with db.transaction() as tx:
-            actor=user(tx,request);require_library_editor(actor)
-            value=tx.get('templates',id)
-            if not value or value.get('deleted'): raise HTTPException(404,'套装不存在')
-            if value['active']!=data.active:
-                value.update(active=data.active,revision=value['revision']+1)
-                value=hydrate_template(tx,value)
-                tx.put('templates',value);snapshot(tx,'templates',value)
-            return template_public(tx,value,actor)
+            require_library_editor(user(tx,request))
+            raise HTTPException(410,'贴纸和模板已取消停用功能，请刷新页面；需要移除资源时请使用删除。')
 
     def delete_entry(kind, id, request):
         with db.transaction() as tx:
@@ -252,8 +241,6 @@ def register_library(app, db, user):
                 changes={}
                 if data.category is not None:
                     changes['category']=resolve_category(tx,data.category)
-                if data.active is not None:
-                    changes['active']=data.active
             for s in values:
                 if any(s.get(k)!=v for k,v in changes.items()):
                     s.update(changes)
@@ -261,3 +248,18 @@ def register_library(app, db, user):
                     tx.put('stickers',s)
                     snapshot(tx,'stickers',s)
             return {'count':len(values)}
+
+
+def migrate_library_status(tx):
+    if tx.get('migrations','library-always-available-v1'):
+        return
+    # Deleted catalog entries and historical revisions must remain untouched.
+    for kind in ('stickers','templates'):
+        for value in tx.all(kind):
+            if not value.get('deleted') and not value.get('active'):
+                value.update(active=True,revision=value['revision']+1)
+                if kind=='templates':
+                    value=hydrate_template(tx,value)
+                tx.put(kind,value)
+                snapshot(tx,kind,value)
+    tx.put('migrations',{'id':'library-always-available-v1'})

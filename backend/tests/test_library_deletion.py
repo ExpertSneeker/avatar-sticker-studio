@@ -15,7 +15,9 @@ def test_delete_sticker_lists_all_referencing_templates_including_inactive(conte
     s=stickers(admin,['DELETE-S']).json()[0]
     a=create_template(admin,'A',s['id']).json()
     b=create_template(admin,'B',s['id']).json()
-    admin.patch('/api/templates/'+b['id'],json={'active':False})
+    # Legacy inactive references remain protected even though status writes are retired.
+    with app.state.db.transaction() as tx:
+        tx.put('templates',{**tx.get('templates',b['id']),'active':False})
     response=admin.delete('/api/stickers/'+s['id'])
     assert response.status_code==409,response.text
     refs=response.json()['detail']['templates']

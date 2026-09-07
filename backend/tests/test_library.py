@@ -28,10 +28,10 @@ def test_library_permissions_shared_revisions_and_availability(context):
     with app.state.db.transaction() as tx:
         assert tx.get('sticker_revisions',two['id']+':1')['image']['id']==two['image']['id']
         assert tx.get('template_revisions',template['id']+':1')['images'][0]['id']==two['image']['id']
-    assert staff.patch('/api/stickers/'+two['id'],json={'active':False}).status_code==200
-    assert not staff.get('/api/templates').json()[0]['available']
+    assert staff.patch('/api/stickers/'+two['id'],json={'active':False}).status_code==410
+    assert staff.get('/api/templates').json()[0]['available']
     admin.patch('/api/admin/users/'+account['id']+'/library-permission',json={'can_edit_library':False})
-    assert len(staff.get('/api/stickers').json())==1
+    assert len(staff.get('/api/stickers').json())==2
     assert staff.put('/api/stickers/'+one['id'],data={'name':'bad'}).status_code==403
     assert staff.get(one['image']['url']).status_code==200
 

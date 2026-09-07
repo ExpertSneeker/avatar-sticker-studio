@@ -60,7 +60,7 @@ def test_sticker_only_empty_unavailable_and_snapshot(context):
     assert admin.post('/api/orders',json={**body,'sticker_ids':[],'client_token':'empty'}).status_code==422
     assert admin.put('/api/stickers/'+s['id'],data={'code':'NEW','name':'New','category':'general'}).status_code==200
     assert admin.get('/api/orders/'+old['id']).json()['export_entries'][0]['code']=='ONE'
-    assert admin.patch('/api/stickers/'+s['id'],json={'active':False}).status_code==200
+    assert admin.delete('/api/stickers/'+s['id']).status_code==200
     assert admin.post('/api/orders',json={**body,'client_token':'disabled'}).status_code==422
     assert admin.post('/api/orders',json=body).json()['id']==old['id']
 

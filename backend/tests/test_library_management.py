@@ -30,13 +30,13 @@ def test_batch_edit_atomic_permission_and_historical_snapshots(context):
     app, admin, _, _ = context
     staff, account = member(admin, app)
     a,b = stickers(admin, ['BATCH-A','BATCH-B']).json()
-    body={'ids':[a['id'],b['id']], 'action':'update','category':'animal','active':False}
+    body={'ids':[a['id'],b['id']], 'action':'update','category':'animal'}
     assert staff.post('/api/stickers/batch',json=body).status_code == 403
     assert admin.post('/api/stickers/batch',json={**body,'ids':[a['id'],'missing']}).status_code == 404
     assert admin.get('/api/stickers').json()[0]['revision']==1
     result=admin.post('/api/stickers/batch',json=body)
     assert result.status_code==200,result.text
-    assert all(s['category']=='animal' and not s['active'] and s['revision']==2 for s in admin.get('/api/stickers').json())
+    assert all(s['category']=='animal' and s['active'] and s['revision']==2 for s in admin.get('/api/stickers').json())
     with app.state.db.transaction() as tx:
         assert tx.get('sticker_revisions',a['id']+':1')['active']
         assert tx.get('sticker_revisions',a['id']+':1')['category']=='general'

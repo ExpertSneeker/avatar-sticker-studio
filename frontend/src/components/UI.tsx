@@ -63,7 +63,7 @@ export function TemplateChooser({templates,value,onChange}:{templates:TemplateSe
   const available=templates.filter(t=>t.active&&t.available!==false)
   const matchesSearch=searchMatcher(search)
   const filtered=available.filter(set=>(category==='all'||set.category===category)&&matchesSearch(set.name+' '+set.code))
-  if(!available.length)return <Empty title="还没有可用模板" description="等待有编辑权限的成员上架公共模板。"/>
+  if(!available.length)return <Empty title="还没有可用模板" description="等待有编辑权限的成员创建公共模板。"/>
   return <>
     <div className="template-search-bar">
       <label className="period-filter">分类<select aria-label="筛选模板分类" value={category} onChange={e=>setCategory(e.target.value)}><option value="all">全部分类</option>{categories.map(({id,name:label})=><option value={id} key={id}>{label}</option>)}</select></label>

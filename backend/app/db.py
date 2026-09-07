@@ -67,6 +67,8 @@ class Database:
             migrate_library(tx)
             from .categories import seed_categories
             seed_categories(tx)
+            from .library import migrate_library_status
+            migrate_library_status(tx)
         os.chmod(self.path, 0o600)
 
     @contextmanager

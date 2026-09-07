@@ -30,3 +30,11 @@ test('sticker library exposes category labels, view choices and editor bulk sele
  expect(viewer).not.toContain('管理分类')
  expect(viewer).not.toContain('全选筛选结果')
 })
+
+test('sticker cards use labelled icon actions without status controls',()=>{
+ const html=renderToStaticMarkup(<Stickers stickers={[{...a,editable:true}]} canEdit onRefresh={()=>{}}/>)
+ expect(html).toContain('aria-label="编辑贴纸 S1"')
+ expect(html).not.toContain('>停用<')
+ expect(html).not.toContain('已启用')
+ expect(html).not.toContain('>编辑</button>')
+})

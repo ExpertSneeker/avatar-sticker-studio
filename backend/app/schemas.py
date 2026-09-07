@@ -194,14 +194,13 @@ class StickerBatch(Model):
     ids: list[str] = Field(min_length=1, max_length=1000)
     action: Literal['update','delete']
     category: str | None = None
-    active: bool | None = Field(default=None, strict=True)
 
     @model_validator(mode='after')
     def valid_batch(self):
         if len(set(self.ids)) != len(self.ids):
             raise ValueError('贴纸不能重复')
-        if self.action == 'update' and self.category is None and self.active is None:
-            raise ValueError('请选择要修改的分类或状态')
-        if self.action == 'delete' and (self.category is not None or self.active is not None):
-            raise ValueError('删除不能同时修改分类或状态')
+        if self.action == 'update' and self.category is None:
+            raise ValueError('请选择要修改的分类')
+        if self.action == 'delete' and self.category is not None:
+            raise ValueError('删除不能同时修改分类')
         return self

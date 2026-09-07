@@ -2,7 +2,7 @@ import {test,expect} from '@playwright/test'
 import {readFileSync} from 'node:fs'
 import {uploadStickers} from './library-fixtures'
 
-test('deletion lists active and inactive template references then removes only unreferenced stickers',async({page})=>{
+test('deletion lists template references then removes only unreferenced stickers',async({page})=>{
  const status=await(await page.request.get('/api/auth/status')).json()
  await page.request.post(status.needs_setup?'/api/auth/setup':'/api/auth/login',{data:{username:'testadmin',password:'local-test-password',...(status.needs_setup?{display_name:'测试管理员'}:{})}})
  const pixel=readFileSync(new URL('./fixtures/portrait.png',import.meta.url))
@@ -12,7 +12,7 @@ test('deletion lists active and inactive template references then removes only u
   const response=await page.request.post('/api/templates',{data:{code,name:'引用模板 '+code,category:'general',sticker_ids:[sticker.id]}})
   expect(response.ok()).toBeTruthy();templates.push(await response.json())
  }
- await page.request.patch('/api/templates/'+templates[1].id,{data:{active:false}})
+ expect((await page.request.patch('/api/templates/'+templates[1].id,{data:{active:false}})).status()).toBe(410)
  const deletes:string[]=[]
  page.on('request',r=>{if(r.method()==='DELETE')deletes.push(r.url())})
  await page.goto('/')
@@ -29,7 +29,7 @@ test('deletion lists active and inactive template references then removes only u
  await expect(dialog).toContainText('贴纸仍被模板使用')
  await expect(dialog).toContainText('引用模板 DELETE-A')
  await expect(dialog).toContainText('引用模板 DELETE-B')
- await expect(dialog).toContainText('已下架')
+ await expect(dialog).not.toContainText('已下架')
  await dialog.screenshot({path:'/tmp/library-delete-references.png'})
  await dialog.getByRole('button',{name:'知道了'}).click()
  await expect(page.locator('.library-set')).toHaveCount(1)

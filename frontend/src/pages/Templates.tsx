@@ -7,7 +7,7 @@ import { previewUrl } from '../lib/preview'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Plus, Search, ArrowUp, ArrowDown, X, Pencil, Eye } from 'lucide-react'
 import { Empty, Modal, Spinner, useNotice } from '../components/UI'
-import { api, patch } from '../lib/api'
+import { api } from '../lib/api'
 import { StickerChooser } from './Stickers'
 import type { Sticker, TemplateSet } from '../lib/types'
 
@@ -24,23 +24,21 @@ function SetEditor({set,stickers,onClose,onSaved}:{set:TemplateSet|null;stickers
 export function Templates({templates,stickers=[],admin,canEdit=admin,onRefresh}:{templates:TemplateSet[];stickers?:Sticker[];admin:boolean;canEdit?:boolean;onRefresh:()=>void}) {
   const {categories}=useCategories()
   const [category,setCategory]=useState('all'),[search,setSearch]=useState('')
-  const [editor,setEditor]=useState<TemplateSet|null|undefined>(undefined),[preview,setPreview]=useState<TemplateSet|null>(null),notice=useNotice()
+  const [editor,setEditor]=useState<TemplateSet|null|undefined>(undefined),[preview,setPreview]=useState<TemplateSet|null>(null)
   useEffect(()=>{if(category!=='all'&&!categories.some(c=>c.id===category))setCategory('all')},[categories,category])
   const filtered=useMemo(()=>{
     const matchesSearch=searchMatcher(search)
     return templates.filter(t=>(category==='all'||t.category===category)&&matchesSearch(t.name+' '+t.code))
   },[templates,category,search])
-  async function toggle(set:TemplateSet) {
-    try {await patch('/templates/'+set.id,{active:!set.active});notice(set.active?'套装已下架':'套装已上架');onRefresh()}catch(e){notice((e as Error).message,'error')}
-  }
+
   return <>
     <div className="page-heading"><div><h1>模板库</h1><p>从公共贴纸库组合有序套装，所有成员共享使用。</p></div>{canEdit&&<div className="library-heading-actions"><CategoryManager/><button className="button primary" onClick={()=>setEditor(null)}><Plus size={17}/>新建套装</button></div>}</div>
     <div className="filter-bar"><label className="search-input"><Search size={16}/><input aria-label="搜索模板" placeholder="搜索名称或编号，支持空格多词" value={search} onChange={e=>setSearch(e.target.value)}/></label></div>
     <div className="filter-bar"><div className="tabs" role="group" aria-label="模板分类">{[{id:'all',name:'全部分类'},...categories].map(({id,name:label})=><button className={category===id?'active':''} aria-pressed={category===id} onClick={()=>setCategory(id)} key={id}>{label}</button>)}</div></div>
     {filtered.length?<div className="template-library">{filtered.map(set=><article className="library-set" key={set.id}>
       <button className="library-mosaic" onClick={()=>setPreview(set)} aria-label={'预览 '+set.name}>{set.images.slice(0,12).map(im=><img key={im.id} src={previewUrl(im.url)} alt={set.name+' 模板 '+im.position} loading="lazy"/>)}</button>
-      <div className="library-details"><div><h3>{set.name}</h3><p>{set.code} <span>·</span> {set.images.length} 张 <span>·</span> v{set.revision}</p><p>{'公共模板'} <span>·</span> {categoryName(categories,set.category)}</p></div><span className={'availability '+(set.active?'on':'')}>{!set.active?'未上架':set.available===false?'包含不可用贴纸':'已上架'}</span></div>
-      <div className="library-actions"><button className="text-button" onClick={()=>setPreview(set)}><Eye size={15}/>预览</button>{canEdit&&(set.editable??admin)&&<><button className="text-button" onClick={()=>setEditor(set)}><Pencil size={15}/>编辑</button><button className="text-button" onClick={()=>toggle(set)}>{set.active?'下架':'上架'}</button><LibraryDeleteButton kind="templates" id={set.id} code={set.code} onDeleted={onRefresh}/></>}</div>
+      <div className="library-details"><div><h3>{set.name}</h3><p>{set.code} <span>·</span> {set.images.length} 张 <span>·</span> v{set.revision}</p><p>{'公共模板'} <span>·</span> {categoryName(categories,set.category)}</p></div>{set.available===false&&<span className="availability">包含不可用贴纸</span>}</div>
+      <div className="library-actions"><button className="text-button" onClick={()=>setPreview(set)}><Eye size={15}/>预览</button>{canEdit&&(set.editable??admin)&&<><button className="text-button" onClick={()=>setEditor(set)}><Pencil size={15}/>编辑</button><LibraryDeleteButton kind="templates" id={set.id} code={set.code} onDeleted={onRefresh}/></>}</div>
     </article>)}</div>:<Empty title={search||category!=='all'?'没有找到匹配的套装':'模板库等待你的第一套作品'} description="可调整筛选条件，或从公共贴纸库选择 1–100 张创建套装。">{canEdit&&<button className="button" onClick={()=>setEditor(null)}><Plus size={16}/>新建套装</button>}</Empty>}
     {canEdit&&editor!==undefined&&<SetEditor set={editor} stickers={stickers} onClose={()=>setEditor(undefined)} onSaved={onRefresh}/>}
     {preview&&<Modal title={preview.code+' · '+preview.name} onClose={()=>setPreview(null)} wide><div className="preview-template-grid">{preview.images.map((im,index)=><figure key={im.id}><ImagePreview src={im.url} alt={'模板 '+(index+1)}/><figcaption>{String(index+1).padStart(2,'0')}</figcaption></figure>)}</div></Modal>}
