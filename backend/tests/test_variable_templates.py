@@ -23,7 +23,7 @@ def test_actual_counts_snapshot_billing_prints_and_overview(context):
     o=first.json();assert o['total']==14
     assert staff.get('/api/credits').json()['wallet']['frozen']==14
     kept=private['images'][:2]
-    edit=staff.put('/api/templates/'+private['id'],data={'code':private['code'],'name':private['name'],'category':'general','existing_ids':json.dumps([im['id'] for im in kept]),'image_order':json.dumps([{'id':im['id']} for im in reversed(kept)])})
+    edit=staff.put('/api/templates/'+private['id'],data={'code':'A2-14','name':private['name'],'category':'general','existing_ids':json.dumps([im['id'] for im in kept]),'image_order':json.dumps([{'id':im['id']} for im in reversed(kept)])})
     assert edit.status_code==200,edit.text
     assert len(edit.json()['images'])==2 and edit.json()['images'][0]['id']==kept[1]['id']
     for _ in range(14):asyncio.run(app.state.worker.execute(app.state.worker.claim()))
@@ -37,7 +37,14 @@ def test_actual_counts_snapshot_billing_prints_and_overview(context):
     with app.state.db.transaction() as tx:
         assert len(tx.get('orders',o['id'])['template_snapshots'][1]['images'])==13
         assert len(tx.get('template_revisions',private['id']+':1')['images'])==13
-    fund(admin,user,3,'second');assert submit('new').json()['total']==3
+    fund(admin,user,3,'second');new_order=submit('new').json()
+    assert new_order['total']==3 and new_order['template_codes']==['SINGLE','A2-14']
+    assert all('A1-13' in a['path'] for a in result['artifacts'] if a.get('set_code')=='A1-13')
+    conflict=staff.put('/api/templates/'+private['id'],data={'code':'single','name':'Collision','category':'general','existing_ids':json.dumps([im['id'] for im in kept])})
+    assert conflict.status_code==409
+    with app.state.db.transaction() as tx:
+        current=tx.get('templates',private['id'])
+        assert current['code']=='A2-14' and current['revision']==2
 
 
 def test_empty_sets_and_invalid_order_are_rejected_without_orphan_files(context):
