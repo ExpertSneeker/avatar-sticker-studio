@@ -45,3 +45,12 @@
 @media(max-width:650px){.library-heading-actions{width:100%;margin-top:12px}.sticker-filters{gap:10px}.sticker-filters .search-input{width:100%;min-width:0}.sticker-bulk-bar{gap:10px}.sticker-bulk-bar>div{width:100%;margin:0}.sticker-compact{grid-template-columns:repeat(2,minmax(0,1fr))}.sticker-list .library-set{grid-template-columns:64px minmax(0,1fr);padding-left:36px;gap:10px}.sticker-list .sticker-cover{width:64px;height:64px}.sticker-list .library-actions{grid-column:1/-1;justify-content:flex-end}.sticker-list .library-details{flex-wrap:wrap}.category-row{gap:8px}.category-row .text-button{flex-shrink:0}}
 
 @media(max-width:650px){.page-heading:has(.library-heading-actions){flex-wrap:wrap}.library-heading-actions{margin-top:0}}
+/* Search controls keep a visible, full-size target in pages and dialogs. */
+.search-input,.accounts-search,.statistics-section-heading>input[aria-label^="搜索"]{border:1px solid #8893a1;border-radius:6px;background:#fff;min-height:44px;max-width:100%;transition:border-color .15s,box-shadow .15s}
+.search-input,.accounts-search{padding:0 12px;cursor:text;gap:9px;min-width:0}.search-input{width:260px}.search-input>svg,.accounts-search>svg{flex-shrink:0;color:#737d8b;pointer-events:none}
+.search-input input,.accounts-search input{flex:1;min-width:0;width:100%;height:42px;padding:10px 0;border:0;border-radius:0;background:transparent;box-shadow:none;font-size:13px;outline:none}
+.statistics-section-heading>input[aria-label^="搜索"]{padding:10px 12px;font-size:13px}
+.search-input:hover,.accounts-search:hover,.statistics-section-heading>input[aria-label^="搜索"]:hover{border-color:#566477}
+.search-input:focus-within,.accounts-search:focus-within,.statistics-section-heading>input[aria-label^="搜索"]:focus{border-color:var(--accent);box-shadow:0 0 0 3px #ff69351f;outline:none}
+.search-input input:focus,.accounts-search input:focus{border:0;box-shadow:none;outline:none}.search-input input::placeholder,.accounts-search input::placeholder,.statistics-section-heading>input[aria-label^="搜索"]::placeholder{color:#737d8b;opacity:1}
+@media(max-width:720px){.search-input,.accounts-search{width:100%;max-width:100%}.statistics-section-heading>input[aria-label^="搜索"]{width:100%}}
