@@ -44,32 +44,82 @@ def prepare_sticker(data, settings):
     return image
 
 
+PRINT_LAYOUT_STYLE = 'order-title-centered-v1'
+
+
+def print_header(name, settings, width):
+    """Physical title dimensions, measured ink bounds and extra top clearance."""
+    px = lambda mm: round(mm / 25.4 * settings.dpi)
+    font = watermark_font(name, max(1, px(3)))
+    available = width - 2 * max(px(settings.margin_mm), px(3))
+    lines, line = [], ''
+    for char in name:
+        if font.getlength(char) > available:
+            raise ValueError('页边距过大，订单标题无法完整显示')
+        if line and font.getlength(line + char) > available:
+            lines.append(line); line = ''
+        line += char
+    if line: lines.append(line)
+    draw = ImageDraw.Draw(Image.new('RGBA', (1, 1)))
+    y, positions = px(3), []
+    for line in lines:
+        box = draw.textbbox((0, 0), line, font=font)
+        positions.append((line, ((width - (box[2] - box[0])) // 2 - box[0], y - box[1])))
+        y += box[3] - box[1] + px(1)
+    text_bottom = y - px(1)
+    top = max(px(settings.margin_mm + 2), text_bottom + px(3))
+    return font, positions, top
+
+
 def pack_set(images, name, code, settings):
     if len(images) != 12:
         raise ValueError('仅发布完整的12张套装')
     px = lambda mm: round(mm / 25.4 * settings.dpi)
     width, height = px(settings.paper_width_mm), px(settings.paper_height_mm)
     margin, gap = px(settings.margin_mm), px(settings.gap_mm)
-    page = Image.new('RGBA', (width, height))
-    pages, x, y, row_height = [], margin, margin, 0
+    font, title, top = print_header(name, settings, width)
+    available_width, available_height = width - 2 * margin, height - margin - top
+    if available_width <= 0 or available_height <= 0:
+        raise ValueError('标题及页边距超出纸张尺寸，请增大纸张或减小页边距')
+    pages, placements = [], []
+    x = y = row_height = 0
+
+    def finish_page():
+        if not placements:
+            return
+        content_width = max(x + im.width for im, x, y in placements)
+        content_height = max(y + im.height for im, x, y in placements)
+        offset_x = (width - content_width) // 2
+        offset_y = top + (available_height - content_height) // 2
+        page = Image.new('RGBA', (width, height))
+        for sticker, sx, sy in placements:
+            # Preserve semitransparent edges without applying alpha twice.
+            page.alpha_composite(sticker, (offset_x + sx, offset_y + sy))
+        draw = ImageDraw.Draw(page)
+        for text, position in title:
+            draw.text(position, text, font=font, fill=(0, 0, 0, 255))
+        pages.append((f'{name}_{code}_{len(pages) + 1}.png', encode(page, settings.dpi)))
+        placements.clear()
+
     for data in images:
         sticker = prepare_sticker(data, settings)
-        if x + sticker.width > width - margin:
-            if sticker.height < sticker.width and x + sticker.height <= width - margin and y + sticker.width <= height - margin:
+        if sticker.width > available_width or sticker.height > available_height:
+            if sticker.height <= available_width and sticker.width <= available_height:
                 sticker = sticker.transpose(Image.Transpose.ROTATE_90)
             else:
-                x, y, row_height = margin, y + row_height + gap, 0
-        if y + sticker.height > height - margin:
-            pages.append((f'{name}_{code}_{len(pages) + 1}.png', encode(page, settings.dpi)))
-            page = Image.new('RGBA', (width, height))
-            x, y, row_height = margin, margin, 0
-        if sticker.width > width - 2 * margin or sticker.height > height - 2 * margin:
-            raise ValueError('贴纸尺寸超出可打印区域')
-        # alpha_composite preserves source alpha; paste(image, mask=image) squares it.
-        page.alpha_composite(sticker, (x, y))
+                raise ValueError('贴纸尺寸超出标题下方的可打印区域，请调整纸张或页边距')
+        if x + sticker.width > available_width:
+            if sticker.height < sticker.width and x + sticker.height <= available_width and y + sticker.width <= available_height:
+                sticker = sticker.transpose(Image.Transpose.ROTATE_90)
+            else:
+                x, y, row_height = 0, y + row_height + gap, 0
+        if y + sticker.height > available_height:
+            finish_page()
+            x = y = row_height = 0
+        placements.append((sticker, x, y))
         x += sticker.width + gap
         row_height = max(row_height, sticker.height)
-    pages.append((f'{name}_{code}_{len(pages) + 1}.png', encode(page, settings.dpi)))
+    finish_page()
     return pages
 
 
@@ -118,13 +168,13 @@ def overview(images, watermark):
     return encode(Image.alpha_composite(canvas, layer).convert('RGB'))
 
 
-def watermark_font(text):
+def watermark_font(text, size=40):
     candidates = [os.environ.get('STUDIO_FONT', ''), '/System/Library/Fonts/PingFang.ttc', '/System/Library/Fonts/STHeiti Light.ttc', '/System/Library/Fonts/Supplemental/Songti.ttc', '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc', '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf']
     for path in candidates:
         if not path or not Path(path).is_file():
             continue
         try:
-            font = ImageFont.truetype(path, 40)
+            font = ImageFont.truetype(path, size)
             missing = font.getmask('\uffff')
             missing_signature = (missing.size, bytes(missing))
             supported = True
@@ -139,4 +189,4 @@ def watermark_font(text):
                 return font
         except OSError:
             continue
-    raise ValueError('没有支持当前水印文字的字体，请将STUDIO_FONT设置为支持中文的字体文件路径')
+    raise ValueError('没有支持当前文字的字体，请将STUDIO_FONT设置为支持中文的字体文件路径')

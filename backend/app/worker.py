@@ -10,7 +10,7 @@ from collections import Counter
 from .auth import generation_limit
 from .db import uid
 from . import credits
-from .processing import decode, encode, overview, pack_set
+from .processing import PRINT_LAYOUT_STYLE, decode, encode, overview, pack_set
 from .providers import FalProvider, ProviderFailure, YeziProvider
 from .schemas import PrintSettings
 from .storage import asset_bytes, save_asset
@@ -70,17 +70,25 @@ class Worker:
             orders = {o['id']: o for o in tx.all('orders')}
             active_users = {u['id']: u for u in tx.all('users') if u['active']}
             candidates = [i for i in items if i['status'] == 'queued' and not i.get('cutout_inflight') and i.get('next_at', 0) <= now]
-            # Recovery and saved-image processing do not compete for new remote slots.
-            candidates.sort(key=lambda i: 0 if i.get('fal_request_id') or i.get('processing_stage') == 'postprocess' else 1)
-            item = next((i for i in candidates if
+            eligible = [i for i in candidates if
                 (i.get('processing_stage') == 'postprocess' and processing_inflight < 2 and not orders[i['order_id']]['paused'] and i['owner'] in active_users) or
                 (i.get('fal_request_id') and i.get('processing_stage') != 'postprocess' and configured) or
                 (i.get('processing_stage') != 'postprocess' and generation_admitted and not orders[i['order_id']]['paused'] and i['owner'] in active_users
-                 and owner_inflight[i['owner']] < generation_limit(active_users[i['owner']]))), None)
+                 and owner_inflight[i['owner']] < generation_limit(active_users[i['owner']]))]
+            # Prefer the least occupied account, rotating ties durably even with one slot.
+            # Recovery and saved-image processing never need a new generation slot.
+            item = min(eligible, key=lambda i: (0, 0, 0) if i.get('fal_request_id') or i.get('processing_stage') == 'postprocess'
+                       else (1, owner_inflight[i['owner']], active_users[i['owner']].get('last_generation_dispatch', 0)), default=None)
             if not item:
                 return None
             postprocess = item.get('processing_stage') == 'postprocess'
             new_request = not postprocess and not item.get('fal_request_id')
+            if new_request:
+                config['dispatch_sequence'] = config.get('dispatch_sequence', 0) + 1
+                account = active_users[item['owner']]
+                account['last_generation_dispatch'] = config['dispatch_sequence']
+                tx.put('users', account)
+                tx.put('config', config)
             item.update(status='running', worker_id=self.id, run_id=uid(), attempt=item['attempt'] + int(new_request), started_at=now, error=None)
             if not postprocess:
                 item['remote_reserved'] = True
@@ -242,7 +250,7 @@ class Worker:
                     group = [i for i in items if i['set_code'] == code]
                     if len(group) != 12 or any(not i.get('result_id') for i in group):
                         continue
-                    signature = hashlib.sha256(json.dumps([settings.model_dump(), [i['result_id'] for i in group]], sort_keys=True).encode()).hexdigest()
+                    signature = hashlib.sha256(json.dumps([PRINT_LAYOUT_STYLE, order['name'], settings.model_dump(), [i['result_id'] for i in group]], sort_keys=True).encode()).hexdigest()
                     if not force and signature == old_signatures.get(code):
                         continue
                     replacements[code] = pack_set([binaries[i['id']] for i in group], order['name'], code, settings)

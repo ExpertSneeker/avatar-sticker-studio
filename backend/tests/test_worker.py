@@ -450,3 +450,23 @@ def test_completed_remote_failure_releases_slot_without_result_or_resubmit(conte
     assert value['fal_status']=='COMPLETED'
     assert value['remote_reserved'] is False
     assert p.submissions==1
+
+
+def test_print_layout_version_rebuilds_pages_from_saved_results_without_generation(context):
+    app,client,_,provider=context
+    o,_=order(client)
+    w=app.state.worker
+    for _ in range(12):asyncio.run(w.execute(w.claim()))
+    before=client.get('/api/orders/'+o['id']).json()
+    calls=len(provider.calls)
+    with app.state.db.transaction() as tx:
+        value=tx.get('orders',o['id'])
+        for code in value['template_codes']:value['publish_signatures'][code]='previous-print-layout'
+        tx.put('orders',value)
+    assert w.publish(o['id'])
+    after=client.get('/api/orders/'+o['id']).json()
+    assert len(provider.calls)==calls
+    assert [i['result_url'] for i in before['items']]==[i['result_url'] for i in after['items']]
+    assert [a['id'] for a in before['artifacts'] if a['kind']=='overview']==[a['id'] for a in after['artifacts'] if a['kind']=='overview']
+    assert [a['id'] for a in before['artifacts'] if a['kind']=='print']!=[a['id'] for a in after['artifacts'] if a['kind']=='print']
+    assert w.publish(o['id']) is False
