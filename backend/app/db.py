@@ -65,6 +65,8 @@ class Database:
                 tx.put('migrations', {'id':'personal-credits-v1'})
             from .library import migrate_library
             migrate_library(tx)
+            from .categories import seed_categories
+            seed_categories(tx)
         os.chmod(self.path, 0o600)
 
     @contextmanager

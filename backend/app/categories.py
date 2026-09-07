@@ -1,0 +1,63 @@
+"""Shared editable category identities; catalog edits never rewrite order history."""
+from fastapi import HTTPException, Request
+from .auth import require_library_editor
+from .db import uid
+from .schemas import CategoryWrite
+
+DEFAULT_CATEGORIES = {'boy':'男孩','girl':'女孩','animal':'动物','general':'通用'}
+
+
+def seed_categories(tx):
+    if tx.get('migrations','library-categories-v1'):
+        return
+    for id, name in DEFAULT_CATEGORIES.items():
+        tx.put('library_categories', {'id':id,'name':name})
+    tx.put('migrations', {'id':'library-categories-v1'})
+
+
+def resolve_category(tx, value):
+    value = next((id for id,name in DEFAULT_CATEGORIES.items() if name==value),value)
+    if not tx.get('library_categories',value):
+        raise HTTPException(422,'分类不存在或已删除，请重新选择')
+    return value
+
+
+def register_categories(app, db, user):
+    @app.get('/api/library/categories')
+    def categories(request: Request):
+        with db.transaction() as tx:
+            user(tx,request)
+            return tx.all('library_categories')
+
+    def write(data, request, id=None):
+        with db.transaction() as tx:
+            require_library_editor(user(tx,request))
+            if id and not tx.get('library_categories',id):
+                raise HTTPException(404,'分类不存在')
+            if any(c['id']!=id and c['name'].casefold()==data.name.casefold() for c in tx.all('library_categories')):
+                raise HTTPException(409,'分类名称已存在')
+            return tx.put('library_categories',{'id':id or uid(),'name':data.name})
+
+    @app.post('/api/library/categories')
+    def create(data: CategoryWrite, request: Request):
+        return write(data,request)
+
+    @app.patch('/api/library/categories/{id}')
+    def edit(id: str, data: CategoryWrite, request: Request):
+        return write(data,request,id)
+
+    @app.delete('/api/library/categories/{id}')
+    def delete(id: str, request: Request):
+        with db.transaction() as tx:
+            require_library_editor(user(tx,request))
+            if not tx.get('library_categories',id):
+                raise HTTPException(404,'分类不存在')
+            if id=='general':
+                raise HTTPException(409,'默认分类可重命名，但不能删除')
+            refs=[{'id':r['id'],'code':r['code'],'name':r['name'],'kind':kind}
+                  for kind in ('stickers','templates') for r in tx.all(kind)
+                  if not r.get('deleted') and (r['category']==id or r['category']==DEFAULT_CATEGORIES.get(id))]
+            if refs:
+                raise HTTPException(409,{'message':'分类仍被以下资源使用，请先修改这些资源的分类。','resources':refs})
+            tx.delete('library_categories',id)
+            return {'id':id,'deleted':True}

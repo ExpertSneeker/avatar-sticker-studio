@@ -20,3 +20,13 @@ test('editors can delete stickers while viewers cannot',()=>{
  const viewer=renderToStaticMarkup(<Stickers stickers={[{...a,editable:true}]} canEdit={false} onRefresh={()=>{}}/>)
  expect(viewer).not.toContain('删除贴纸 S1')
 })
+
+test('sticker library exposes category labels, view choices and editor bulk selection',()=>{
+ const html=renderToStaticMarkup(<Stickers stickers={[{...a,editable:true}]} canEdit onRefresh={()=>{}}/>)
+ expect(html).toContain('管理分类')
+ expect(html).toContain('列表视图')
+ expect(html).toContain('选择贴纸 S1')
+ const viewer=renderToStaticMarkup(<Stickers stickers={[a]} canEdit={false} onRefresh={()=>{}}/>)
+ expect(viewer).not.toContain('管理分类')
+ expect(viewer).not.toContain('全选筛选结果')
+})

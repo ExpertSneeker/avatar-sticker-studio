@@ -4,17 +4,10 @@ from fastapi import HTTPException, Request
 from starlette.datastructures import UploadFile
 from .auth import can_edit_library, require_library_editor, require_admin, public_user
 from .db import uid
-from .schemas import ActivePatch, LibraryPermissionPatch, TemplateWrite, safe_name
+from .schemas import ActivePatch, LibraryPermissionPatch, TemplateWrite, StickerBatch, safe_name
 from .storage import normalize_image, save_asset
 
 CATEGORIES = {'男孩':'boy', '女孩':'girl', '动物':'animal', '通用':'general'}
-
-
-def category(value):
-    value = CATEGORIES.get(value, value)
-    if value not in {'boy','girl','animal','general'}:
-        raise ValueError('分类必须为男孩、女孩、动物或通用')
-    return value
 
 
 def snapshot(tx, kind, value):
@@ -74,6 +67,8 @@ def migrate_library(tx):
 
 
 def register_library(app, db, user):
+    from .categories import register_categories, resolve_category
+    register_categories(app, db, user)
     def sticker_public(value,actor):
         return {**value,'editable':can_edit_library(actor)}
 
@@ -128,7 +123,7 @@ def register_library(app, db, user):
                             codes=[safe_name(c) for c in codes]
                         if '拼版' in codes: raise ValueError('贴纸编号“拼版”为导出拼版文件保留，请使用其他编号')
                         name=safe_name(str(form.get('name',old['name'] if old else codes[0])))
-                        cat=category(str(form.get('category',old['category'] if old else 'general')))
+                        cat=resolve_category(tx,str(form.get('category',old['category'] if old else 'general')))
                     except (TypeError,ValueError) as exc:
                         raise HTTPException(422,str(exc)) from exc
                     existing={s['code'].casefold() for s in tx.all('stickers') if s['id']!=id and not s.get('deleted')}
@@ -180,7 +175,7 @@ def register_library(app, db, user):
             if id and (not old or old.get('deleted')): raise HTTPException(404,'套装不存在')
             if any(t['code'].casefold()==data.code.casefold() and t['id']!=id and not t.get('deleted') for t in tx.all('templates')): raise HTTPException(409,'套装编号已存在')
             if any(not (s:=tx.get('stickers',sid)) or not s['active'] or s.get('deleted') for sid in data.sticker_ids): raise HTTPException(422,'套装包含不存在或已停用的贴纸')
-            value={**data.model_dump(),'id':id or uid(),'scope':'public','owner':None,'active':old['active'] if old else True,'revision':old['revision']+1 if old else 1}
+            value={**data.model_dump(),'category':resolve_category(tx,data.category),'id':id or uid(),'scope':'public','owner':None,'active':old['active'] if old else True,'revision':old['revision']+1 if old else 1}
             value=hydrate_template(tx,value)
             tx.put('templates',value);snapshot(tx,'templates',value)
             return template_public(tx,value,actor)
@@ -233,3 +228,36 @@ def register_library(app, db, user):
     @app.delete('/api/stickers/{id}')
     def delete_sticker(id: str, request: Request):
         return delete_entry('stickers', id, request)
+
+    @app.post('/api/stickers/batch')
+    def batch(data: StickerBatch, request: Request):
+        with db.transaction() as tx:
+            actor=user(tx,request)
+            require_library_editor(actor)
+            values=[tx.get('stickers',id) for id in data.ids]
+            if any(not s or s.get('deleted') for s in values):
+                raise HTTPException(404,'所选贴纸已被删除，请刷新后重试')
+            if data.action=='delete':
+                references=[]
+                templates=tx.all('templates')
+                for s in values:
+                    refs=[{k:t[k] for k in ('id','code','name','active')} for t in templates
+                          if not t.get('deleted') and s['id'] in t.get('sticker_ids',[])]
+                    if refs:
+                        references.append({'sticker':{'id':s['id'],'code':s['code']},'templates':refs})
+                if references:
+                    raise HTTPException(409,{'message':'部分贴纸仍被模板使用，本次未删除任何贴纸。','references':references})
+                changes={'deleted':True,'active':False}
+            else:
+                changes={}
+                if data.category is not None:
+                    changes['category']=resolve_category(tx,data.category)
+                if data.active is not None:
+                    changes['active']=data.active
+            for s in values:
+                if any(s.get(k)!=v for k,v in changes.items()):
+                    s.update(changes)
+                    s['revision']+=1
+                    tx.put('stickers',s)
+                    snapshot(tx,'stickers',s)
+            return {'count':len(values)}

@@ -1,3 +1,4 @@
+import {useCategories} from '../lib/categories'
 import { searchMatcher } from '../lib/search'
 import { createPortal } from 'react-dom'
 import { previewUrl } from '../lib/preview'
@@ -56,8 +57,8 @@ export function PrintFields({value,onChange}:{value:PrintSettings;onChange:(valu
   const field=(key:keyof PrintSettings,label:string,min:number,max:number)=><label className="field">{label}<div className="unit-input"><input type="number" min={min} max={max} step="1" value={Number(value[key])} onChange={e=>onChange({...value,[key]:Number(e.target.value)})}/><span>mm</span></div></label>
   return <div className="print-fields"><div className="field"><span>纸张</span><div className="segmented"><button type="button" className={value.paper_width_mm===210&&value.paper_height_mm===297?'selected':''} onClick={()=>onChange({...value,paper_width_mm:210,paper_height_mm:297})}>A4</button><button type="button" className={value.paper_width_mm===297&&value.paper_height_mm===420?'selected':''} onClick={()=>onChange({...value,paper_width_mm:297,paper_height_mm:420})}>A3</button><span>也可自定义</span></div></div><div className="form-grid">{field('paper_width_mm','纸张宽度',50,600)}{field('paper_height_mm','纸张高度',50,600)}{field('long_edge_mm','单张内容长边',10,300)}{field('margin_mm','页边距',0,80)}{field('gap_mm','图片间距',0,80)}<label className="field">打印分辨率<select value={value.dpi} onChange={e=>onChange({...value,dpi:Number(e.target.value)})}><option value={300}>300 DPI</option><option value={150}>150 DPI</option><option value={600}>600 DPI</option></select></label></div><label className="check-line"><input type="checkbox" checked={value.brightness} onChange={e=>onChange({...value,brightness:e.target.checked})}/>亮度优化<span>用于偏暗图片</span></label><label className="check-line"><input type="checkbox" checked={value.color_balance} onChange={e=>onChange({...value,color_balance:e.target.checked})}/>打印色彩平衡<span>保留透明边缘</span></label><p className="hint">按有效内容等比排版，图片整体居中。每页顶部标注订单名，顶部额外预留标题空间；不会缩小图片来凑数。</p></div>
 }
-export const TEMPLATE_CATEGORIES=[['boy','男孩'],['girl','女孩'],['animal','动物'],['general','通用']] as const
 export function TemplateChooser({templates,value,onChange}:{templates:TemplateSet[];value:string[];onChange:(value:string[])=>void}) {
+ const {categories}=useCategories()
   const [search,setSearch]=useState(''),[category,setCategory]=useState('all')
   const available=templates.filter(t=>t.active&&t.available!==false)
   const matchesSearch=searchMatcher(search)
@@ -65,7 +66,7 @@ export function TemplateChooser({templates,value,onChange}:{templates:TemplateSe
   if(!available.length)return <Empty title="还没有可用模板" description="等待有编辑权限的成员上架公共模板。"/>
   return <>
     <div className="template-search-bar">
-      <label className="period-filter">分类<select aria-label="筛选模板分类" value={category} onChange={e=>setCategory(e.target.value)}><option value="all">全部分类</option>{TEMPLATE_CATEGORIES.map(([id,label])=><option value={id} key={id}>{label}</option>)}</select></label>
+      <label className="period-filter">分类<select aria-label="筛选模板分类" value={category} onChange={e=>setCategory(e.target.value)}><option value="all">全部分类</option>{categories.map(({id,name:label})=><option value={id} key={id}>{label}</option>)}</select></label>
       <label className="search-input"><Search size={16}/><input aria-label="搜索模板套装" placeholder="搜索模板名称或编号" value={search} onChange={e=>setSearch(e.target.value)}/></label>
       {search&&<button className="text-button" onClick={()=>setSearch('')}>清空搜索</button>}
       <span className="hint">找到 {filtered.length} 套</span>

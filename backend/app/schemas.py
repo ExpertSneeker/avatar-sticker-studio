@@ -177,15 +177,31 @@ class TemplateWrite(Model):
     sticker_ids: list[str] = Field(min_length=1, max_length=100)
     _names = field_validator('code', 'name')(safe_name)
 
-    @field_validator('category')
-    @classmethod
-    def valid_category(cls, value):
-        from .library import category
-        return category(value)
-
     @field_validator('sticker_ids')
     @classmethod
     def distinct_stickers(cls, value):
         if len(set(value)) != len(value):
             raise ValueError('贴纸不能重复')
         return value
+
+
+class CategoryWrite(Model):
+    name: str
+    _name = field_validator('name')(safe_name)
+
+
+class StickerBatch(Model):
+    ids: list[str] = Field(min_length=1, max_length=1000)
+    action: Literal['update','delete']
+    category: str | None = None
+    active: bool | None = Field(default=None, strict=True)
+
+    @model_validator(mode='after')
+    def valid_batch(self):
+        if len(set(self.ids)) != len(self.ids):
+            raise ValueError('贴纸不能重复')
+        if self.action == 'update' and self.category is None and self.active is None:
+            raise ValueError('请选择要修改的分类或状态')
+        if self.action == 'delete' and (self.category is not None or self.active is not None):
+            raise ValueError('删除不能同时修改分类或状态')
+        return self
