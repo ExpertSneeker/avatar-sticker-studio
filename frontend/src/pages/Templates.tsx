@@ -1,3 +1,4 @@
+import { LibraryDeleteButton } from '../components/LibraryDeleteButton'
 import { searchMatcher } from '../lib/search'
 import { ImagePreview } from '../components/ImagePreview'
 import { previewUrl } from '../lib/preview'
@@ -34,7 +35,7 @@ export function Templates({templates,stickers=[],admin,canEdit=admin,onRefresh}:
     {filtered.length?<div className="template-library">{filtered.map(set=><article className="library-set" key={set.id}>
       <button className="library-mosaic" onClick={()=>setPreview(set)} aria-label={'预览 '+set.name}>{set.images.slice(0,12).map(im=><img key={im.id} src={previewUrl(im.url)} alt={set.name+' 模板 '+im.position} loading="lazy"/>)}</button>
       <div className="library-details"><div><h3>{set.name}</h3><p>{set.code} <span>·</span> {set.images.length} 张 <span>·</span> v{set.revision}</p><p>{'公共模板'} <span>·</span> {TEMPLATE_CATEGORIES.find(([id])=>id===set.category)?.[1]||set.category}</p></div><span className={'availability '+(set.active?'on':'')}>{!set.active?'未上架':set.available===false?'包含不可用贴纸':'已上架'}</span></div>
-      <div className="library-actions"><button className="text-button" onClick={()=>setPreview(set)}><Eye size={15}/>预览</button>{canEdit&&(set.editable??admin)&&<><button className="text-button" onClick={()=>setEditor(set)}><Pencil size={15}/>编辑</button><button className="text-button" onClick={()=>toggle(set)}>{set.active?'下架':'上架'}</button></>}</div>
+      <div className="library-actions"><button className="text-button" onClick={()=>setPreview(set)}><Eye size={15}/>预览</button>{canEdit&&(set.editable??admin)&&<><button className="text-button" onClick={()=>setEditor(set)}><Pencil size={15}/>编辑</button><button className="text-button" onClick={()=>toggle(set)}>{set.active?'下架':'上架'}</button><LibraryDeleteButton kind="templates" id={set.id} code={set.code} onDeleted={onRefresh}/></>}</div>
     </article>)}</div>:<Empty title={search||category!=='all'?'没有找到匹配的套装':'模板库等待你的第一套作品'} description="可调整筛选条件，或从公共贴纸库选择 1–100 张创建套装。">{canEdit&&<button className="button" onClick={()=>setEditor(null)}><Plus size={16}/>新建套装</button>}</Empty>}
     {canEdit&&editor!==undefined&&<SetEditor set={editor} stickers={stickers} onClose={()=>setEditor(undefined)} onSaved={onRefresh}/>}
     {preview&&<Modal title={preview.code+' · '+preview.name} onClose={()=>setPreview(null)} wide><div className="preview-template-grid">{preview.images.map((im,index)=><figure key={im.id}><ImagePreview src={im.url} alt={'模板 '+(index+1)}/><figcaption>{String(index+1).padStart(2,'0')}</figcaption></figure>)}</div></Modal>}

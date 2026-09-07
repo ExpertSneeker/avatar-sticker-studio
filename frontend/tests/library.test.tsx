@@ -13,3 +13,10 @@ describe('public sticker selection',()=>{
  test('viewers cannot create or edit stickers',()=>{const html=renderToStaticMarkup(<Stickers stickers={[a]} canEdit={false} onRefresh={()=>{}}/>);expect(html).toContain('预览');expect(html).not.toContain('批量上传');expect(html).not.toContain('>编辑<')})
  test('permission enables creation but explicit noneditable assets remain protected',()=>{const html=renderToStaticMarkup(<Stickers stickers={[a]} canEdit onRefresh={()=>{}}/>);expect(html).toContain('批量上传');expect(html).not.toContain('>编辑<')})
 })
+
+test('editors can delete stickers while viewers cannot',()=>{
+ const editor=renderToStaticMarkup(<Stickers stickers={[{...a,editable:true}]} canEdit onRefresh={()=>{}}/>)
+ expect(editor).toContain('删除贴纸 S1')
+ const viewer=renderToStaticMarkup(<Stickers stickers={[{...a,editable:true}]} canEdit={false} onRefresh={()=>{}}/>)
+ expect(viewer).not.toContain('删除贴纸 S1')
+})

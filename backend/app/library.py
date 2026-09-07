@@ -131,7 +131,7 @@ def register_library(app, db, user):
                         cat=category(str(form.get('category',old['category'] if old else 'general')))
                     except (TypeError,ValueError) as exc:
                         raise HTTPException(422,str(exc)) from exc
-                    existing={s['code'].casefold() for s in tx.all('stickers') if s['id']!=id}
+                    existing={s['code'].casefold() for s in tx.all('stickers') if s['id']!=id and not s.get('deleted')}
                     folded=[c.casefold() for c in codes]
                     if len(set(folded))!=len(folded) or existing.intersection(folded): raise HTTPException(409,'贴纸编号已存在')
                     values=[]
@@ -202,3 +202,34 @@ def register_library(app, db, user):
                 value=hydrate_template(tx,value)
                 tx.put('templates',value);snapshot(tx,'templates',value)
             return template_public(tx,value,actor)
+
+    def delete_entry(kind, id, request):
+        with db.transaction() as tx:
+            require_library_editor(user(tx, request))
+            value = tx.get(kind, id)
+            if not value:
+                raise HTTPException(404, '贴纸不存在' if kind == 'stickers' else '模板不存在')
+            if value.get('deleted'):
+                return {'id': id, 'deleted': True}
+            if kind == 'stickers':
+                references = [{k: t[k] for k in ('id', 'code', 'name', 'active')}
+                              for t in tx.all('templates')
+                              if not t.get('deleted') and id in t.get('sticker_ids', [])]
+                if references:
+                    raise HTTPException(409, {'message': '贴纸仍被模板使用，请先从以下模板中移除此贴纸或删除模板。',
+                                              'templates': references})
+            # Keep source assets and immutable revisions for submitted orders.
+            value.update(deleted=True, active=False, revision=value['revision'] + 1)
+            if kind == 'templates':
+                value['available'] = False
+            tx.put(kind, value)
+            snapshot(tx, kind, value)
+            return {'id': id, 'deleted': True}
+
+    @app.delete('/api/templates/{id}')
+    def delete_template(id: str, request: Request):
+        return delete_entry('templates', id, request)
+
+    @app.delete('/api/stickers/{id}')
+    def delete_sticker(id: str, request: Request):
+        return delete_entry('stickers', id, request)

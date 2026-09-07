@@ -44,12 +44,13 @@ test('mixed public selections deduplicate generation and retain every exported c
 test('unavailable legacy draft selections can be removed and replaced',async({page})=>{
  await page.request.post('/api/auth/login',{data:{username:'testadmin',password:'local-test-password'}})
  const user=await(await page.request.get('/api/auth/me')).json()
- await page.goto('/')
+ // Seed before mounting the app so its initial empty-draft persistence cannot overwrite the fixture.
+ await page.goto('/api/health')
  await page.evaluate(async(id)=>{
-  const db=await new Promise<IDBDatabase>((resolve,reject)=>{const r=indexedDB.open('avatar-stickers-v1',1);r.onsuccess=()=>resolve(r.result);r.onerror=()=>reject(r.error)})
+  const db=await new Promise<IDBDatabase>((resolve,reject)=>{const r=indexedDB.open('avatar-stickers-v1',1);r.onupgradeneeded=()=>r.result.createObjectStore('state');r.onsuccess=()=>resolve(r.result);r.onerror=()=>reject(r.error)})
   await new Promise<void>((resolve,reject)=>{const tx=db.transaction('state','readwrite');tx.objectStore('state').put([{id:'legacy-missing',name:'旧草稿',file:new File(['x'],'legacy.png',{type:'image/png'}),template_ids:['removed-template'],sticker_ids:['removed-sticker'],print_settings:{paper_width_mm:210,paper_height_mm:297,long_edge_mm:85,margin_mm:10,gap_mm:10,dpi:300,brightness:false,color_balance:false},client_token:'legacy-missing'}],'drafts:'+id);tx.oncomplete=()=>resolve();tx.onerror=()=>reject(tx.error)});db.close()
  },user.id)
- await page.reload()
+ await page.goto('/')
  await page.getByRole('button',{name:'批量选择模板'}).click()
  const dialog=page.getByRole('dialog')
  await dialog.getByRole('button',{name:'移除不可用模板 removed-template'}).click()

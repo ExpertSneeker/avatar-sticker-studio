@@ -38,3 +38,5 @@
 .account-concurrency-value{font-size:28px;font-weight:600;margin:12px 0;font-variant-numeric:tabular-nums}
 
 .sticker-cover{display:flex;align-items:center;justify-content:center;height:220px}.sticker-cover img{width:100%;height:100%;object-fit:contain}.preview-template-grid>figure>img{width:100%;height:150px;object-fit:contain}.row-templates{flex-wrap:wrap}
+
+.library-delete{color:#b44c3e}.library-actions{flex-wrap:wrap}.library-reference-list{padding-left:20px;max-height:45vh;overflow:auto}.library-reference-list li{padding:10px 0;overflow-wrap:anywhere}.library-reference-list span{display:block;color:var(--muted);font-size:13px;margin-top:4px}
