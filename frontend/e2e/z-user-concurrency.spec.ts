@@ -1,0 +1,41 @@
+import {test,expect} from '@playwright/test'
+import {join} from 'node:path'
+import {tmpdir} from 'node:os'
+
+test('admin edits account concurrency in a dialog and member sees read-only live limit',async({page,browser})=>{
+  const setup=await page.request.post('/api/auth/setup',{data:{username:'limitadmin',password:'limit-test-password',display_name:'并行验收管理员'}})
+  await page.request.post('/api/auth/login',{data:setup.ok()?{username:'limitadmin',password:'limit-test-password'}:{username:'testadmin',password:'local-test-password'}})
+  const member=await(await page.request.post('/api/admin/users',{data:{username:'limitmember',display_name:'并行验收成员'}})).json()
+  const context=await browser.newContext({baseURL:'http://127.0.0.1:5174'})
+  try {
+    const staff=await context.newPage()
+    await staff.request.post('/api/auth/login',{data:{username:'limitmember',password:member.temporary_password}})
+    await staff.goto('/')
+    await staff.getByRole('navigation').getByRole('button',{name:'账号设置',exact:true}).click()
+    await page.goto('/')
+    await page.getByRole('navigation').getByRole('button',{name:'账户管理',exact:true}).click()
+    await page.getByRole('textbox',{name:'搜索账号'}).fill('limitmember')
+    await expect(page.getByRole('button',{name:'并行上限',exact:true})).toBeVisible()
+    await page.getByRole('button',{name:'并行上限',exact:true}).click()
+    const dialog=page.getByRole('dialog',{name:'设置账号生图并行上限',exact:true})
+    await expect(dialog.getByLabel('最多同时生图数量')).toHaveValue('2')
+    await dialog.getByLabel('最多同时生图数量').fill('4')
+    expect((await page.request.patch('/api/admin/users/'+member.user.id+'/concurrency',{data:{generation_concurrency:3,expected_limit:2}})).ok()).toBeTruthy()
+    await dialog.getByRole('button',{name:'保存上限',exact:true}).click()
+    await expect(dialog.getByRole('alert')).toContainText('已变化')
+    await expect(dialog.getByLabel('最多同时生图数量')).toHaveValue('3')
+    await dialog.getByLabel('最多同时生图数量').fill('4')
+    await page.screenshot({path:join(tmpdir(),'avatar-studio-fal-qa','account-concurrency-admin.png'),animations:'disabled'})
+    await dialog.getByRole('button',{name:'保存上限',exact:true}).click()
+    await expect(dialog).toHaveCount(0)
+    await expect(page.locator('.accounts-table tbody tr')).toContainText('4 张')
+    const info=staff.getByRole('region',{name:'生图并行上限',exact:true})
+    await expect(info.getByText('4 张', {exact:true})).toBeVisible()
+    await expect(info.locator('input,button')).toHaveCount(0)
+    expect((await staff.request.patch('/api/admin/users/'+member.user.id+'/concurrency',{data:{generation_concurrency:5,expected_limit:4}})).status()).toBe(403)
+    await staff.setViewportSize({width:390,height:844})
+    await info.scrollIntoViewIfNeeded()
+    expect(await staff.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true)
+    await staff.screenshot({path:join(tmpdir(),'avatar-studio-fal-qa','account-concurrency-member.png'),animations:'disabled'})
+  } finally {await context.close()}
+})

@@ -24,8 +24,8 @@ from .maintenance import account_deletion_plan, cleanup_plan, drain_cleanup, sta
 from .statistics import summarize
 from .previews import PreviewCache
 from . import credits
-from .auth import can_read_asset, can_use_template, can_edit_template
-from .schemas import AccountDeleteConfirm, AdminCreateUser, CreditAdjustment, CreditSettlement, RerunRequest
+from .auth import can_read_asset, can_use_template, can_edit_template, generation_limit, DEFAULT_GENERATION_CONCURRENCY
+from .schemas import AccountConcurrencyPatch, AccountDeleteConfirm, AdminCreateUser, CreditAdjustment, CreditSettlement, RerunRequest
 
 
 def create_app(data_root=None, provider=None, clock=None, start_worker=True):
@@ -90,6 +90,7 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
         if any(u['username'].casefold() == data.username.casefold() for u in tx.all('users')):
             raise HTTPException(409, '用户名已存在')
         value = {'id': uid(), 'username': data.username, 'password': hash_password(data.password), 'display_name': data.display_name.strip(), 'role': role, 'watermark': '', 'print_defaults': PrintSettings().model_dump(), 'active': True, 'credits':{'available':0,'frozen':0,'spent':0,'version':0}}
+        value['generation_concurrency'] = DEFAULT_GENERATION_CONCURRENCY
         tx.put('users', value)
         return value
 
@@ -287,6 +288,26 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
             for entry in tx.all('sessions'):
                 if entry['user_id']==id: tx.delete('sessions', entry['id'])
             return {'temporary_password':temporary}
+
+    @app.get('/api/admin/users/{id}/concurrency')
+    def member_concurrency(id: str, request: Request):
+        with db.transaction() as tx:
+            admin(tx, request)
+            target = tx.get('users', id)
+            if not target: raise HTTPException(404, '账号不存在')
+            return {'generation_concurrency':generation_limit(target)}
+
+    @app.patch('/api/admin/users/{id}/concurrency')
+    def update_member_concurrency(id: str, data: AccountConcurrencyPatch, request: Request):
+        with db.transaction() as tx:
+            admin(tx, request)
+            target = tx.get('users', id)
+            if not target: raise HTTPException(404, '账号不存在')
+            if generation_limit(target) != data.expected_limit:
+                raise HTTPException(409, '账号并行上限已变化，请重新确认')
+            target['generation_concurrency'] = data.generation_concurrency
+            tx.put('users', target)
+            return {'generation_concurrency':generation_limit(target)}
 
     @app.get('/api/admin/users/{id}/deletion')
     def preview_member_deletion(id: str, request: Request):

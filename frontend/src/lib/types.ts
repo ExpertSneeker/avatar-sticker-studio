@@ -4,7 +4,7 @@ export interface PrintSettings {
 }
 export const defaultPrint: PrintSettings = {paper_width_mm:210,paper_height_mm:297,long_edge_mm:85,margin_mm:10,gap_mm:10,dpi:300,brightness:false,color_balance:false}
 export interface CreditWallet {available:number;frozen:number;spent:number;version:number;exempt:boolean}
-export interface User {credits?:CreditWallet;id:string;username:string;display_name:string;role:string;watermark:string;print_defaults:PrintSettings;active?:boolean}
+export interface User {generation_concurrency?:number;credits?:CreditWallet;id:string;username:string;display_name:string;role:string;watermark:string;print_defaults:PrintSettings;active?:boolean}
 export interface TemplateImage {id:string;url:string;position:number}
 export interface TemplateSet {scope?:'public'|'personal';owner?:string|null;editable?:boolean;id:string;code:string;name:string;category:string;active:boolean;revision:number;images:TemplateImage[]}
 export interface Item {id:string;set_code:string;position:number;status:string;error:string|null;result_url:string|null;template_url:string;attempt:number;raw_available?:boolean;processing_stage?:'generate'|'postprocess';fal_request_id?:string|null;fal_status?:'IN_QUEUE'|'IN_PROGRESS'|'COMPLETED'|null;queue_position?:number|null;remote_reserved?:boolean;recoverable?:boolean}

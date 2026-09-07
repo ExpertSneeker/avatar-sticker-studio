@@ -99,6 +99,11 @@ class ActivePatch(Model):
     active: bool
 
 
+class AccountConcurrencyPatch(Model):
+    generation_concurrency: int = Field(ge=1, le=40, strict=True)
+    expected_limit: int = Field(ge=1, le=40, strict=True)
+
+
 class AccountDeleteConfirm(Model):
     username: str = Field(min_length=3, max_length=40)
     preview_token: str = Field(pattern=r'^[0-9a-f]{64}$')

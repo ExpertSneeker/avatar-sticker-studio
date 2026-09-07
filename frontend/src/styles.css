@@ -34,3 +34,5 @@
 .artifact-preview-trigger{width:100%;padding:0;cursor:zoom-in}.artifact-preview{display:flex;justify-content:center;background-color:white}.artifact-preview img{display:block;max-width:100%;max-height:70vh;object-fit:contain}
 
 .task-detail-dialog{width:1160px}.task-detail-dialog .detail-heading{margin-top:0}
+
+.account-concurrency-value{font-size:28px;font-weight:600;margin:12px 0;font-variant-numeric:tabular-nums}

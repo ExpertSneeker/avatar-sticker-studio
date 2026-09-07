@@ -6,6 +6,8 @@ import logging
 import os
 import threading
 import time
+from collections import Counter
+from .auth import generation_limit
 from .db import uid
 from . import credits
 from .processing import decode, encode, overview, pack_set
@@ -62,17 +64,19 @@ class Worker:
             configured = self.provider is not None or bool(os.environ.get('FAL_KEY') or config.get('fal_api_key'))
             items = tx.all('items')
             generation_inflight = sum(bool(i.get('remote_reserved')) for i in items)
+            owner_inflight = Counter(i['owner'] for i in items if i.get('remote_reserved'))
             processing_inflight = sum(i['status'] == 'running' and i.get('processing_stage') == 'postprocess' for i in items)
             generation_admitted = configured and generation_inflight < config['max_inflight'] and now >= config.get('fal_retry_at', 0)
             orders = {o['id']: o for o in tx.all('orders')}
-            active_users = {u['id'] for u in tx.all('users') if u['active']}
+            active_users = {u['id']: u for u in tx.all('users') if u['active']}
             candidates = [i for i in items if i['status'] == 'queued' and not i.get('cutout_inflight') and i.get('next_at', 0) <= now]
             # Recovery and saved-image processing do not compete for new remote slots.
             candidates.sort(key=lambda i: 0 if i.get('fal_request_id') or i.get('processing_stage') == 'postprocess' else 1)
             item = next((i for i in candidates if
                 (i.get('processing_stage') == 'postprocess' and processing_inflight < 2 and not orders[i['order_id']]['paused'] and i['owner'] in active_users) or
                 (i.get('fal_request_id') and i.get('processing_stage') != 'postprocess' and configured) or
-                (i.get('processing_stage') != 'postprocess' and generation_admitted and not orders[i['order_id']]['paused'] and i['owner'] in active_users)), None)
+                (i.get('processing_stage') != 'postprocess' and generation_admitted and not orders[i['order_id']]['paused'] and i['owner'] in active_users
+                 and owner_inflight[i['owner']] < generation_limit(active_users[i['owner']]))), None)
             if not item:
                 return None
             postprocess = item.get('processing_stage') == 'postprocess'

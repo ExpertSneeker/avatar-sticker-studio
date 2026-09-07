@@ -3,6 +3,12 @@ import hmac
 import secrets
 from fastapi import HTTPException
 
+DEFAULT_GENERATION_CONCURRENCY = 2
+
+
+def generation_limit(user):
+    return user.get('generation_concurrency', DEFAULT_GENERATION_CONCURRENCY)
+
 
 def hash_password(password):
     salt = secrets.token_hex(16)
@@ -22,7 +28,7 @@ def token_hash(token):
 
 def public_user(user):
     from .credits import wallet
-    return {key: user[key] for key in ('id', 'username', 'display_name', 'role', 'watermark', 'print_defaults')} | {'credits':wallet(user)}
+    return {key: user[key] for key in ('id', 'username', 'display_name', 'role', 'watermark', 'print_defaults')} | {'credits':wallet(user), 'generation_concurrency':generation_limit(user)}
 
 
 def require_user(tx, token, now):
