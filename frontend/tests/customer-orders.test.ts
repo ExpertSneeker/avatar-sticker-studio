@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ApiError, expectUser } from '../src/lib/api'
-import { guestApi, isAdmin, moveSelection, OrderMutations, quantityIds, selectionCounts, selectionError, submissionError } from '../src/lib/customer-orders'
+import { guestApi, isAdmin, moveSelection, OrderMutations, quantityIds, canApplySelection, selectionCounts, selectionQuantityLimit, selectionError, submissionError } from '../src/lib/customer-orders'
 import type { CustomerLibrary, GuestOrder } from '../src/lib/customer-orders'
 import { orderFolderName } from '../src/lib/delivery'
 const library:CustomerLibrary={stickers:[{id:'a',code:'A',name:'A',category:'x',revision:1,preview_url:'/safe/a'},{id:'b',code:'B',name:'B',category:'x',revision:2,preview_url:'/safe/b'}],templates:[{id:'t',code:'T',name:'T',category:'x',sticker_ids:['a','b'],images:[]}]}
@@ -14,6 +14,36 @@ describe('customer selection contract',()=>{
     expect(quantityIds(['b','a','a'],'a',3)).toEqual(['b','a','a','a'])
     expect(quantityIds(['b','a'],'a',NaN)).toEqual(['b'])
     expect(quantityIds([],'a',900,3)).toHaveLength(3)
+  })
+  it('shares the selection budget across avatars and counts duplicate copies',()=>{
+    const avatars=[{upload_id:'u1',template_ids:[],sticker_ids:Array(5).fill('a')},{upload_id:'u2',template_ids:[],sticker_ids:['a','a','b','b']}]
+    expect(selectionQuantityLimit(avatars,library,'u2','sticker_ids','a',10)).toBe(3)
+    expect(selectionQuantityLimit(avatars,library,'u2','sticker_ids','b',10)).toBe(3)
+    expect(selectionQuantityLimit(avatars,library,'u1','sticker_ids','a',10)).toBe(6)
+  })
+  it('limits whole template sets by their expanded cost alongside direct stickers',()=>{
+    const avatars=[{upload_id:'u1',template_ids:[],sticker_ids:Array(5).fill('a')},{upload_id:'u2',template_ids:['t'],sticker_ids:['a']}]
+    expect(selectionQuantityLimit(avatars,library,'u2','template_ids','t',10)).toBe(2)
+    avatars[1].sticker_ids.push('a')
+    expect(selectionQuantityLimit(avatars,library,'u2','template_ids','t',10)).toBe(1)
+    expect(selectionQuantityLimit(avatars,library,'u2','sticker_ids','b',10)).toBe(1)
+  })
+  it('blocks additions at or over the limit without losing existing choices',()=>{
+    const avatars=[{upload_id:'u1',template_ids:[],sticker_ids:Array(5).fill('a')},{upload_id:'u2',template_ids:[],sticker_ids:Array(5).fill('b')}]
+    expect(selectionQuantityLimit(avatars,library,'u2','sticker_ids','a',10)).toBe(0)
+    expect(selectionQuantityLimit(avatars,library,'u2','sticker_ids','b',10)).toBe(5)
+    avatars[0].sticker_ids.push('a')
+    expect(selectionQuantityLimit(avatars,library,'u2','sticker_ids','b',10)).toBe(4)
+    expect(avatars[1].sticker_ids).toHaveLength(5)
+    expect(selectionQuantityLimit(avatars,library,'u2','template_ids','missing',10)).toBe(0)
+  })
+  it('allows incremental repair of old over-limit choices without allowing increases',()=>{
+    expect(canApplySelection(24,16,10)).toBe(true)
+    expect(canApplySelection(16,10,10)).toBe(true)
+    expect(canApplySelection(16,16,10)).toBe(false)
+    expect(canApplySelection(16,17,10)).toBe(false)
+    expect(canApplySelection(9,11,10)).toBe(false)
+    expect(canApplySelection(9,10,10)).toBe(true)
   })
   it('enforces avatar and repeated slot bounds before preflight',()=>{
     expect(selectionError(order,{avatar_count:3,selection_count:4,generation_count:4})).toContain('1 至 2')

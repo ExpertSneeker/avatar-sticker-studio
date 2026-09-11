@@ -47,6 +47,17 @@ export function selectionCounts(avatars:AvatarChoice[],library:CustomerLibrary):
   }
   return {avatar_count:avatars.length,selection_count,generation_count}
 }
+export function selectionQuantityLimit(avatars:AvatarChoice[],library:CustomerLibrary,avatarId:string,kind:'template_ids'|'sticker_ids',id:string,max:number,selectionCount=selectionCounts(avatars,library).selection_count):number {
+  const avatar=avatars.find(value=>value.upload_id===avatarId)
+  const cost=kind==='template_ids'?(library.templates.find(value=>value.id===id)?.sticker_ids.length??0):1
+  if(!avatar||cost<=0)return 0
+  const current=avatar[kind].filter(value=>value===id).length
+  const otherCopies=selectionCount-current*cost
+  return Math.max(0,Math.floor((max-otherCopies)/cost))
+}
+export function canApplySelection(previousCount:number,nextCount:number,max:number):boolean {
+  return nextCount<=max||nextCount<previousCount
+}
 export function selectionError(order:GuestOrder,counts:Preflight):string {
   if(counts.avatar_count<1||counts.avatar_count>order.final_count)return `请上传 1 至 ${order.final_count} 个头像`
   if(counts.selection_count<order.final_count||counts.selection_count>order.generation_limit)return `请选择 ${order.final_count} 至 ${order.generation_limit} 张贴纸（含重复份数）`
