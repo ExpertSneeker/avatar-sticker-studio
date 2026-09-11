@@ -7,18 +7,22 @@ from PIL import Image, ImageDraw
 from .processing import watermark_font
 from .storage import asset_bytes
 
-PIPELINE = 'guest-heavy-diagonal-flat-v1'
+PIPELINE = 'guest-heavy-diagonal-flat-v2'
 _cache = OrderedDict()
 _lock = threading.Lock()
 _CACHE_BYTES = 32 * 1024 * 1024
 
 
-def render(data, mark, size):
+def render(data, mark, size, already_watermarked=False):
     with Image.open(io.BytesIO(data)) as source:
         source = source.convert('RGBA')
         source.thumbnail((size, size), Image.Resampling.LANCZOS)
         canvas = Image.new('RGBA', source.size, 'white')
         canvas.alpha_composite(source)
+    if already_watermarked:
+        output = io.BytesIO()
+        canvas.convert('RGB').save(output, 'PNG')
+        return output.getvalue()
     font_size = max(14, min(32, size // 14))
     font = watermark_font(mark, font_size)
     # Wrap long content into a tile bounded to the image width, repeating all lines.
@@ -78,7 +82,11 @@ def register_guest_media(app, db, user):
         size = max(160, min(1024, size))
         with db.transaction() as tx:
             order, asset = authorized(tx, request, order_id, asset_id, v, is_guest)
-            key = digest([asset['id'], asset['sha256'], order['owner'], order['watermark'], order['watermark_version'], v, size, PIPELINE])
+            already_watermarked = (asset['id'] == order.get('overview_id')
+                                   and order.get('overview_ready')
+                                   and asset.get('kind') == 'overview'
+                                   and order.get('overview_style') == 'guest-overview-v1')
+            key = digest([asset['id'], asset['sha256'], order['owner'], order['watermark'], order['watermark_version'], v, size, PIPELINE, already_watermarked])
             data = asset_bytes(db, asset)
             mark = order['watermark']
         with _lock:
@@ -87,7 +95,7 @@ def register_guest_media(app, db, user):
                 _cache.move_to_end(key)
         if rendered is None:
             try:
-                rendered = render(data, mark, size)
+                rendered = render(data, mark, size, already_watermarked)
             except (OSError, ValueError, Image.DecompressionBombError):
                 raise HTTPException(422, '图片预览暂不可用')
             with _lock:

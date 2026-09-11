@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { uploadStickers } from './library-fixtures'
 import { completedCustomer, createCustomer, installDirectoryPicker, mutate, pixel, staffLogin } from './customer-fixtures'
 
-test('staff opens order; guest uploads two avatars, repeats choices, compares rerun, orders finals and submits safely',async({page,browser})=>{
+test('staff opens order; guest uploads two avatars, repeats choices, compares rerun, selects finals and submits safely',async({page,browser})=>{
   await staffLogin(page.request)
   const stickers=await uploadStickers(page.request,[{name:'GUEST-A.png',mimeType:'image/png',buffer:pixel},{name:'GUEST-B.png',mimeType:'image/png',buffer:pixel}])
   const template=await page.request.post('/api/templates',{data:{code:'GUEST-SET',name:'客户测试套装',category:'general',sticker_ids:stickers.map(s=>s.id)}});expect(template.ok()).toBe(true)
@@ -51,13 +51,16 @@ test('staff opens order; guest uploads two avatars, repeats choices, compares re
     await comparison.getByRole('button',{name:'保留旧版本'}).click()
     await expect(comparison.getByRole('button',{name:'已保留'})).toBeVisible()
     await comparison.getByRole('button',{name:'关闭',exact:true}).last().click()
-    await guest.getByLabel('选择成品 1',{exact:true}).check();await guest.getByLabel('选择成品 3',{exact:true}).check()
-    await guest.getByLabel('上移成品 2').click()
+    await guest.getByLabel('选择成品 3',{exact:true}).check();await guest.getByLabel('选择成品 1',{exact:true}).check()
+    await expect(guest.locator('.customer-print-order')).toHaveCount(0)
+    await expect(guest.getByText(/第 \d+ 张打印/)).toHaveCount(0)
+    const submission=guest.waitForRequest(request=>request.url().endsWith('/api/guest/order/submit')&&request.method()==='POST')
     await guest.screenshot({path:'/tmp/avatar-studio-fal-qa/customer-review-desktop.png',fullPage:true})
     await guest.setViewportSize({width:390,height:844});expect(await guest.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true)
     await guest.screenshot({path:'/tmp/avatar-studio-fal-qa/customer-review-mobile.png',fullPage:true})
     await guest.getByRole('button',{name:'确认成品并提交'}).click();await guest.getByRole('dialog',{name:'确认最终成品'}).getByRole('button',{name:'确认提交',exact:true}).click()
-    await expect(guest.getByRole('heading',{name:'已提交确认'})).toBeVisible();await expect(guest.locator('.customer-result')).toHaveCount(0)
+    expect((await submission).postDataJSON().slot_ids).toEqual([detail.slots[0].id,detail.slots[2].id])
+    await expect(guest.getByRole('heading',{name:'已提交印刷'})).toBeVisible();await expect(guest.locator('.customer-result')).toHaveCount(0)
     await expect(guest.getByAltText('已确认贴纸水印总览')).toBeVisible({timeout:60000})
     const safe=await(await guest.request.get('/api/guest/order')).json();expect(safe.slots).toBeUndefined();expect(safe.avatars).toBeUndefined();expect(safe.notes).toBeUndefined()
     expect(await guest.evaluate(()=>localStorage.length)).toBe(0)
@@ -213,11 +216,11 @@ test('staff reconciles applied-but-lost generate and rerun responses, then manag
   await comparison.getByRole('button',{name:'关闭',exact:true}).last().click()
   expect(rerunPayloads).toHaveLength(2);expect(rerunPayloads[0]).toEqual(rerunPayloads[1])
   await page.getByLabel('选择成品 1',{exact:true}).check();await page.getByRole('button',{name:'确认成品并提交'}).click();await page.getByRole('dialog',{name:'确认最终成品'}).getByRole('button',{name:'确认提交',exact:true}).click()
-  await expect(page.getByRole('heading',{name:'已提交确认'})).toBeVisible()
+  await expect(page.getByRole('heading',{name:'已提交印刷'})).toBeVisible()
   await page.getByRole('button',{name:'解锁选图'}).click();await page.getByRole('dialog',{name:'解锁订单'}).getByRole('button',{name:'确认解锁'}).click()
   await expect(page.getByLabel('选择成品 1',{exact:true})).toBeEnabled()
   await page.getByLabel('选择成品 1',{exact:true}).check();await page.getByRole('button',{name:'确认成品并提交'}).click();await page.getByRole('dialog',{name:'确认最终成品'}).getByRole('button',{name:'确认提交',exact:true}).click()
-  await expect(page.getByRole('heading',{name:'已提交确认'})).toBeVisible()
+  await expect(page.getByRole('heading',{name:'已提交印刷'})).toBeVisible()
   await page.getByRole('button',{name:'重新排版',exact:true}).click();await page.getByRole('dialog',{name:'重新排版'}).getByLabel('单张内容长边').fill('50');await page.getByRole('dialog',{name:'重新排版'}).getByRole('button',{name:'确认排版'}).click()
   await expect(page.getByRole('dialog')).toHaveCount(0)
   await page.getByRole('button',{name:'取消订单',exact:true}).click();await page.getByRole('dialog',{name:'取消订单'}).getByRole('button',{name:'确认取消'}).click()

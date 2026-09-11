@@ -73,7 +73,7 @@ def publish_customer(db, order, force=False, watermark_only=False):
     if not needs_print and not needs_overview:
         return False
     pages = pack_set(originals, order['order_number'], '拼版', PrintSettings(**order['print_settings'])) if needs_print else []
-    # No notes enter any rendered image. Guest endpoint adds its dense watermark again.
+    # No notes enter any rendered image. The guest endpoint preserves this already watermarked overview.
     preview = overview(originals, order['watermark']) if needs_overview else None
     with db.transaction() as tx:
         latest = tx.get('orders', order['id'])

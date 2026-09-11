@@ -430,3 +430,24 @@ def test_cancel_while_waiting_for_cutout_capacity_never_sends_request(context,mo
         value=tx.get('items',item['id'])
         assert value['status']=='queued' and value['raw_result_id'] and value['processing_stage']=='postprocess'
         assert not value.get('cutout_inflight') and not value.get('remote_reserved')
+
+
+def test_submitted_overview_has_only_one_watermark(context):
+    from PIL import Image, ImageChops
+    from backend.app.storage import asset_bytes
+    app,c,_,_=context
+    o=generate(c,opened(c),sticker(c,'ONE')['id']); run(app)
+    o=c.get('/api/customer-orders/'+o['id']).json()
+    o=action(c,o,'submit',slot_ids=[s['id'] for s in o['slots']]).json()
+    app.state.worker.publish(o['id'])
+    guest=TestClient(app)
+    guest.post('/api/guest/login',json={'order_number':o['order_number']})
+    response=guest.get(guest.get('/api/guest/order').json()['preview_url'])
+    assert response.status_code==200 and response.headers['cache-control']=='no-store'
+    with app.state.db.transaction() as tx:
+        order=tx.get('orders',o['id'])
+        data=asset_bytes(app.state.db,tx.get('assets',order['overview_id']))
+    expected=Image.open(io.BytesIO(data)).convert('RGB')
+    expected.thumbnail((640,640),Image.Resampling.LANCZOS)
+    actual=Image.open(io.BytesIO(response.content)).convert('RGB')
+    assert ImageChops.difference(actual,expected).getbbox() is None
