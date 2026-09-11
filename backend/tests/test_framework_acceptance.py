@@ -99,3 +99,19 @@ def test_submitted_guest_cannot_reopen_single_image_by_guessing_new_revision(con
     guessed = link.split('?')[0] + '?v=' + str(current['media_version'])
     assert guest.get(guessed).status_code == 404
     assert guest.get(locked['preview_url']).status_code == 200
+
+
+def test_staff_and_guest_sessions_in_same_browser_do_not_block_each_other(context):
+    app, staff, _, _ = context
+    sid = sticker(staff, 'DUAL-SESSION')['id']
+    first = generate(staff, opened(staff, 'GUEST-VIEW'), sid)
+    run(app)
+    second = generate(staff, opened(staff, 'STAFF-VIEW'), sid)
+    run(app)
+    assert staff.post('/api/guest/login', json={'order_number':first['order_number']}).status_code == 200
+    detail = staff.get('/api/customer-orders/'+second['id']).json()
+    staff_link = detail['slots'][0]['versions'][0]['preview_url']
+    assert staff.get(staff_link).status_code == 200
+    guest = TestClient(app)
+    guest.post('/api/guest/login', json={'order_number':first['order_number']})
+    assert guest.get(staff_link).status_code in (401, 404)

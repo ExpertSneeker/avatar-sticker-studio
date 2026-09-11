@@ -105,3 +105,26 @@ def test_import_retires_only_exclusive_migration_derived_stickers(tmp_path):
         assert not tx.get('stickers',reused).get('deleted')
         assert tx.get('stickers','independent')['active']
         assert all(tx.get('sticker_revisions',r['id'])==r for r in revisions)
+
+
+def test_import_into_two_organizations_keeps_catalog_and_assets_separate(tmp_path):
+    from backend.app.organizations import create_organization
+    db = Database(tmp_path / 'data')
+    folder = sources(tmp_path)
+    with db.transaction() as tx:
+        initial = tx.get('migrations', 'organizations-v1')['default_organization_id']
+        second = create_organization(tx, 'Second')['id']
+    with pytest.raises(ValueError, match='organization'):
+        import_a1(db, folder)
+    one = import_a1(db, folder, organization_id=initial)
+    two = import_a1(db, folder, organization_id=second)
+    assert set(one['sticker_ids']).isdisjoint(two['sticker_ids'])
+    with db.transaction() as tx:
+        first = tx.get('templates', one['template_id'])
+        other = tx.get('templates', two['template_id'])
+        assert first['organization_id'] == initial and not first.get('deleted')
+        assert other['organization_id'] == second and not other.get('deleted')
+        assert {im['id'] for im in first['images']}.isdisjoint(im['id'] for im in other['images'])
+        assert all(a['organization_id'] in {initial, second} for a in tx.all('assets'))
+    assert import_a1(db, folder, organization_id=initial)['already_imported']
+    assert import_a1(db, folder, organization_id=second)['already_imported']
