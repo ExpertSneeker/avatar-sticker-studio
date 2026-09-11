@@ -19,3 +19,13 @@ TDD: first test failed with missing customer route (404), then tests were expand
 Validation: first full backend run was 172 passed / 1 importer failure outside this task; root fixed the importer in f76a2a2. Final focused run and commit are reported to root separately. Existing dependency deprecation warnings are unchanged.
 
 Final focused verification: customer + cross-subsystem acceptance + legacy worker tests: 43 passed. After adding Unicode filename acceptance, customer + cross-subsystem tests: 23 passed. Delivery manifest.name and folder_name are the same authoritative safe folder, capped at 220 UTF-8 bytes with a deterministic hash suffix upon truncation; print files use page-001.png naming. Saved-raw reprocessing and unlock/resubmit tests also passed. `git diff --check` passed on owned files.
+
+## Review round 1 corrections
+
+Reproduced both P1 findings from task-2-review.md with failing regression tests before correction. Submission now rejects every outstanding rerun reservation and remote/cutout uncertainty flag, regardless of the item's status label or availability of an older selected version.
+
+Cancellation now stores/reconciles an already submitted generation's raw output and leaves queued saved-raw processing, rather than starting a new cutout. Cancellation checks also cover saved-raw tasks claimed before cancellation and the cutout admission boundary. Root explicitly extended ownership to providers.py for an optional transaction callback checked on every cutout capacity wait/admission. The legacy positional constructor and cutout(data) method remain compatible. A distinct CutoutDeferred signal proves no cutout request was sent, permitting the worker to clear the cutout marker and retain recoverable queued processing; ambiguous paid calls still retain uncertainty holds.
+
+Added regressions for failed+cutout_inflight submission, cancellation during generation followed by restoration, and cancellation while awaiting cutout capacity. Each failed before its fix and all three passed after it. Tests use local mock transports/providers only. The first full backend pass after the two initial fixes was 184 passed; final provider-admission verification is recorded below.
+
+Final review-fix verification: `.venv/bin/python -m pytest backend/tests -q` — 185 passed in 38.18 seconds. Three pre-existing dependency/image-size warnings remain. Owned-file diff whitespace checks passed.

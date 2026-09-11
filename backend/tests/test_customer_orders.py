@@ -348,3 +348,85 @@ def test_unicode_delivery_paths_fit_filesystem_byte_limits(context):
     assert all(len(f['path'].encode('utf-8'))<=255 for f in manifest['files'])
     assert all(f['path'].startswith('page-') for f in manifest['files'])
     assert c.get('/api/customer-orders/'+o['id']+'/manifest').json()['folder_name']==manifest['folder_name']
+
+
+def test_submit_rejects_failed_uncertain_cutout_even_with_old_selected_result(context):
+    app,c,_,_=context
+    o=generate(c,opened(c),sticker(c,'ONE')['id']);run(app)
+    o=c.get('/api/customer-orders/'+o['id']).json();sid=o['slots'][0]['id'];o=action(c,o,'slots/'+sid+'/rerun').json()
+    item=app.state.worker.claim()
+    with app.state.db.transaction() as tx:
+        current=tx.get('items',item['id']);current.update(status='failed',remote_reserved=False,cutout_inflight=True,error='uncertain cutout');tx.put('items',current)
+    o=c.get('/api/customer-orders/'+o['id']).json()
+    assert o['slots'][0]['selected_version_id'] and o['slots'][0]['needs_resolution'] and o['slots'][0]['reruns_reserved']==1
+    assert action(c,o,'submit',slot_ids=[s['id'] for s in o['slots']]).status_code==409
+
+
+def test_cancel_during_generation_defers_new_cutout_until_restore(context,monkeypatch):
+    from backend.app import worker as worker_module
+    app,c,_,provider=context
+    o=generate(c,opened(c),sticker(c,'ONE')['id'])
+    with app.state.db.transaction() as tx:
+        config=tx.get('config','settings');config['cutout_api_key']='local-test-only';tx.put('config',config)
+    class CancellingProvider:
+        calls=0
+        async def generate(self,**kwargs):
+            self.calls+=1
+            latest=c.get('/api/customer-orders/'+o['id']).json()
+            assert action(c,latest,'cancel').status_code==200
+            from PIL import Image
+            output=io.BytesIO();Image.new('RGB',(1024,1024),(100,100,100)).save(output,'PNG')
+            return output.getvalue()
+    class Cutout:
+        calls=0
+        def __init__(self,*args):pass
+        async def cutout(self,data):
+            Cutout.calls+=1
+            return png(size=(1024,1024))
+    generator=CancellingProvider();app.state.worker.provider=generator
+    monkeypatch.setattr(worker_module,'YeziProvider',Cutout)
+    item=run(app)
+    assert Cutout.calls==0
+    with app.state.db.transaction() as tx:
+        saved=tx.get('items',item['id'])
+        assert saved['raw_result_id'] and saved['status']=='queued' and saved['processing_stage']=='postprocess'
+        assert not saved.get('cutout_inflight')
+    assert app.state.worker.claim() is None
+    cancelled=c.get('/api/customer-orders/'+o['id']).json();assert action(c,cancelled,'restore').status_code==200
+    run(app)
+    assert Cutout.calls==1 and generator.calls==1
+    assert c.get('/api/customer-orders/'+o['id']).json()['slots'][0]['status']=='completed'
+
+
+def test_cancel_while_waiting_for_cutout_capacity_never_sends_request(context,monkeypatch):
+    from backend.app import providers
+    from backend.tests.test_providers import install
+    from PIL import Image
+    import httpx
+    app,c,clock,provider=context
+    o=generate(c,opened(c),sticker(c,'ONE')['id'])
+    with app.state.db.transaction() as tx:
+        config=tx.get('config','settings');config['cutout_api_key']='local-test-only';tx.put('config',config)
+        for i in range(2):tx.put('cutout_calls',{'id':'busy-'+str(i),'expires':clock()+100})
+    async def opaque(**kwargs):
+        output=io.BytesIO();Image.new('RGB',(1024,1024),'red').save(output,'PNG');return output.getvalue()
+    monkeypatch.setattr(provider,'generate',opaque)
+    waits=[]
+    async def cancelled_wait(delay):
+        waits.append(delay)
+        latest=c.get('/api/customer-orders/'+o['id']).json()
+        assert action(c,latest,'cancel').status_code==200
+        clock.value+=101
+    monkeypatch.setattr(providers.asyncio,'sleep',cancelled_wait)
+    requests=[]
+    def receive(request):
+        requests.append(request)
+        if request.method=='POST':return httpx.Response(200,json={'status':200,'data':{'image':'https://media.yezisheji.com/cut.png'}})
+        return httpx.Response(200,content=png(size=(1024,1024)))
+    install(monkeypatch,receive)
+    item=run(app)
+    assert waits and not requests
+    with app.state.db.transaction() as tx:
+        value=tx.get('items',item['id'])
+        assert value['status']=='queued' and value['raw_result_id'] and value['processing_stage']=='postprocess'
+        assert not value.get('cutout_inflight') and not value.get('remote_reserved')

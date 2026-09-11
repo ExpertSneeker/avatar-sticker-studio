@@ -489,8 +489,11 @@ def register_customer_orders(app, db, user):
                     raise HTTPException(409, '当前订单不能提交')
                 if len(data.slot_ids) != order['final_count'] or len(set(data.slot_ids)) != len(data.slot_ids):
                     raise HTTPException(422, '必须按顺序选择规定数量的不同贴纸位置')
-                if any(s['pending_version_id'] or tx.get('items', s['active_item_id'])['status'] in {'running', 'queued', 'unknown'} for s in order['slots']):
-                    raise HTTPException(409, '尚有生成或版本选择待处理')
+                for slot in order['slots']:
+                    item = tx.get('items', slot['active_item_id'])
+                    if (slot['pending_version_id'] or slot['reruns_reserved'] or slot.get('reservation_item_id') or
+                            item['status'] in {'running', 'queued', 'unknown'} or item.get('remote_reserved') or item.get('cutout_inflight')):
+                        raise HTTPException(409, '尚有生成、请求核对或版本选择待处理')
                 frozen = []
                 by_slot = {s['id']: s for s in order['slots']}
                 for sid in data.slot_ids:

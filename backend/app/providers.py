@@ -15,6 +15,10 @@ class ProviderFailure(Exception):
         self.status, self.retry_after = status, retry_after
 
 
+class CutoutDeferred(Exception):
+    """Admission was denied before any cutout HTTP request was sent."""
+
+
 class FalProvider:
     endpoint = 'https://queue.fal.run/openai/gpt-image-2/edit'
 
@@ -107,14 +111,17 @@ class FalProvider:
 
 
 class YeziProvider:
-    def __init__(self, db, key, clock=time.time):
+    def __init__(self, db, key, clock=time.time, before_submit=None):
         self.db, self.key, self.clock = db, key, clock
+        self.before_submit = before_submit
 
     async def cutout(self, data):
         # A separate transactional limiter: at most 2 starts/second and 2 in flight.
         call_id = uid()
         while True:
             with self.db.transaction() as tx:
+                if self.before_submit is not None and not self.before_submit(tx):
+                    raise CutoutDeferred()
                 now = self.clock()
                 for c in tx.all('cutout_calls'):
                     if c['expires'] < now:

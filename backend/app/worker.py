@@ -11,7 +11,7 @@ from .auth import generation_limit
 from .db import uid
 from . import credits
 from .processing import PRINT_LAYOUT_STYLE, decode, encode, overview, pack_set
-from .providers import FalProvider, ProviderFailure, YeziProvider
+from .providers import CutoutDeferred, FalProvider, ProviderFailure, YeziProvider
 from .schemas import PrintSettings
 from .storage import asset_bytes, save_asset
 
@@ -108,7 +108,7 @@ class Worker:
                 if current.get('cutout_inflight'):
                     raise ProviderFailure(CUTOUT_UNCERTAIN, 'unknown')
                 order = tx.get('orders', item['order_id'])
-                if order.get('workflow_version') == 3 and order['state'] == 'cancelled' and not current.get('fal_request_id') and not current.get('raw_result_id'):
+                if order.get('workflow_version') == 3 and order['state'] == 'cancelled' and (current.get('processing_stage') == 'postprocess' or not current.get('fal_request_id')):
                     current.update(status='queued', remote_reserved=False)
                     tx.put('items', current)
                     return
@@ -152,6 +152,12 @@ class Worker:
                     raw = save_asset(self.db, tx, encode(image), item['owner'], 'raw_result', order_id=item['order_id'])
                     credits.settle(tx, latest.get('generation_id'), 'charge', self.clock())
                     latest.update(raw_result_id=raw['id'], remote_reserved=False, processing_stage='postprocess')
+                    latest_order = tx.get('orders', item['order_id'])
+                    if latest_order.get('workflow_version') == 3 and latest_order['state'] == 'cancelled':
+                        # Reconcile the already submitted generation, then pause before any new processing call.
+                        latest.update(status='queued', next_at=0)
+                        tx.put('items', latest)
+                        return
                     tx.put('items', latest)
             if image.getchannel('A').getextrema()[0] == 255:
                 key = os.environ.get('YEZI_API_KEY') or config.get('cutout_api_key')
@@ -165,9 +171,18 @@ class Worker:
                         return
                     if latest.get('cutout_inflight'):
                         raise ProviderFailure(CUTOUT_UNCERTAIN, 'unknown')
+                    latest_order = tx.get('orders', item['order_id'])
+                    if latest_order.get('workflow_version') == 3 and latest_order['state'] == 'cancelled':
+                        latest.update(status='queued', next_at=0, remote_reserved=False, processing_stage='postprocess')
+                        tx.put('items', latest)
+                        return
                     latest.update(cutout_inflight=True, cutout_started_at=self.clock())
                     tx.put('items', latest)
-                data = await YeziProvider(self.db, key, self.clock).cutout(data)
+                cutout = YeziProvider(self.db, key, self.clock)
+                if order.get('workflow_version') == 3:
+                    # Keep the legacy cutout(data) interface while checking each capacity wait/admission.
+                    cutout.before_submit = lambda tx: self.cutout_allowed(tx, item)
+                data = await cutout.cutout(data)
                 image = decode(data)
             else:
                 image = decode(data)
@@ -193,11 +208,26 @@ class Worker:
                 latest = tx.get('items', item['id'])
             self.fail(item, ProviderFailure('请求执行时服务停止，保留原请求', 'retry' if latest.get('fal_request_id') or latest.get('raw_result_id') else 'unknown'))
             raise
+        except CutoutDeferred:
+            # The provider proves no request was sent, so the durable hold can safely become queued processing.
+            with self.db.transaction() as tx:
+                latest = tx.get('items', item['id'])
+                if latest and latest['status'] == 'running' and latest.get('worker_id') == self.id and latest.get('run_id') == item.get('run_id'):
+                    latest.pop('cutout_inflight', None)
+                    latest.pop('cutout_started_at', None)
+                    latest.update(status='queued', remote_reserved=False, processing_stage='postprocess', next_at=0)
+                    tx.put('items', latest)
         except ProviderFailure as exc:
             self.fail(item, exc)
         except Exception as exc:
             # Once a request starts, unexpected failures must not trigger another paid request.
             self.fail(item, ProviderFailure('结果处理失败：' + (str(exc)[:180] if isinstance(exc, ValueError) else type(exc).__name__) + '；不会自动重新生图', 'failed' if response_received else 'unknown'))
+
+    def cutout_allowed(self, tx, item):
+        latest = tx.get('items', item['id'])
+        order = tx.get('orders', item['order_id'])
+        return bool(latest and order and order.get('state') != 'cancelled' and latest['status'] == 'running' and
+                    latest.get('worker_id') == self.id and latest.get('run_id') == item.get('run_id'))
 
     def checkpoint(self, item, **fields):
         with self.db.transaction() as tx:
