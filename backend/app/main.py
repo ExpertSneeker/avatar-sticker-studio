@@ -17,7 +17,7 @@ from typing import Literal
 from starlette.datastructures import UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
-from .auth import hash_password, owned, public_user, require_admin, require_user, token_hash, verify_password
+from .auth import same_organization, require_superadmin, managed_user, hash_password, owned, public_user, require_admin, require_user, token_hash, verify_password
 from .db import Database, uid
 from .schemas import AccountPatch, ActivePatch, Credentials, CleanupConfirm, CleanupPreview, OrderCreate, PasswordChange, PrintSettings, Repack, ResolveUnknown, SettingsPatch, Signup, UploadInit, safe_name
 from .storage import asset_bytes, normalize_image, save_asset
@@ -81,16 +81,25 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
         require_admin(value)
         return value
 
+    def superadmin(tx, request):
+        actor = user(tx, request)
+        require_superadmin(actor)
+        return actor
+
     def session(tx, response, value):
         token = secrets.token_urlsafe(32)
         tx.put('sessions', {'id': token_hash(token), 'user_id': value['id'], 'expires': now() + 7 * 86400})
         response.set_cookie('studio_session', token, max_age=7 * 86400, httponly=True, samesite='strict', secure=os.environ.get('STUDIO_SECURE_COOKIE') == '1', path='/')
         return public_user(value)
 
-    def register_user(tx, data, role):
+    def register_user(tx, data, role, organization_id=None):
         if any(u['username'].casefold() == data.username.casefold() for u in tx.all('users')):
             raise HTTPException(409, '用户名已存在')
         value = {'id': uid(), 'username': data.username, 'password': hash_password(data.password), 'display_name': data.display_name.strip(), 'role': role, 'watermark': '', 'print_defaults': PrintSettings().model_dump(), 'active': True, 'credits':{'available':0,'frozen':0,'spent':0,'version':0}}
+        organization_id = organization_id or tx.get('migrations','organizations-v1')['default_organization_id']
+        organization = tx.get('organizations', organization_id)
+        if not organization or not organization['active']: raise HTTPException(403, '组织已停用')
+        value.update(organization_id=organization_id, organization_name=organization['name'])
         value['generation_concurrency'] = DEFAULT_GENERATION_CONCURRENCY
         tx.put('users', value)
         return value
@@ -132,7 +141,7 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
         with db.transaction() as tx:
             if tx.all('users'):
                 raise HTTPException(409, '管理员已设置，请登录或使用邀请码')
-            return session(tx, response, register_user(tx, data, 'admin'))
+            return session(tx, response, register_user(tx, data, 'superadmin'))
 
     @app.post('/api/auth/register')
     def register(data: Signup, response: Response):
@@ -140,7 +149,7 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
             invite = tx.get('invites', token_hash(data.invite or ''))
             if not invite or invite['used'] or invite['expires'] < now():
                 raise HTTPException(400, '邀请码无效、已使用或已过期')
-            value = register_user(tx, data, 'staff')
+            value = register_user(tx, data, 'staff', invite.get('organization_id'))
             invite['used'] = True
             tx.put('invites', invite)
             return session(tx, response, value)
@@ -154,7 +163,8 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
             if len(attempts['times']) >= 12:
                 raise HTTPException(429, '登录尝试过多，请15分钟后重试')
             value = next((u for u in tx.all('users') if u['username'].casefold() == data.username.casefold()), None)
-            valid = value and verify_password(data.password, value['password']) and value['active']
+            organization = tx.get('organizations', value.get('organization_id','')) if value else None
+            valid = value and verify_password(data.password, value['password']) and value['active'] and (value['role']=='superadmin' or organization and organization['active'])
             if valid:
                 tx.delete('login_limits', key)
                 return session(tx, response, value)
@@ -204,13 +214,13 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
     @app.get('/api/admin/settings')
     def get_settings(request: Request):
         with db.transaction() as tx:
-            admin(tx, request)
+            superadmin(tx, request)
             return public_settings(tx.get('config', 'settings'))
 
     @app.patch('/api/admin/settings')
     def settings(data: SettingsPatch, request: Request):
         with db.transaction() as tx:
-            admin(tx, request)
+            superadmin(tx, request)
             config = tx.get('config', 'settings')
             if data.prompt is not None and data.prompt != config['prompt']:
                 config['prompt_version'] += 1
@@ -227,29 +237,29 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
     @app.get('/api/admin/statistics')
     def global_statistics(request: Request, days: Literal["0", "1", "3", "7", "30"] = "30", offset: int = Query(480, ge=-720, le=840)):
         with db.transaction() as tx:
-            actor = admin(tx, request)
+            actor = superadmin(tx, request)
             return summarize(tx, actor, now(), int(days), offset, global_scope=True)
 
     @app.get('/api/admin/storage')
     def storage(request: Request):
         with db.transaction() as tx:
-            admin(tx, request)
+            superadmin(tx, request)
         return storage_stats(db)
 
     @app.post('/api/admin/cleanup/preview')
     def cleanup_preview(data: CleanupPreview, request: Request):
         with db.transaction() as tx:
-            admin(tx, request)
+            superadmin(tx, request)
             return cleanup_plan(db, tx, data.before)[0]
 
     @app.post('/api/admin/cleanup')
     def cleanup(data: CleanupConfirm, request: Request):
         with db.transaction() as tx:
-            admin(tx, request)
+            superadmin(tx, request)
             plan, records, paths = cleanup_plan(db, tx, data.before)
             if not secrets.compare_digest(plan['preview_token'], data.preview_token):
                 raise HTTPException(409, '订单状态已变化，请重新预览清理范围')
-            credits.cleanup_credits(tx, {o['id'] for o in records['orders']}, now(), admin(tx, request)['id'])
+            credits.cleanup_credits(tx, {o['id'] for o in records['orders']}, now(), superadmin(tx, request)['id'])
             stage_cleanup(tx, records, paths)
         pending = drain_cleanup(db)
         return {'deleted_orders':plan['order_count'], 'pending_files':pending, 'storage':storage_stats(db)}
@@ -257,32 +267,32 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
     @app.post('/api/admin/cleanup/retry')
     def cleanup_retry(request: Request):
         with db.transaction() as tx:
-            admin(tx, request)
+            superadmin(tx, request)
         return {'pending_files':drain_cleanup(db), 'storage':storage_stats(db)}
 
     @app.post('/api/admin/invites')
     def invite(request: Request):
         with db.transaction() as tx:
-            admin(tx, request)
+            actor = admin(tx, request)
             code = secrets.token_urlsafe(18)
-            tx.put('invites', {'id': token_hash(code), 'used': False, 'expires': now() + 7 * 86400})
+            tx.put('invites', {'id': token_hash(code), 'organization_id':actor['organization_id'], 'used': False, 'expires': now() + 7 * 86400})
             return {'code': code}
 
     @app.post('/api/admin/users')
     def create_member(data: AdminCreateUser, request: Request):
         with db.transaction() as tx:
-            admin(tx, request)
+            actor = admin(tx, request)
             temporary = secrets.token_urlsafe(18)
-            member = register_user(tx, Signup(username=data.username, display_name=data.display_name, password=temporary), 'staff')
+            member = register_user(tx, Signup(username=data.username, display_name=data.display_name, password=temporary), 'staff', actor['organization_id'])
             return {'user': public_user(member) | {'active':True}, 'temporary_password':temporary}
 
     @app.post('/api/admin/users/{id}/password')
     def reset_member_password(id: str, request: Request):
         with db.transaction() as tx:
-            admin(tx, request)
-            target = tx.get('users', id)
+            actor = admin(tx, request)
+            target = managed_user(tx, id, actor)
             if not target: raise HTTPException(404, '账号不存在')
-            if target['role']=='admin': raise HTTPException(403, '管理员请在账号设置中修改自己的密码')
+            if target['role']=='superadmin' or target['role']=='org_admin' and actor['role']!='superadmin': raise HTTPException(403, '管理员请在账号设置中修改自己的密码')
             temporary = secrets.token_urlsafe(18)
             target['password']=hash_password(temporary)
             tx.put('users', target)
@@ -293,16 +303,16 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
     @app.get('/api/admin/users/{id}/concurrency')
     def member_concurrency(id: str, request: Request):
         with db.transaction() as tx:
-            admin(tx, request)
-            target = tx.get('users', id)
+            actor = admin(tx, request)
+            target = managed_user(tx, id, actor)
             if not target: raise HTTPException(404, '账号不存在')
             return {'generation_concurrency':generation_limit(target)}
 
     @app.patch('/api/admin/users/{id}/concurrency')
     def update_member_concurrency(id: str, data: AccountConcurrencyPatch, request: Request):
         with db.transaction() as tx:
-            admin(tx, request)
-            target = tx.get('users', id)
+            actor = admin(tx, request)
+            target = managed_user(tx, id, actor)
             if not target: raise HTTPException(404, '账号不存在')
             if generation_limit(target) != data.expected_limit:
                 raise HTTPException(409, '账号并行上限已变化，请重新确认')
@@ -313,13 +323,14 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
     @app.get('/api/admin/users/{id}/deletion')
     def preview_member_deletion(id: str, request: Request):
         with db.transaction() as tx:
-            admin(tx, request)
+            managed_user(tx, id, admin(tx, request))
             return account_deletion_plan(tx, id)[0]
 
     @app.delete('/api/admin/users/{id}')
     def delete_member(id: str, data: AccountDeleteConfirm, request: Request):
         with db.transaction() as tx:
             actor = admin(tx, request)
+            managed_user(tx, id, actor)
             plan, records, paths = account_deletion_plan(tx, id)
             if data.username != records['users'][0]['username']:
                 raise HTTPException(409, '输入的用户名不匹配，请重新确认')
@@ -348,30 +359,33 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
     @app.get('/api/admin/users/{id}/credits')
     def member_credits(id: str, request: Request, days: int = Query(30, ge=0, le=3650), offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=100)):
         with db.transaction() as tx:
-            admin(tx, request)
+            managed_user(tx, id, admin(tx, request))
             return credits.report(tx, id, now(), days, offset, limit)
 
     @app.post('/api/admin/users/{id}/credits')
     def adjust_credits(id: str, data: CreditAdjustment, request: Request):
         with db.transaction() as tx:
-            return credits.adjust(tx, admin(tx, request), id, data, now())
+            actor = admin(tx, request)
+            managed_user(tx, id, actor)
+            return credits.adjust(tx, actor, id, data, now())
 
     @app.post('/api/admin/generations/{id}/settle')
     def settle_credits(id: str, data: CreditSettlement, request: Request):
         with db.transaction() as tx:
-            return credits.manual_settle(tx, admin(tx, request), id, data, now())
+            actor = superadmin(tx, request)
+            return credits.manual_settle(tx, actor, id, data, now())
 
     @app.get('/api/admin/users')
     def users(request: Request):
         with db.transaction() as tx:
-            admin(tx, request)
-            return [{**public_user(u), 'active': u['active']} for u in tx.all('users')]
+            actor = admin(tx, request)
+            return [{**public_user(u), 'active': u['active']} for u in tx.all('users') if actor['role']=='superadmin' or same_organization(u, actor) and u['role']!='superadmin']
 
     @app.patch('/api/admin/users/{id}')
     def update_user(id: str, data: ActivePatch, request: Request):
         with db.transaction() as tx:
             actor = admin(tx, request)
-            target = tx.get('users', id)
+            target = managed_user(tx, id, actor)
             if not target:
                 raise HTTPException(404, '账号不存在')
             if id == actor['id'] and not data.active:
@@ -379,6 +393,12 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
             target['active'] = data.active
             tx.put('users', target)
             return {**public_user(target), 'active': target['active']}
+
+    from .organizations import register_organizations
+    register_organizations(app, db, user, register_user)
+
+    from .customer_orders import register_customer_orders
+    register_customer_orders(app, db, user)
 
     from .library import register_library
     register_library(app, db, user)
@@ -392,7 +412,7 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
             raise HTTPException(422, '只支持JPG、PNG和WebP')
         with db.transaction() as tx:
             actor = user(tx, request)
-            existing = next((u for u in tx.all('uploads') if u['owner'] == actor['id'] and u['sha256'] == data.sha256.lower() and u['size'] == data.size and u['filename'] == data.filename), None)
+            existing = next((u for u in tx.all('uploads') if not u.get('guest_order_id') and same_organization(u, actor) and u['sha256'] == data.sha256.lower() and u['size'] == data.size and u['filename'] == data.filename), None)
             if existing:
                 return upload_public(existing)
             value = {'id': uid(), 'owner': actor['id'], **data.model_dump(), 'sha256': data.sha256.lower(), 'offset': 0, 'complete': False}
@@ -458,6 +478,12 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
                 tx.put('uploads', value)
             return {k: value[k] for k in ('id', 'filename', 'url')}
 
+    def legacy_order(tx, id, actor):
+        value = owned(tx, 'orders', id, actor)
+        if value.get('workflow_version') == 3:
+            raise HTTPException(404, '记录不存在')
+        return value
+
     def order_public(tx, value, full=False):
         items = [i for i in tx.all('items') if i['order_id'] == value['id']]
         completed = sum(i['status'] == 'completed' for i in items)
@@ -478,25 +504,29 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
     def orders(request: Request):
         with db.transaction() as tx:
             actor = user(tx, request)
-            return [order_public(tx, o) for o in reversed(tx.all('orders')) if o['owner'] == actor['id']]
+            return [order_public(tx, o) for o in reversed(tx.all('orders')) if o.get('workflow_version') != 3 and same_organization(o, actor)]
 
     @app.post('/api/orders')
     def create_order(data: OrderCreate, request: Request):
         with db.transaction() as tx:
             actor = user(tx, request)
-            previous = next((o for o in tx.all('orders') if o['owner'] == actor['id'] and o['client_token'] == data.client_token), None)
+            previous = next((o for o in tx.all('orders') if o.get('workflow_version') != 3 and o['owner'] == actor['id'] and o.get('client_token') == data.client_token), None)
             if previous:
                 return order_public(tx, previous, True)
             from .selections import expand_selection
+            for kind, ids in (('templates', data.template_ids), ('stickers', data.sticker_ids)):
+                for selected_id in ids:
+                    if not same_organization(tx.get(kind, selected_id), actor):
+                        raise HTTPException(422, '所选资源不存在')
             sets, generation_items, export_entries = expand_selection(tx, data.template_ids, data.sticker_ids)
-            used_names = {o.get('output_name', o['name']).casefold() for o in tx.all('orders') if o['owner']==actor['id']}
+            used_names = {o.get('output_name', o['name']).casefold() for o in tx.all('orders') if o.get('workflow_version') != 3 and o['owner']==actor['id']}
             output_name, suffix = data.name, 1
             while output_name.casefold() in used_names:
                 suffix += 1
                 ending = f' ({suffix})'
                 output_name = data.name[:100-len(ending)] + ending
             avatar = owned(tx, 'uploads', data.upload_id, actor)
-            if avatar['owner'] != actor['id'] or not avatar['complete']:
+            if not same_organization(avatar, actor) or not avatar['complete']:
                 raise HTTPException(409, '请先完成自己的头像上传')
             config = tx.get('config', 'settings')
             value = {'id': uid(), 'owner': actor['id'], 'name': data.name, 'normalized_name': data.name.casefold(), 'output_name': output_name, 'client_token': data.client_token, 'created_at': datetime.fromtimestamp(now(), timezone.utc).isoformat(), 'paused': False, 'archived': False, 'avatar_url': avatar['url'], 'avatar_id': avatar['asset_id'], 'template_codes': [t['code'] for t in sets], 'template_snapshots': sets, 'selection_version': 2, 'export_entries': export_entries, 'sticker_snapshots': [g['sticker'] for g in generation_items], 'prompt': config['prompt'], 'prompt_version': config['prompt_version'], 'print_settings': data.print_settings.model_dump(), 'artifact_version': 0, 'artifacts': [], 'overview_ready': False, 'content_version': 0}
@@ -512,11 +542,11 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
     @app.get('/api/orders/{id}')
     def get_order(id: str, request: Request):
         with db.transaction() as tx:
-            return order_public(tx, owned(tx, 'orders', id, user(tx, request)), True)
+            return order_public(tx, legacy_order(tx, id, user(tx, request)), True)
 
     def change_order(id, request, action):
         with db.transaction() as tx:
-            value = owned(tx, 'orders', id, user(tx, request))
+            value = legacy_order(tx, id, user(tx, request))
             if action == 'archive':
                 value['archived'] = not value.get('archived', False)
                 if value['archived']:
@@ -543,7 +573,7 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
     @app.post('/api/orders/{id}/items/{item_id}/rerun')
     def rerun(id: str, item_id: str, data: RerunRequest, request: Request):
         with db.transaction() as tx:
-            value = owned(tx, 'orders', id, user(tx, request))
+            value = legacy_order(tx, id, user(tx, request))
             item = tx.get('items', item_id)
             if not item or item['order_id'] != id:
                 raise HTTPException(404, '图片不存在')
@@ -567,7 +597,7 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
     def resolve_item(id: str, item_id: str, data: ResolveUnknown, request: Request):
         with db.transaction() as tx:
             actor = user(tx, request)
-            value = owned(tx, 'orders', id, actor)
+            value = legacy_order(tx, id, actor)
             item = tx.get('items', item_id)
             if not item or item['order_id'] != id:
                 raise HTTPException(404, '图片不存在')
@@ -581,7 +611,7 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
     @app.post('/api/orders/{id}/items/{item_id}/recover')
     def recover_item(id: str, item_id: str, request: Request):
         with db.transaction() as tx:
-            value = owned(tx, 'orders', id, user(tx, request))
+            value = legacy_order(tx, id, user(tx, request))
             item = tx.get('items', item_id)
             if not item or item['order_id'] != id:
                 raise HTTPException(404, '图片不存在')
@@ -596,7 +626,7 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
     @app.post('/api/orders/{id}/items/{item_id}/reprocess')
     def reprocess(id: str, item_id: str, request: Request):
         with db.transaction() as tx:
-            value = owned(tx, 'orders', id, user(tx, request))
+            value = legacy_order(tx, id, user(tx, request))
             item = tx.get('items', item_id)
             if not item or item['order_id'] != id:
                 raise HTTPException(404, '图片不存在')
@@ -615,7 +645,7 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
     @app.post('/api/orders/{id}/repack')
     def repack(id: str, data: Repack, request: Request):
         with db.transaction() as tx:
-            value = owned(tx, 'orders', id, user(tx, request))
+            value = legacy_order(tx, id, user(tx, request))
             value.update(print_settings=data.print_settings.model_dump(), content_version=value['content_version'] + 1, overview_ready=False, processing_error=None)
             tx.put('orders', value)
         app.state.worker.publish(id, force=True)
@@ -625,7 +655,7 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
     @app.post('/api/orders/{id}/watermark')
     def watermark(id: str, request: Request):
         with db.transaction() as tx:
-            value = owned(tx, 'orders', id, user(tx, request))
+            value = legacy_order(tx, id, user(tx, request))
             value['content_version'] += 1
             value.update(overview_ready=False, processing_error=None)
             tx.put('orders', value)
@@ -636,19 +666,20 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
     @app.get('/api/orders/{id}/manifest')
     def manifest(id: str, request: Request):
         with db.transaction() as tx:
-            value = owned(tx, 'orders', id, user(tx, request))
+            value = legacy_order(tx, id, user(tx, request))
             public = order_public(tx, value)
-            return {'order_id': id, 'name': value.get('output_name', value['name']), 'version': value['artifact_version'], 'complete': public['completed'] == public['total'] and value.get('overview_ready', False), 'files': value['artifacts']}
+            return {'order_id': id, 'name': value.get('output_name', value['name']), 'version': value['artifact_version'], 'complete': public['completed'] == public['total'] and value.get('overview_ready', False), 'files': [a for a in value['artifacts'] if a.get('kind', (tx.get('assets',a['id']) or {}).get('kind'))=='print']}
 
     @app.get('/api/orders/{id}/download.zip')
     def download_zip(id: str, request: Request):
         with db.transaction() as tx:
-            value = owned(tx, 'orders', id, user(tx, request))
+            value = legacy_order(tx, id, user(tx, request))
             if not value['artifacts']:
                 raise HTTPException(409, '暂时没有已完成的打印文件')
             output = io.BytesIO()
             with zipfile.ZipFile(output, 'w', zipfile.ZIP_DEFLATED) as archive:
                 for a in value['artifacts']:
+                    if a.get('kind', (tx.get('assets',a['id']) or {}).get('kind')) != 'print': continue
                     archive.writestr(value.get('output_name', value['name']) + '/' + a['path'], asset_bytes(db, tx.get('assets', a['id'])))
             output.seek(0)
             return StreamingResponse(output, media_type='application/zip', headers={'Content-Disposition': "attachment; filename*=UTF-8''" + __import__('urllib.parse', fromlist=['quote']).quote(value.get('output_name', value['name']) + '.zip')})

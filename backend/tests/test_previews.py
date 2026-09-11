@@ -43,7 +43,7 @@ def test_cache_hit_and_conditional_request_still_require_permission(client, app)
     with TestClient(app) as other:
         assert other.get(url, headers=headers).status_code == 401
         other.post('/api/auth/register', json={'invite': invite, 'username': 'staff', 'password': 'safe-password-123', 'display_name': '员工'})
-        assert other.get(url, headers=headers).status_code == 404
+        assert other.get(url, headers=headers).status_code == 304  # same organization
     client.post('/api/auth/logout')
     assert client.get(url, headers=headers).status_code == 401
 

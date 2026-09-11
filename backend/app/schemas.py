@@ -204,3 +204,19 @@ class StickerBatch(Model):
         if self.action == 'delete' and self.category is not None:
             raise ValueError('删除不能同时修改分类')
         return self
+
+
+class OrganizationCreate(Model):
+    name: str = Field(min_length=1, max_length=100)
+    admin_username: str = Field(min_length=3, max_length=40, pattern=r'^[A-Za-z0-9_.-]+$')
+    admin_display_name: str = Field(min_length=1, max_length=80)
+    _name = field_validator('name', 'admin_display_name')(safe_name)
+
+
+class OrganizationPatch(Model):
+    name: str | None = Field(None, min_length=1, max_length=100)
+    active: bool | None = None
+    @field_validator('name')
+    @classmethod
+    def nonblank(cls, value):
+        return safe_name(value) if value is not None else None

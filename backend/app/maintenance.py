@@ -11,7 +11,17 @@ OUTPUT_KINDS = {'raw_result', 'result', 'print', 'overview'}
 
 
 def _references(orders, items):
-    result = {o['avatar_id'] for o in orders}
+    result = {o['avatar_id'] for o in orders if o.get('avatar_id')}
+    def historical_ids(value):
+        if isinstance(value, dict):
+            for key, child in value.items():
+                if isinstance(child, str) and (key == 'id' or key.endswith('_id')):
+                    result.add(child)
+                historical_ids(child)
+        elif isinstance(value, list):
+            for child in value: historical_ids(child)
+    for order in orders:
+        if order.get('workflow_version') == 3: historical_ids(order)
     result.update(a['id'] for o in orders for a in o.get('artifacts', []))
     result.update(i[k] for i in items for k in ('result_id', 'raw_result_id', 'template_id') if i.get(k))
     return result
@@ -22,7 +32,7 @@ def cleanup_plan(db, tx, before):
     older = [o for o in orders if datetime.fromisoformat(o['created_at']).timestamp() < before.timestamp()]
     blocked = {i['order_id'] for i in items if i['status'] in {'running', 'unknown'} or i.get('remote_reserved')}
     blocked.update(g['order_id'] for g in tx.all('generations') if g['status']=='review')
-    chosen = [o for o in older if o['id'] not in blocked]
+    chosen = [o for o in older if o['id'] not in blocked and o.get('workflow_version') != 3]
     ids = {o['id'] for o in chosen}
     selected_items = [i for i in items if i['order_id'] in ids]
     remaining_orders = [o for o in orders if o['id'] not in ids]
@@ -79,10 +89,12 @@ def account_deletion_plan(tx, account_id):
     target = tx.get('users', account_id)
     if not target:
         raise HTTPException(404, '账号不存在')
-    if target['role'] == 'admin':
+    if target['role'] in {'admin','org_admin','superadmin'}:
         raise HTTPException(403, '不能删除管理员账号')
     orders = tx.all('orders')
     selected_orders = [o for o in orders if o['owner'] == account_id]
+    if any(o.get('workflow_version') == 3 for o in selected_orders):
+        raise HTTPException(409, '该账号有客户订单历史，请停用账号以保留订单与审计记录')
     order_ids = {o['id'] for o in selected_orders}
     items = tx.all('items')
     selected_items = [i for i in items if i['order_id'] in order_ids or i.get('owner') == account_id]

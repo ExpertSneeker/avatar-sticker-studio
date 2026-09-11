@@ -85,7 +85,7 @@ def test_complete_two_sets_repack_watermark_rerun_and_manifest(context):
     assert manifest['complete']
     listed = client.get('/api/orders').json()[0]
     assert listed['download_ready'] is True
-    assert listed['preview_url'] == next(a['url'] for a in manifest['files'] if a['kind'] == 'overview')
+    assert listed['preview_url'] == next(a['url'] for a in result['artifacts'] if a['kind'] == 'overview')
     with app.state.db.transaction() as tx:
         legacy=tx.get('orders',o['id'])
         legacy['publish_signatures']['_overview']='old-watermark-style'
@@ -94,20 +94,20 @@ def test_complete_two_sets_repack_watermark_rerun_and_manifest(context):
     calls_before_style=len(provider.calls)
     assert worker.publish(o['id'])
     refreshed=client.get('/api/orders/'+o['id']+'/manifest').json()
-    assert refreshed['files'][:-1] == manifest['files'][:-1]
-    assert refreshed['files'][-1]['id'] != manifest['files'][-1]['id']
+    assert refreshed['files'] == manifest['files']
+    assert client.get('/api/orders/'+o['id']).json()['preview_url'] != listed['preview_url']
     assert len(provider.calls) == calls_before_style
 
-    assert [a['path'] for a in manifest['files']] == ['小明_B02_1.png', '小明_B02_2.png', '小明_A01_1.png', '小明_A01_2.png', '小明_水印总览.png']
-    assert Image.open(io.BytesIO(client.get(manifest['files'][-1]['url']).content)).size == (1024, 1536)
+    assert [a['path'] for a in manifest['files']] == ['小明_B02_1.png', '小明_B02_2.png', '小明_A01_1.png', '小明_A01_2.png']
+    assert Image.open(io.BytesIO(client.get(listed['preview_url']).content)).size == (1024, 1536)
     before = len(provider.calls)
     r = client.post('/api/orders/' + o['id'] + '/repack', json={'print_settings': {'long_edge_mm': 50}})
     assert r.status_code == 200, r.text
-    assert len(client.get('/api/orders/' + o['id'] + '/manifest').json()['files']) == 3
+    assert len(client.get('/api/orders/' + o['id'] + '/manifest').json()['files']) == 2
     client.patch('/api/account', json={'watermark': '仅供预览'})
-    pages_before = client.get('/api/orders/' + o['id'] + '/manifest').json()['files'][:-1]
+    pages_before = client.get('/api/orders/' + o['id'] + '/manifest').json()['files']
     assert client.post('/api/orders/' + o['id'] + '/watermark').status_code == 200
-    assert client.get('/api/orders/' + o['id'] + '/manifest').json()['files'][:-1] == pages_before
+    assert client.get('/api/orders/' + o['id'] + '/manifest').json()['files'] == pages_before
     assert len(provider.calls) == before
     item = result['items'][0]
     assert client.post(f"/api/orders/{o['id']}/items/{item['id']}/rerun",json={'client_token':'test-rerun'}).status_code == 200

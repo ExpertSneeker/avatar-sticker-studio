@@ -59,7 +59,7 @@ def test_setup_invite_and_asset_ownership(client, app):
     invite = client.post('/api/admin/invites').json()['code']
     with TestClient(app) as other:
         assert other.post('/api/auth/register', json={'invite': invite, 'username': 'staff', 'password': 'safe-password-123', 'display_name': '员工'}).status_code == 200
-        assert other.get(asset['url']).status_code == 404
+        assert other.get(asset['url']).status_code == 200  # organization-shared avatar
         assert other.get('/api/admin/settings').status_code == 403
         assert other.post('/api/auth/register', json={'invite': invite, 'username': 'third', 'password': 'safe-password-123', 'display_name': '员工'}).status_code in (400, 409)
     assert client.get(asset['url']).status_code == 200

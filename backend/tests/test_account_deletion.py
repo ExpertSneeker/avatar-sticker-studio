@@ -38,7 +38,7 @@ def test_delete_member_removes_orders_uploads_caches_and_preserves_shared_librar
         assets=[a for a in tx.all('assets') if a.get('owner')==user['id']]
     plan=preview(admin,user)
     assert plan['order_count']==2 and plan['template_count']==0 and plan['revision_count']==0
-    assert plan['can_delete'] and plan['frozen_credits']==12
+    assert plan['can_delete'] and plan['frozen_credits']==0
     response=remove(admin,user,plan);assert response.status_code==200,response.text
     assert response.json()['pending_files']==0
     assert staff.get('/api/auth/me').status_code==401
@@ -55,8 +55,8 @@ def test_delete_member_removes_orders_uploads_caches_and_preserves_shared_librar
         for kind in ('orders','items','uploads','assets','templates','template_revisions','generations'):
             assert not any(r.get('owner')==user['id'] for r in tx.all(kind)),kind
         ledger=[r for r in tx.all('credit_ledger') if r['owner']==user['id']]
-        assert sum(r['event']=='charge' for r in ledger)==12
-        assert sum(r['event']=='release' for r in ledger)==12
+        assert sum(r['event']=='charge' for r in ledger)==0
+        assert sum(r['event']=='release' for r in ledger)==0
         assert 'Private' not in str(ledger)
 
 
@@ -119,4 +119,4 @@ def test_worker_claim_after_preview_prevents_deletion(context):
     assert app.state.worker.claim()
     assert remove(admin,user,plan).status_code==409
     assert staff.get('/api/auth/me').status_code==200
-    assert staff.get('/api/credits').json()['wallet']['frozen']==12
+    assert staff.get('/api/credits').json()['wallet']['frozen']==0

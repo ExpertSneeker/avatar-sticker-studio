@@ -51,7 +51,7 @@ def summarize(tx, actor, now, days=30, offset=480, global_scope=False):
         if day in daily:
             daily[day]['orders'] += 1
             daily[day]['images'] += len(items)
-        for code in order['template_codes']:
+        for code in order.get('template_codes',[]):
             entry = templates.setdefault(code, {'code':code, 'orders':0, 'images':0, 'completed':0, 'failed':0})
             if order.get('selection_version') == 2:
                 source_ids = {t['id'] for t in order['template_snapshots'] if t['code'] == code}

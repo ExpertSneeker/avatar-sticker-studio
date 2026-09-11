@@ -25,6 +25,10 @@ class Transaction:
         return [json.loads(row[0]) for row in self.conn.execute('SELECT doc FROM records WHERE kind=? ORDER BY rowid', (kind,))]
 
     def put(self, kind, doc):
+        if kind in {'orders','items','uploads','assets','generations','templates','template_revisions','stickers','sticker_revisions'} and 'organization_id' not in doc:
+            parent = self.get('orders', doc.get('order_id','')) or self.get('users', doc.get('owner',''))
+            if parent and parent.get('organization_id'):
+                doc['organization_id'] = parent['organization_id']
         self.conn.execute('INSERT INTO records(kind,id,doc) VALUES(?,?,?) ON CONFLICT(kind,id) DO UPDATE SET doc=excluded.doc', (kind, doc['id'], json.dumps(doc, ensure_ascii=False)))
         return doc
 
@@ -69,6 +73,8 @@ class Database:
             seed_categories(tx)
             from .library import migrate_library_status
             migrate_library_status(tx)
+            from .organizations import migrate_organizations
+            migrate_organizations(tx)
         os.chmod(self.path, 0o600)
 
     @contextmanager

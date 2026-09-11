@@ -24,7 +24,7 @@ def test_actual_counts_snapshot_billing_prints_and_overview(context):
         return staff.post('/api/orders',json={'upload_id':upload(staff)['id'],'name':token,'template_ids':[public['id'],private['id']],'print_settings':{},'client_token':token})
     first=submit('old');assert first.status_code==200,first.text
     o=first.json();assert o['total']==14
-    assert staff.get('/api/credits').json()['wallet']['frozen']==14
+    assert staff.get('/api/credits').json()['wallet']['frozen']==0
     kept=private['images'][:2]
     edit=staff.put('/api/templates/'+private['id'],json={'code':'A2-14','name':private['name'],'category':'general','sticker_ids':[im['sticker_id'] for im in reversed(kept)]})
     assert edit.status_code==200,edit.text
@@ -33,7 +33,7 @@ def test_actual_counts_snapshot_billing_prints_and_overview(context):
     result=staff.get('/api/orders/'+o['id']).json()
     assert result['status']=='completed',result
     assert len(provider.calls)==14 and result['total']==14
-    assert staff.get('/api/credits').json()['wallet']['spent']==14
+    assert staff.get('/api/credits').json()['wallet']['spent']==0
     assert any(a['kind']=='print' for a in result['artifacts'])
     assert all('拼版' in a['path'] for a in result['artifacts'] if a['kind']=='print')
     preview=next(a for a in result['artifacts'] if a['kind']=='overview')

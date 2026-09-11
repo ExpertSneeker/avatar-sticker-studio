@@ -23,15 +23,16 @@ def test_mixed_generation_once_exports_every_occurrence(context):
     o = response.json()
     assert (o['generation_count'], o['export_count'], len(o['items'])) == (2,3,2)
     assert [e['code'] for e in o['export_entries']] == ['A1-01','A1-02','A1-01']
-    assert staff.get('/api/credits').json()['wallet']['frozen'] == 2
+    assert staff.get('/api/credits').json()['wallet']['frozen'] == 0
     for _ in range(2):
         asyncio.run(app.state.worker.execute(app.state.worker.claim()))
     result=staff.get('/api/orders/'+o['id']).json()
     assert result['status']=='completed', result
     assert len(provider.calls)==2
-    assert staff.get('/api/credits').json()['wallet']['spent']==2
+    assert staff.get('/api/credits').json()['wallet']['spent']==0
     manifest=staff.get('/api/orders/'+o['id']+'/manifest').json()
-    files=manifest['files']; single=[f for f in files if f['kind']=='sticker']
+    assert all(f['kind']=='print' for f in manifest['files'])
+    files=result['artifacts']; single=[f for f in files if f['kind']=='sticker']
     assert [f['path'] for f in single]==['Mixed_A1-01_1.png','Mixed_A1-02_1.png','Mixed_A1-01_2.png']
     assert staff.get(single[0]['url']).content==staff.get(single[2]['url']).content
     assert any(f['path']=='Mixed_拼版_1.png' for f in files)
@@ -44,7 +45,7 @@ def test_mixed_generation_once_exports_every_occurrence(context):
     latest=staff.get('/api/orders/'+o['id']).json()
     assert latest['status']=='completed'
     assert len(provider.calls)==3
-    assert staff.get('/api/credits').json()['wallet']['spent']==3
+    assert staff.get('/api/credits').json()['wallet']['spent']==0
     copies=[f for f in latest['artifacts'] if f['kind']=='sticker' and 'A1-01' in f['path']]
     assert len(copies)==2 and copies[0]['id']==copies[1]['id']
 

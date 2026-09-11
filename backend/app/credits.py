@@ -1,4 +1,4 @@
-"""Integer production credits. All mutation functions run in the caller's transaction."""
+"""Historical credit audit and exempt generation records; new work is never billed."""
 import hashlib
 import json
 from datetime import datetime, timezone
@@ -11,7 +11,7 @@ def timestamp(now):
 
 
 def wallet(user):
-    return {'available':0,'frozen':0,'spent':0,'version':0,**user.get('credits',{}),'exempt':user['role']=='admin'}
+    return {'available':0,'frozen':0,'spent':0,'version':0,**user.get('credits',{}),'exempt':True}
 
 
 def record(tx, owner, event, available, frozen, now, actor=None, reason='', generation=None):
@@ -31,7 +31,7 @@ def record(tx, owner, event, available, frozen, now, actor=None, reason='', gene
 
 def reserve(tx, item, now):
     user=tx.get('users',item['owner'])
-    generation={'id':uid(),'owner':item['owner'],'item_id':item['id'],'order_id':item['order_id'],'created_at':timestamp(now),'status':'exempt' if user['role']=='admin' else 'reserved'}
+    generation={'id':uid(),'owner':item['owner'],'item_id':item['id'],'order_id':item['order_id'],'created_at':timestamp(now),'status':'exempt'}
     if generation['status']=='reserved':
         record(tx,item['owner'],'reserve',-1,1,now,generation=generation)
     tx.put('generations',generation)
@@ -83,7 +83,7 @@ def adjust(tx, actor, owner, data, now):
     user=tx.get('users',owner)
     if not user:raise HTTPException(404,'账号不存在')
     before=wallet(user)
-    if before['exempt']:raise HTTPException(409,'管理员免扣积分，无需调整余额')
+    if before['exempt']:raise HTTPException(409,'积分制度已取消，无需调整余额')
     if before['version']!=data.expected_version:raise HTTPException(409,'积分已变化，请刷新后重新确认')
     delta=data.amount if data.operation=='add' else data.amount-before['available']
     result=record(tx,owner,'adjust',delta,0,now,actor['id'],data.reason)

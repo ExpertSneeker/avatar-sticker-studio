@@ -2,7 +2,7 @@
 import json
 from fastapi import HTTPException, Request
 from starlette.datastructures import UploadFile
-from .auth import can_edit_library, require_library_editor, require_admin, public_user
+from .auth import same_organization, managed_user, can_edit_library, require_library_editor, require_admin, public_user
 from .db import uid
 from .schemas import ActivePatch, LibraryPermissionPatch, TemplateWrite, StickerBatch, safe_name
 from .storage import normalize_image, save_asset
@@ -49,7 +49,7 @@ def migrate_library(tx):
                     ending=f'-{asset_id[:8]}-{suffix}'
                     code=base[:100-len(ending)]+ending;suffix+=1
                 used.add(code.casefold())
-                sticker={'id':uid(),'code':code,'name':template['name'],'category':CATEGORIES.get(template['category'],template['category']),'active':True,'revision':1,'image':{'id':asset_id,'url':image['url']}}
+                sticker={'id':uid(),'organization_id':template.get('organization_id'),'code':code,'name':template['name'],'category':CATEGORIES.get(template['category'],template['category']),'active':True,'revision':1,'image':{'id':asset_id,'url':image['url']}}
                 tx.put('stickers',sticker);snapshot(tx,'stickers',sticker)
                 by_asset[asset_id]=sticker['id']
                 created_sticker_ids.add(sticker['id'])
@@ -60,7 +60,7 @@ def migrate_library(tx):
         if asset['kind']=='template':
             asset.update(scope='public',owner=None);tx.put('assets',asset)
     for actor in tx.all('users'):
-        actor['can_edit_library']=actor['role']=='admin'
+        actor['can_edit_library']=actor['role'] in {'admin','org_admin','superadmin'}
         tx.put('users',actor)
     derived={t['id']:[sid for sid in t.get('sticker_ids',[]) if sid in created_sticker_ids] for t in tx.all('templates')}
     tx.put('migrations',{'id':'public-stickers-v1','derived_sticker_ids_by_template':derived})
@@ -78,10 +78,10 @@ def register_library(app, db, user):
     @app.patch('/api/admin/users/{id}/library-permission')
     def permission(id: str, data: LibraryPermissionPatch, request: Request):
         with db.transaction() as tx:
-            require_admin(user(tx,request))
-            target=tx.get('users',id)
+            actor=user(tx,request);require_admin(actor)
+            target=managed_user(tx,id,actor)
             if not target: raise HTTPException(404,'用户不存在')
-            target['can_edit_library']=data.can_edit_library if target['role']!='admin' else True
+            target['can_edit_library']=data.can_edit_library if target['role'] not in {'org_admin','superadmin'} else True
             tx.put('users',target)
             return {**public_user(target),'active':target['active']}
 
@@ -89,11 +89,11 @@ def register_library(app, db, user):
     def stickers(request: Request):
         with db.transaction() as tx:
             actor=user(tx,request)
-            return [sticker_public(s,actor) for s in tx.all('stickers') if not s.get('deleted') and (s['active'] or can_edit_library(actor))]
+            return [sticker_public(s,actor) for s in tx.all('stickers') if same_organization(s,actor) and not s.get('deleted') and (s['active'] or can_edit_library(actor))]
 
     async def write_stickers(request,id=None):
         with db.transaction() as tx:
-            require_library_editor(user(tx,request))
+            actor=user(tx,request);require_library_editor(actor)
         async with request.form(max_files=100,max_fields=10,max_part_size=25*1024*1024) as form:
             files=form.getlist('files') or form.getlist('files[]') or form.getlist('file')
             if (id and len(files)>1) or (not id and not 1<=len(files)<=100):
@@ -111,9 +111,9 @@ def register_library(app, db, user):
             saved_paths=[]
             try:
                 with db.transaction() as tx:
-                    require_library_editor(user(tx,request))
+                    actor=user(tx,request);require_library_editor(actor)
                     old=tx.get('stickers',id) if id else None
-                    if id and (not old or old.get('deleted')): raise HTTPException(404,'贴纸不存在')
+                    if id and (not same_organization(old,actor) or old.get('deleted')): raise HTTPException(404,'贴纸不存在')
                     try:
                         if id:
                             codes=[safe_name(str(form.get('code',old['code'])))]
@@ -123,21 +123,21 @@ def register_library(app, db, user):
                             codes=[safe_name(c) for c in codes]
                         if '拼版' in codes: raise ValueError('贴纸编号“拼版”为导出拼版文件保留，请使用其他编号')
                         name=safe_name(str(form.get('name',old['name'] if old else codes[0])))
-                        cat=resolve_category(tx,str(form.get('category',old['category'] if old else 'general')))
+                        cat=resolve_category(tx,str(form.get('category',old['category'] if old else 'general')),actor)
                     except (TypeError,ValueError) as exc:
                         raise HTTPException(422,str(exc)) from exc
-                    existing={s['code'].casefold() for s in tx.all('stickers') if s['id']!=id and not s.get('deleted')}
+                    existing={s['code'].casefold() for s in tx.all('stickers') if same_organization(s,actor) and s['id']!=id and not s.get('deleted')}
                     folded=[c.casefold() for c in codes]
                     if len(set(folded))!=len(folded) or existing.intersection(folded): raise HTTPException(409,'贴纸编号已存在')
                     values=[]
                     for index,code in enumerate(codes):
                         image=old['image'] if old else None
                         if files:
-                            asset=save_asset(db,tx,files[index].file.read(),None,'template')
+                            asset=save_asset(db,tx,files[index].file.read(),None,'template',organization_id=actor['organization_id'])
                             saved_paths.append(db.root/'assets'/asset['file'])
                             asset['scope']='public';tx.put('assets',asset)
                             image={'id':asset['id'],'url':asset['url']}
-                        value={'id':id or uid(),'code':code,'name':name if 'name' in form or old else code,'category':cat,'active':True,'revision':old['revision']+1 if old else 1,'image':image}
+                        value={'id':id or uid(),'organization_id':actor['organization_id'],'code':code,'name':name if 'name' in form or old else code,'category':cat,'active':True,'revision':old['revision']+1 if old else 1,'image':image}
                         tx.put('stickers',value);snapshot(tx,'stickers',value);values.append(value)
                     return sticker_public(values[0],user(tx,request)) if id else [sticker_public(value,user(tx,request)) for value in values]
             except BaseException:
@@ -154,23 +154,23 @@ def register_library(app, db, user):
     @app.patch('/api/stickers/{id}')
     def retired_sticker_status(id: str,data: ActivePatch,request: Request):
         with db.transaction() as tx:
-            require_library_editor(user(tx,request))
+            actor=user(tx,request);require_library_editor(actor)
             raise HTTPException(410,'贴纸和模板已取消停用功能，请刷新页面；需要移除资源时请使用删除。')
 
     @app.get('/api/templates')
     def templates(request: Request):
         with db.transaction() as tx:
             actor=user(tx,request)
-            return [template_public(tx,t,actor) for t in tx.all('templates') if not t.get('deleted') and (t['active'] or can_edit_library(actor))]
+            return [template_public(tx,t,actor) for t in tx.all('templates') if same_organization(t,actor) and not t.get('deleted') and (t['active'] or can_edit_library(actor))]
 
     def write_template(data,request,id=None):
         with db.transaction() as tx:
             actor=user(tx,request);require_library_editor(actor)
             old=tx.get('templates',id) if id else None
-            if id and (not old or old.get('deleted')): raise HTTPException(404,'套装不存在')
-            if any(t['code'].casefold()==data.code.casefold() and t['id']!=id and not t.get('deleted') for t in tx.all('templates')): raise HTTPException(409,'套装编号已存在')
-            if any(not (s:=tx.get('stickers',sid)) or not s['active'] or s.get('deleted') for sid in data.sticker_ids): raise HTTPException(422,'套装包含不存在或不可用的贴纸')
-            value={**data.model_dump(),'category':resolve_category(tx,data.category),'id':id or uid(),'scope':'public','owner':None,'active':True,'revision':old['revision']+1 if old else 1}
+            if id and (not same_organization(old,actor) or old.get('deleted')): raise HTTPException(404,'套装不存在')
+            if any(same_organization(t,actor) and t['code'].casefold()==data.code.casefold() and t['id']!=id and not t.get('deleted') for t in tx.all('templates')): raise HTTPException(409,'套装编号已存在')
+            if any(not same_organization((s:=tx.get('stickers',sid)),actor) or not s['active'] or s.get('deleted') for sid in data.sticker_ids): raise HTTPException(422,'套装包含不存在或不可用的贴纸')
+            value={**data.model_dump(),'organization_id':actor['organization_id'],'category':resolve_category(tx,data.category,actor),'id':id or uid(),'scope':'public','owner':None,'active':True,'revision':old['revision']+1 if old else 1}
             value=hydrate_template(tx,value)
             tx.put('templates',value);snapshot(tx,'templates',value)
             return template_public(tx,value,actor)
@@ -184,14 +184,14 @@ def register_library(app, db, user):
     @app.patch('/api/templates/{id}')
     def retired_template_status(id: str,data: ActivePatch,request: Request):
         with db.transaction() as tx:
-            require_library_editor(user(tx,request))
+            actor=user(tx,request);require_library_editor(actor)
             raise HTTPException(410,'贴纸和模板已取消停用功能，请刷新页面；需要移除资源时请使用删除。')
 
     def delete_entry(kind, id, request):
         with db.transaction() as tx:
-            require_library_editor(user(tx, request))
+            actor=user(tx,request);require_library_editor(actor)
             value = tx.get(kind, id)
-            if not value:
+            if not same_organization(value,actor):
                 raise HTTPException(404, '贴纸不存在' if kind == 'stickers' else '模板不存在')
             if value.get('deleted'):
                 return {'id': id, 'deleted': True}
@@ -224,7 +224,7 @@ def register_library(app, db, user):
             actor=user(tx,request)
             require_library_editor(actor)
             values=[tx.get('stickers',id) for id in data.ids]
-            if any(not s or s.get('deleted') for s in values):
+            if any(not same_organization(s,actor) or s.get('deleted') for s in values):
                 raise HTTPException(404,'所选贴纸已被删除，请刷新后重试')
             if data.action=='delete':
                 references=[]
@@ -240,7 +240,7 @@ def register_library(app, db, user):
             else:
                 changes={}
                 if data.category is not None:
-                    changes['category']=resolve_category(tx,data.category)
+                    changes['category']=resolve_category(tx,data.category,actor)
             for s in values:
                 if any(s.get(k)!=v for k,v in changes.items()):
                     s.update(changes)
