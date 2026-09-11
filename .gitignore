@@ -16,3 +16,7 @@ frontend/*.tsbuildinfo
 test-results/
 playwright-report/
 *.log
+
+# Local dependency links used by isolated development checkouts
+.venv
+node_modules
