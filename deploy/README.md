@@ -2,6 +2,12 @@
 
 Production URL: https://sticker.magnusma.online
 
+The current organization/guest workflow and migration procedure are documented
+in [framework-release.md](framework-release.md). Its tenant roles, credit-free
+generation, frozen customer selections and manual print-only downloads supersede
+the historical release notes below. Do not use the original local-data transfer
+procedure to upgrade an existing production database.
+
 The application runs as `sticker` on loopback port 8000, using one systemd-managed Uvicorn process. Cloudflare's existing `sub2api-dmit` tunnel routes this hostname to the application; its other ingress rules and the existing port 443 service are preserved. Do not start another production worker against a copied database.
 
 ## Layout
@@ -61,7 +67,7 @@ The storage panel reports cache use and the limit; cached bytes are already
 included in the application's total. Cached derivatives are disposable and do
 not replace manual retention management of original orders.
 
-## Personal templates and production credits
+## Historical release: personal templates and production credits
 
 The one-time `personal-credits-v1` database migration preserves existing template
 IDs, images and versions as public resources. Existing members begin with zero

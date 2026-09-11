@@ -75,6 +75,22 @@ codes/order numbers, missing tenant ownership, or broken asset references.
    Existing authenticated staff sessions are re-authorized on every request, so
    the new organization roles apply immediately.
 
+Create the independent platform administrator from the new release as the service
+owner, with an unused username. Interactive invocation asks for the password
+twice; it never supplies a default:
+
+```sh
+sudo -u sticker /opt/avatar-sticker-studio/venv/bin/python -m backend.app.bootstrap \
+  --data-dir /var/lib/avatar-sticker-studio \
+  --username siteadmin --display-name '平台管理员'
+```
+
+For an unattended release, `--generate-password` generates a unique password.
+Redirect its JSON output to a private mode-0600 credential file rather than a
+shared deployment log. The account has no organization membership and enters
+organization management after login; `magnus` remains the migrated organization
+administrator. Existing usernames cannot be overwritten by this command.
+
 ## Guest media and operator delivery
 
 Guest sessions cannot authorize backend original or manifest endpoints. Guest
