@@ -68,6 +68,15 @@ def test_new_order_multiple_avatar_references_are_checked(tmp_path):
     assert 'missing referenced asset: missing-avatar' in audit_framework.audit(tmp_path)['failures']
 
 
+def test_customer_version_and_frozen_final_references_cannot_be_orphaned(tmp_path):
+    docs = seed(tmp_path)
+    order = docs['orders'][0] | {'workflow_version':3, 'slots':[{'versions':[{'id':'v','asset_id':'missing-version'}]}], 'final_entries':[{'asset_id':'missing-final'}]}
+    replace(tmp_path, 'orders', order)
+    failures = audit_framework.audit(tmp_path)['failures']
+    assert 'missing referenced asset: missing-version' in failures
+    assert 'missing referenced asset: missing-final' in failures
+
+
 def test_audit_cli_failure_is_nonzero_and_never_writes_source(tmp_path):
     seed(tmp_path)
     (tmp_path / 'assets' / 'asset.png').unlink()

@@ -48,6 +48,12 @@ def referenced_assets(records):
             if asset_id:
                 refs.add(asset_id)
         refs.update(a['id'] for a in doc.get('artifacts', []) if a.get('id'))
+        for slot in doc.get('slots', []):
+            refs.update(v['asset_id'] for v in slot.get('versions', []) if v.get('asset_id'))
+            sticker_asset = slot.get('sticker', {}).get('image', {}).get('id')
+            if sticker_asset:
+                refs.add(sticker_asset)
+        refs.update(e['asset_id'] for e in doc.get('final_entries', []) if e.get('asset_id'))
         if doc.get('overview_id'):
             refs.add(doc['overview_id'])
     for kind in ('items', 'result_versions'):
