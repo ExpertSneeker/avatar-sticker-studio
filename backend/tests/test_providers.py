@@ -17,7 +17,7 @@ def test_queue_contract_and_media_isolation(monkeypatch):
     assert hasattr(providers, 'FalProvider')
     seen = []
     states = iter(['IN_QUEUE', 'IN_PROGRESS', 'COMPLETED'])
-    base = 'https://queue.fal.run/openai/gpt-image-2/requests/job-1'
+    base = 'https://queue.fal.run/openai/gpt-image-2.5/requests/job-1'
     def receive(r):
         seen.append(r)
         if r.method == 'POST':
@@ -36,7 +36,7 @@ def test_queue_contract_and_media_isolation(monkeypatch):
             assert (await p.poll(job))['fal_status'] == state
         assert await p.result(job) == png()
     asyncio.run(run())
-    assert str(seen[0].url) == 'https://queue.fal.run/openai/gpt-image-2/edit'
+    assert str(seen[0].url) == 'https://queue.fal.run/openai/gpt-image-2.5/flare/edit'
     assert all(r.headers['authorization']=='Key test-key' for r in seen if r.url.host=='queue.fal.run')
 
 
@@ -68,7 +68,31 @@ def test_malformed_submission_with_id_retains_canonical_lookup(monkeypatch):
     install(monkeypatch,lambda r:httpx.Response(200,json={'request_id':'job-1','status_url':'https://evil.test','response_url':'https://evil.test'}))
     job=asyncio.run(providers.FalProvider('k').submit(b'a',b'b','p'))
     assert job['fal_request_id']=='job-1'
-    assert job['fal_status_url']=='https://queue.fal.run/openai/gpt-image-2/requests/job-1/status'
+    assert job['fal_status_url']=='https://queue.fal.run/openai/gpt-image-2.5/requests/job-1/status'
+    assert job['fal_response_url']=='https://queue.fal.run/openai/gpt-image-2.5/requests/job-1'
+
+
+def test_model_switch_recovers_existing_gpt_image_2_request_without_resubmitting(monkeypatch):
+    base = 'https://queue.fal.run/openai/gpt-image-2/requests/legacy-job'
+    seen = []
+    def receive(request):
+        seen.append(str(request.url))
+        assert request.method == 'GET'
+        if str(request.url) == base + '/status':
+            return httpx.Response(200, json={'status':'COMPLETED'})
+        if str(request.url) == base:
+            return httpx.Response(200, json={'images':[{'url':'https://v3.fal.media/legacy.png'}]})
+        assert str(request.url) == 'https://v3.fal.media/legacy.png'
+        assert 'authorization' not in request.headers
+        return httpx.Response(200, content=png())
+    install(monkeypatch, receive)
+    async def run():
+        provider = providers.FalProvider('test-key')
+        job = {'fal_request_id':'legacy-job', 'fal_status_url':base+'/status', 'fal_response_url':base}
+        assert (await provider.poll(job))['fal_status'] == 'COMPLETED'
+        assert await provider.result(job) == png()
+    asyncio.run(run())
+    assert seen == [base+'/status', base, 'https://v3.fal.media/legacy.png']
 
 
 @pytest.mark.parametrize('body',[{}, {'request_id':123}, {'request_id':'../../evil'}])

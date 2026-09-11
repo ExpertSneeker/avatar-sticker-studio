@@ -20,7 +20,8 @@ class CutoutDeferred(Exception):
 
 
 class FalProvider:
-    endpoint = 'https://queue.fal.run/openai/gpt-image-2/edit'
+    queue_endpoint = 'https://queue.fal.run/openai/gpt-image-2.5'
+    endpoint = queue_endpoint + '/flare/edit'
 
     def __init__(self, key):
         self.key = key
@@ -72,7 +73,8 @@ class FalProvider:
         if not isinstance(request_id, str) or not request_id or len(request_id) > 200 or any(c not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_' for c in request_id):
             raise ProviderFailure('FAL未返回有效请求编号，结果待确认', 'unknown')
         # Derive canonical recovery URLs if a response contains invalid URLs; the ID must survive.
-        base = 'https://queue.fal.run/openai/gpt-image-2/requests/' + request_id
+        # Queue lookups use owner/model, excluding the /flare/edit subpath.
+        base = self.queue_endpoint + '/requests/' + request_id
         job = dict(fal_request_id=request_id, fal_status='IN_QUEUE', fal_status_url=base + '/status', fal_response_url=base)
         for field, source in [('fal_status_url', 'status_url'), ('fal_response_url', 'response_url')]:
             try:
