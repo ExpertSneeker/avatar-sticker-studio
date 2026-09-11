@@ -108,9 +108,13 @@ class Worker:
                 if current.get('cutout_inflight'):
                     raise ProviderFailure(CUTOUT_UNCERTAIN, 'unknown')
                 order = tx.get('orders', item['order_id'])
+                if order.get('workflow_version') == 3 and order['state'] == 'cancelled' and not current.get('fal_request_id') and not current.get('raw_result_id'):
+                    current.update(status='queued', remote_reserved=False)
+                    tx.put('items', current)
+                    return
                 config = tx.get('config', 'settings')
                 template = asset_bytes(self.db, tx.get('assets', item['template_id']))
-                avatar = asset_bytes(self.db, tx.get('assets', order['avatar_id']))
+                avatar = asset_bytes(self.db, tx.get('assets', item.get('avatar_id') or order['avatar_id']))
             if item.get('processing_stage') == 'postprocess':
                 with self.db.transaction() as tx:
                     raw_asset = tx.get('assets', item.get('raw_result_id', ''))
@@ -179,6 +183,9 @@ class Worker:
                 order = tx.get('orders', item['order_id'])
                 order['content_version'] += 1
                 tx.put('orders', order)
+                if order.get('workflow_version') == 3:
+                    from .customer_orders import reconcile
+                    reconcile(tx, order)
             await asyncio.to_thread(self.publish, item['order_id'])
         except asyncio.CancelledError:
             # Read the durable stage: execute's original claim may predate raw save.
@@ -237,10 +244,19 @@ class Worker:
                 order = tx.get('orders', order_id)
                 if not order:
                     return False
+                if order.get('workflow_version') == 3:
+                    from .customer_orders import reconcile
+                    reconcile(tx, order)
+                    customer_order = order
+                else:
+                    customer_order = None
                 owner = tx.get('users', order['owner'])
                 items = sorted([i for i in tx.all('items') if i['order_id'] == order_id], key=lambda i: (i['set_index'], i['position']))
                 snapshot = order['content_version']
                 binaries = {i['id']: asset_bytes(self.db, tx.get('assets', i['result_id'])) for i in items if i.get('result_id')}
+            if customer_order:
+                from .publication import publish_customer
+                return publish_customer(self.db, customer_order, force, watermark_only)
             if order.get('selection_version') == 2:
                 from .publication import publish_selection
                 return publish_selection(self.db, order, items, binaries, owner, force, watermark_only)
@@ -321,7 +337,9 @@ class Worker:
                 self.recover()
                 # Startup or racing publishers may have saved images but not their derived files.
                 with self.db.transaction() as tx:
-                    pending = [o['id'] for o in tx.all('orders') if (not o.get('overview_ready') or o.get('overview_style') != 'bold-outline-shadow-v3') and not o.get('processing_error')]
+                    pending = [o['id'] for o in tx.all('orders') if not o.get('processing_error') and
+                               ((o.get('workflow_version') == 3 and o['state'] == 'submitted' and (not o.get('delivery_ready') or not o.get('overview_ready'))) or
+                                (o.get('workflow_version') != 3 and (not o.get('overview_ready') or o.get('overview_style') != 'bold-outline-shadow-v3')))]
                 for id in pending:
                     await asyncio.to_thread(self.publish, id)
                 while not self.stopping:
