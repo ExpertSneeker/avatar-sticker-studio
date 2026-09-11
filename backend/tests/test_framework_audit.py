@@ -5,6 +5,7 @@ import sqlite3
 import subprocess
 import sys
 from pathlib import Path
+import pytest
 
 from deploy import audit_framework
 
@@ -97,3 +98,23 @@ def test_compare_rejects_missing_generation_history_and_configuration_changes(tm
     assert 'changed or missing historical generations: g' in audit_framework.compare(before, audit_framework.audit(tmp_path))
     replace(tmp_path, 'config', docs['config'][0] | {'max_inflight': 40})
     assert 'changed or missing historical config: settings' in audit_framework.compare(before, audit_framework.audit(tmp_path))
+
+
+@pytest.mark.parametrize('kind', ['stickers', 'templates', 'library_categories', 'assets'])
+def test_compare_preserves_live_catalog_and_asset_metadata(tmp_path, kind):
+    seed(tmp_path)
+    if kind != 'assets':
+        with sqlite3.connect(tmp_path / 'studio.sqlite3') as conn:
+            conn.execute('INSERT INTO records VALUES(?,?,?)', (kind, 'catalog', json.dumps({'id':'catalog','code':'A1','name':'Original'})))
+    before = audit_framework.audit(tmp_path)
+    identifier = 'asset' if kind == 'assets' else 'catalog'
+    with sqlite3.connect(tmp_path / 'studio.sqlite3') as conn:
+        raw = conn.execute('SELECT doc FROM records WHERE kind=? AND id=?', (kind, identifier)).fetchone()[0]
+    document = json.loads(raw)
+    replace(tmp_path, kind, document | {'organization_id':'new-organization'})
+    assert audit_framework.compare(before, audit_framework.audit(tmp_path)) == []
+    replace(tmp_path, kind, document | {'name':'Unexpected rewrite'})
+    assert f'changed or missing historical {kind}: {identifier}' in audit_framework.compare(before, audit_framework.audit(tmp_path))
+    with sqlite3.connect(tmp_path / 'studio.sqlite3') as conn:
+        conn.execute('DELETE FROM records WHERE kind=? AND id=?', (kind, identifier))
+    assert f'changed or missing historical {kind}: {identifier}' in audit_framework.compare(before, audit_framework.audit(tmp_path))

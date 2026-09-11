@@ -129,7 +129,9 @@ def audit(data_dir, assets_dir=None):
 def compare(before, after):
     failures = []
     # Credit generations may settle/release, but ledger rows are append-only.
-    for kind in ('users', 'orders', 'items', 'generations', 'uploads', 'template_revisions', 'sticker_revisions', 'credit_ledger', 'credit_operations', 'config'):
+    for kind in ('users', 'orders', 'items', 'generations', 'uploads', 'assets',
+                 'templates', 'stickers', 'library_categories', 'template_revisions',
+                 'sticker_revisions', 'credit_ledger', 'credit_operations', 'config'):
         for identifier, sha in before['historical_hashes'].get(kind, {}).items():
             if after['historical_hashes'].get(kind, {}).get(identifier) != sha:
                 failures.append('changed or missing historical ' + kind + ': ' + identifier)
