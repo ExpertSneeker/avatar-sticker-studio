@@ -33,9 +33,9 @@ export function AccountConcurrencyDialog({account,onClose,onSaved}:{account:User
   }
   const close=()=>{if(!lock.current)onClose()}
   return <Modal title="设置账号生图并行上限" onClose={close}><form onSubmit={e=>{e.preventDefault();void save()}}>
-    <p className="credits-confirm-copy">{account.display_name}（{account.username}）的所有订单共用此上限，包括单张重跑。</p>
-    {loading?<div className="credits-loading" role="status"><Spinner/>正在读取当前上限</div>:current!==null&&<label className="field">最多同时生图数量<input type="number" min={1} max={40} step={1} required disabled={busy} value={value} onChange={e=>setValue(e.target.value)}/><span className="hint">可设置为 1–40，默认 2。用户可查看，只有管理员可以修改。</span></label>}
-    <p className="credits-confirm-copy">实际同时生图数量还受全站上限约束。FAL 排队中和仍占并发的待确认请求会计入；降低上限不会中断已发出的请求，后续生图会等待空位。已有请求的查询及图片后处理继续执行。</p>
+    <p className="account-confirm-copy">{account.display_name}（{account.username}）的所有订单共用此上限，包括单张重跑。</p>
+    {loading?<div className="account-loading" role="status"><Spinner/>正在读取当前上限</div>:current!==null&&<label className="field">最多同时生图数量<input type="number" min={1} max={40} step={1} required disabled={busy} value={value} onChange={e=>setValue(e.target.value)}/><span className="hint">可设置为 1–40，默认 2。用户可查看，只有管理员可以修改。</span></label>}
+    <p className="account-confirm-copy">实际同时生图数量还受全站上限约束。FAL 排队中和仍占并发的待确认请求会计入；降低上限不会中断已发出的请求，后续生图会等待空位。已有请求的查询及图片后处理继续执行。</p>
     {error&&<div className="error-banner" role="alert">{error}</div>}
     <div className="modal-footer"><button type="button" className="button" disabled={busy} onClick={close}>取消</button>{!loading&&current===null&&<button type="button" className="button" onClick={()=>{setError('');setRevision(v=>v+1)}}>重新加载</button>}<button className="button primary" disabled={busy||loading||current===null||!Number.isInteger(Number(value))||Number(value)<1||Number(value)>40}>{busy&&<Spinner/>}保存上限</button></div>
   </form></Modal>

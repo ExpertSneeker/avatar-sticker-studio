@@ -1,5 +1,4 @@
 import { searchMatcher } from '../lib/search'
-import { CreditsPanel } from '../components/Credits'
 import { useEffect, useState } from 'react'
 import { RefreshCw, BarChart3, Users, ArrowUpRight } from 'lucide-react'
 import { api } from '../lib/api'
@@ -15,7 +14,7 @@ interface StatisticsData {
   accounts?:{total:number;active:number;contributing:number}
 }
 const periods=[['1','最近 24 小时'],['3','最近 3 天'],['7','最近 7 天'],['30','最近 30 天'],['0','全部订单']]
-const states=[['queued','排队中'],['processing','处理中'],['completed','已完成'],['failed','有失败'],['unknown','待确认'],['paused','已暂停'],['archived','已归档']]
+const states=[['draft','待制作'],['review','选图中'],['submitted','已提交'],['cancelled','已取消'],['queued','排队中'],['processing','处理中'],['completed','已完成'],['failed','有失败'],['unknown','待确认'],['paused','已暂停'],['archived','已归档']]
 const number=(value:number)=>value.toLocaleString('zh-CN')
 
 export function Statistics({global=false}:{global?:boolean}) {
@@ -37,13 +36,12 @@ export function Statistics({global=false}:{global?:boolean}) {
   const templates=data?.templates.filter(row=>matchesTemplate(row.code))||[]
   const members=data?.members?.filter(row=>matchesMember(row.display_name+' '+row.username))||[]
   const cards=summary?[
-    ['提交订单',summary.orders,'所选时间内提交'],['成品齐全',summary.ready_orders,'单张、拼图与总览已完成'],
+    ['提交订单',summary.orders,'所选时间内提交'],['成品齐全',summary.ready_orders,'客户订单已提交且打印文件就绪'],
     ['计划图片',summary.images,'包含尚未开始的单张'],['单张已完成',summary.completed,`完成率 ${summary.images?(100*summary.completed/summary.images).toFixed(1):'0.0'}%`],
     ['失败单张',summary.failed,`${summary.unknown} 张结果待确认`],['追加生图尝试',summary.extra_attempts,`累计启动尝试 ${number(summary.attempts)} 次`],
   ]:[]
   return <div className="statistics-page">
     <div className="page-heading"><div><h1>{global?'全站统计':'统计'}</h1><p>{global?'查看团队的制作量与任务分布。':'每一笔订单，都有清楚的制作记录。'}</p></div><button className="button" disabled={loading} onClick={()=>setRevision(v=>v+1)}><RefreshCw size={16}/>刷新统计</button></div>
-    {!global&&<CreditsPanel days={days}/>}
     <div className="statistics-toolbar"><label className="statistics-period">统计范围<select aria-label="统计时间范围" value={days} onChange={e=>setDays(e.target.value)}>{periods.map(([value,label])=><option key={value} value={value}>{label}</option>)}</select></label><span>按订单提交时间筛选 · 当前结果快照</span></div>
     {loading?<div className="statistics-loading" role="status"><Spinner/>正在汇总统计</div>:error?<div className="error-banner" role="alert">{error}<button className="text-button" onClick={()=>setRevision(v=>v+1)}>重新加载</button></div>:data&&summary&&<>
       <div className="statistics-cards">{cards.map(([label,value,hint])=><article className="statistics-card" key={label}><span>{label}</span><strong>{number(Number(value))}</strong><small>{hint}</small></article>)}</div>

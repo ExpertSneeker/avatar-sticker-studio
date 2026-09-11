@@ -6,7 +6,7 @@ import {tmpdir} from 'node:os'
 import {join} from 'node:path'
 
 const pixel=readFileSync(new URL('./fixtures/portrait.png',import.meta.url))
-test('account creation, credit conflict, public library permission, successful billing and password reset',async({page,browser})=>{
+test('account creation, organization library permission, generation without credits and password reset',async({page,browser})=>{
   const errors:string[]=[];page.on('pageerror',e=>errors.push(e.message))
   await page.request.post('/api/auth/login',{data:{username:'testadmin',password:'local-test-password'}})
   await page.goto('/')
@@ -21,20 +21,8 @@ test('account creation, credit conflict, public library permission, successful b
   await dialog.getByRole('button',{name:'已保存，关闭',exact:true}).click()
   const user=(await (await page.request.get('/api/admin/users')).json()).find((u:{username:string})=>u.username==='creditmember')
   const row=page.locator('.accounts-table tbody tr').filter({hasText:'积分测试成员'})
-  await row.getByRole('button',{name:'积分与流水',exact:true}).click()
-  await page.getByRole('button',{name:'调整积分',exact:true}).click()
-  await dialog.getByLabel('增加积分',{exact:true}).fill('24')
-  await dialog.getByLabel('调整原因').fill('联调测试')
-  // Another admin adjustment occurs while the dialog is open.
-  expect((await page.request.post('/api/admin/users/'+user.id+'/credits',{data:{operation:'add',amount:1,reason:'并发调整',client_token:'browser-credit-before',expected_version:0}})).ok()).toBeTruthy()
-  await dialog.getByRole('button',{name:'确认调整',exact:true}).click()
-  await expect(dialog.getByRole('alert')).toContainText('余额已变化')
-  await expect(dialog.getByText(/当前可用 1 · 冻结 0/)).toBeVisible()
-  await dialog.getByRole('button',{name:'确认调整',exact:true}).click()
-  await expect(page.getByRole('dialog',{name:'调整可用积分',exact:true})).toHaveCount(0)
-  await expect(page.locator('.credits-summary strong').first()).toHaveText('25')
-  await page.screenshot({path:join(tmpdir(),'avatar-studio-fal-qa','credits-admin.png'),fullPage:true})
-
+  await expect(page.getByText('积分与流水',{exact:true})).toHaveCount(0)
+  expect(user.credits).toBeUndefined()
   const memberContext=await browser.newContext({baseURL:`http://127.0.0.1:${process.env.STUDIO_E2E_FRONTEND_PORT||'5174'}`,viewport:{width:1440,height:1000}})
   try {
     const member=await memberContext.newPage()
@@ -44,7 +32,6 @@ test('account creation, credit conflict, public library permission, successful b
     await member.getByRole('navigation').getByRole('button',{name:'模板库',exact:true}).click()
     await expect(member.getByRole('button',{name:'新建套装',exact:true})).toHaveCount(0)
     expect((await member.request.post('/api/templates',{data:{code:'DENIED',name:'denied',category:'boy',sticker_ids:['permission-probe']}})).status()).toBe(403)
-    await page.getByRole('dialog',{name:'积分测试成员 · 积分与流水',exact:true}).getByRole('button',{name:'关闭',exact:true}).click()
     await row.getByRole('checkbox',{name:'积分测试成员 公共库编辑权限'}).check()
     await expect.poll(async()=>(await(await member.request.get('/api/auth/me')).json()).can_edit_library).toBe(true)
     const assets=await uploadStickers(member.request,Array.from({length:12},(_,i)=>({name:`member-${i}.png`,mimeType:'image/png',buffer:pixel})))
@@ -68,11 +55,10 @@ test('account creation, credit conflict, public library permission, successful b
     await member.request.post('/api/uploads/'+u.id+'/complete')
     const response=await member.request.post('/api/orders',{data:{upload_id:u.id,name:'积分联调订单',template_ids:[pub.id,personal.id],print_settings:{long_edge_mm:50},client_token:'credit-browser-order'}})
     expect(response.ok()).toBeTruthy()
-    await expect.poll(async()=> (await (await member.request.get('/api/credits')).json()).wallet.spent,{timeout:60000}).toBe(24)
-    const wallet=(await (await member.request.get('/api/credits')).json()).wallet
-    expect(wallet.available).toBe(1);expect(wallet.frozen).toBe(0)
+    const generated=await response.json()
+    await expect.poll(async()=>(await(await member.request.get('/api/orders/'+generated.id)).json()).download_ready,{timeout:60000}).toBe(true)
     await member.getByRole('navigation').getByRole('button',{name:'统计',exact:true}).click()
-    await expect(member.locator('.credits-summary strong').nth(2)).toHaveText('24')
+    await expect(member.getByText('可用积分',{exact:true})).toHaveCount(0)
     await member.setViewportSize({width:390,height:844})
     expect(await member.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true)
     await member.screenshot({path:join(tmpdir(),'avatar-studio-fal-qa','credits-mobile.png'),fullPage:true})

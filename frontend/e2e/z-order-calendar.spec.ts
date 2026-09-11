@@ -11,7 +11,7 @@ test('calendar dates include both boundary days and intersect search and status 
   await page.route('**/api/orders',r=>r.fulfill({json:rows}))
   await page.route('**/api/orders/calendar-*',r=>r.fulfill({json:rows.find(o=>r.request().url().endsWith(o.id))}))
   await page.goto('/')
-  await page.getByRole('navigation').getByRole('button',{name:'任务中心',exact:true}).click()
+  await page.getByRole('navigation').getByRole('button',{name:'历史订单',exact:true}).click()
   const period=page.getByLabel('提交时间范围'),tasks=page.locator('.task-row')
   await period.selectOption('today')
   await expect(tasks).toHaveCount(3)

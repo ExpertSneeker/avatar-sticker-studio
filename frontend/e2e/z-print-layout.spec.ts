@@ -34,7 +34,7 @@ test('printed files include centered order title and retain original results whe
   expect(measured.title).toBeGreaterThan(100);expect(measured.corner).toBe(0)
   expect(Math.abs(measured.left-(measured.width-measured.right))).toBeLessThanOrEqual(2)
   expect(Math.abs((measured.top-142)-(3508-118-measured.bottom))).toBeLessThanOrEqual(2)
-  await page.getByRole('navigation').getByRole('button',{name:'任务中心',exact:true}).click()
+  await page.getByRole('navigation').getByRole('button',{name:'历史订单',exact:true}).click()
   await page.locator('.task-main').filter({hasText:'标题居中验收'}).click()
   const detail=page.getByRole('dialog').first()
   await detail.getByRole('button',{name:'重新排版',exact:true}).click()

@@ -1,28 +1,14 @@
 import { api, sha256 } from './api'
-import { readLocal, readOrCreateLocal, writeLocal } from './db'
+import { readLocal, writeLocal } from './db'
 import { planSync, safeFilename } from './sync'
-import type { Manifest, Order } from './types'
+import type { Manifest } from './types'
 
 type WriteIntent={sha256:string;baseline:string|null}
 interface SavedLocation {root:FileSystemDirectoryHandle;name:string;hashes:Record<string,string>;intents?:Record<string,WriteIntent>}
 export interface SavedRecord {locations?:SavedLocation[];version:number;complete:boolean;downloadedOnce?:boolean;hashes:Record<string,string>;root:FileSystemDirectoryHandle;name:string;intents?:Record<string,WriteIntent>}
 const active=new Set<string>()
 export const directorySupported=()=> 'showDirectoryPicker' in window
-export async function pickDirectory(userId:string) {
-  const handle=await window.showDirectoryPicker({mode:'readwrite',id:'avatar-stickers'})
-  await writeLocal('directory:'+userId,handle)
-  return handle
-}
-export const storedDirectory=(userId:string)=>readLocal<FileSystemDirectoryHandle>('directory:'+userId)
 export const savedRecord=(userId:string,orderId:string)=>readLocal<SavedRecord>('saved:'+userId+':'+orderId)
-export const bindDestination=(userId:string,token:string,root:FileSystemDirectoryHandle)=>readOrCreateLocal('destination:'+userId+':'+token,root)
-export async function orderDirectory(userId:string,order:Order,fallback:FileSystemDirectoryHandle|null) {
-  const bound=await readLocal<FileSystemDirectoryHandle>('destination:'+userId+':'+(order.client_token||order.id))
-  if(bound)return bound
-  const saved=await savedRecord(userId,order.id)
-  // A submitted destination must never silently follow a new global directory.
-  return saved?.root||(!order.client_token?fallback:null)
-}
 export async function openOrderDirectory(userId:string,orderId:string) {
   const saved=await savedRecord(userId,orderId)
   if(!saved)throw new Error('此订单尚未保存到本机')
@@ -35,7 +21,7 @@ export async function openOrderDirectory(userId:string,orderId:string) {
 export async function directoryPermission(handle:FileSystemDirectoryHandle,request=false) {
   return (request?await handle.requestPermission({mode:'readwrite'}):await handle.queryPermission({mode:'readwrite'}))==='granted'
 }
-export async function syncOrder(userId:string,orderId:string,root:FileSystemDirectoryHandle,onProgress:(message:string)=>void,options:{signal?:AbortSignal;repairModified?:boolean;automatic?:boolean;forceDownload?:boolean}={}) {
+export async function syncOrder(userId:string,orderId:string,root:FileSystemDirectoryHandle,onProgress:(message:string)=>void,options:{signal?:AbortSignal;repairModified?:boolean;manifestPath?:string;folderName?:string;forceDownload?:boolean}={}) {
   const key=userId+':'+orderId
   if(active.has(key)) throw new Error('此订单正在保存')
   active.add(key)
@@ -43,14 +29,15 @@ export async function syncOrder(userId:string,orderId:string,root:FileSystemDire
   try {
     signal?.throwIfAborted()
     if (!await directoryPermission(root)) throw new Error('保存目录需要重新授权，请点击“选择保存目录”')
-    const manifest=await api<Manifest>('/orders/'+orderId+'/manifest',{signal})
+    const manifestPath=options.manifestPath||'/orders/'+encodeURIComponent(orderId)+'/manifest'
+    const raw=await api<Manifest>(manifestPath,{signal})
+    const manifest={...raw,name:options.folderName||raw.name,files:raw.files.filter(file=>file.kind==='print')}
+    if(!manifest.complete)throw new Error('等待全部打印文件完成后再下载')
     if(!safeFilename(manifest.name)) throw new Error('订单名称不能用作本地文件夹')
     if(!manifest.files.length) throw new Error('尚无可保存的成品')
     const run=async()=>{
     signal?.throwIfAborted()
     const previous=await savedRecord(userId,orderId)
-    if(options.automatic&&(previous?.downloadedOnce||previous?.complete))return previous
-    if(options.automatic&&!manifest.complete)throw new Error('等待全部成品完成后再自动下载')
     const downloadedOnce=!!(previous?.downloadedOnce||previous?.complete)
     // Keep ownership per output location so explicitly returning to an earlier folder stays safe.
     const locations:SavedLocation[]=[]
@@ -89,7 +76,7 @@ export async function syncOrder(userId:string,orderId:string,root:FileSystemDire
       if(!response.ok) throw new Error('下载失败：'+path)
       const blob=await response.blob()
       if(blob.size!==file.size || await sha256(blob)!==file.sha256) throw new Error('文件校验失败：'+path)
-      const current=await api<Manifest>('/orders/'+orderId+'/manifest',{signal})
+      const current=await api<Manifest>(manifestPath,{signal})
       if(current.version!==manifest.version) throw new Error('结果已更新，请重新保存最新版本')
       signal?.throwIfAborted()
       // A download can take minutes; do not overwrite files changed since the initial scan.
@@ -108,7 +95,7 @@ export async function syncOrder(userId:string,orderId:string,root:FileSystemDire
       // Persist every completed write so an interrupted sync can resume safely.
       await persist()
     }
-    const latest=await api<Manifest>('/orders/'+orderId+'/manifest',{signal})
+    const latest=await api<Manifest>(manifestPath,{signal})
     if(latest.version!==manifest.version) throw new Error('结果已更新，请重新核对文件')
     for(const file of manifest.files) {
       signal?.throwIfAborted()

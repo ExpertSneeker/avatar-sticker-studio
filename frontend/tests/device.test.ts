@@ -63,13 +63,11 @@ describe('real directory synchronization flow',()=>{
     expect(root.writes).toEqual(['a.png','b.png'])
     expect(await alternate.files.get('a.png')!.text()).toBe('new-a')
   })
-  it('automatically saves a completed order only once even if files disappear or versions change',async()=>{
-    await syncOrder('u','o',root.handle(),()=>{},{automatic:true})
-    root.files.delete('a.png');root.writes=[]
-    manifest={...manifest,version:3}
-    await syncOrder('u','o',root.handle(),()=>{},{automatic:true})
-    expect(root.files.has('a.png')).toBe(false)
-    expect(root.writes).toEqual([])
+  it('only writes print files, never overview or originals',async()=>{
+    manifest.files.push({...await artifact('overview.png','preview'),kind:'overview'},{...await artifact('original.png','source'),kind:'original'})
+    const saved=await syncOrder('u','o',root.handle(),()=>{})
+    expect(root.writes).toEqual(['a.png','b.png'])
+    expect(Object.keys(saved.hashes)).toEqual(['a.png','b.png'])
   })
   it('explicit re-download fetches and writes all files even when already current',async()=>{
     await syncOrder('u','o',root.handle(),()=>{})
@@ -77,19 +75,16 @@ describe('real directory synchronization flow',()=>{
     await syncOrder('u','o',root.handle(),()=>{},{forceDownload:true})
     expect(root.writes).toEqual(['a.png','b.png'])
   })
-  it('does not automatically download partial results',async()=>{
+  it('rejects partial print manifests',async()=>{
     manifest.complete=false
-    await expect(syncOrder('u','o',root.handle(),()=>{},{automatic:true})).rejects.toThrow('全部成品')
+    await expect(syncOrder('u','o',root.handle(),()=>{},{})).rejects.toThrow('全部打印文件')
     expect(root.writes).toEqual([])
   })
-  it('writes verified files and preserves incomplete manifest status',async()=>{
-    manifest.complete=false
-    const messages:string[]=[]
-    const saved=await syncOrder('u','o',root.handle(),message=>messages.push(message))
-    expect(saved.complete).toBe(false)
-    expect(messages.at(-1)).toContain('等待其余图片')
-    expect(await root.files.get('a.png')!.text()).toBe('new-a')
-    expect(saved.hashes).toEqual(Object.fromEntries(manifest.files.map(f=>[f.path,f.sha256])))
+  it('supports authoritative customer manifests with a sanitized folder name',async()=>{
+    const saved=await syncOrder('u','o',root.handle(),()=>{},{manifestPath:'/customer-orders/o/manifest',folderName:'ORDER_备注'})
+    expect(saved.name).toBe('ORDER_备注')
+    expect(saved.complete).toBe(true)
+    expect(fetch).toHaveBeenCalledWith('/api/customer-orders/o/manifest',expect.anything())
   })
   it('does not delete obsolete pages until every current page is written',async()=>{
     await owned({'a.png':'old-a','obsolete.png':'old-page'})

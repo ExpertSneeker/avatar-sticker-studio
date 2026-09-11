@@ -1,5 +1,6 @@
 import {uploadStickers,chooseStickers} from './library-fixtures'
 import {test,expect} from '@playwright/test'
+import {createCustomer} from './customer-fixtures'
 import {readFileSync} from 'node:fs'
 
 test('variable template counts, edits and multi-term search reach the workbench',async({page})=>{
@@ -21,15 +22,16 @@ test('variable template counts, edits and multi-term search reach the workbench'
   await page.getByLabel('搜索模板',{exact:true}).fill('  Ａ１　13  动物 ')
   await expect(page.locator('.library-set')).toHaveCount(1)
   await expect(page.locator('.library-details')).toContainText('13 张')
+  const order=await createCustomer(page.request,{generation_limit:30,final_count:1})
   await page.getByRole('navigation').getByRole('button',{name:'工作台',exact:true}).click()
-  await page.locator('input[type=file]').setInputFiles({name:'变长订单.png',mimeType:'image/png',buffer:pixel})
-  await page.getByRole('button',{name:'批量选择模板'}).click()
-  await dialog.getByLabel('搜索模板套装').fill('13 a1')
-  await expect(dialog.locator('.template-option')).toHaveCount(1)
-  await dialog.locator('.template-option').click()
-  await expect(dialog.getByText(/已选 1 套 · 实际生成 13 张/)).toBeVisible()
-  await dialog.getByRole('button',{name:'应用到 1 个订单'}).click()
-  await expect(page.locator('.submit-bar')).toContainText('预计生成 13 张')
+  await page.getByRole('button').filter({hasText:order.order_number}).first().click()
+  await page.getByLabel('上传头像').setInputFiles({name:'变长订单.png',mimeType:'image/png',buffer:pixel})
+  await page.getByRole('button',{name:'选择模板和贴纸',exact:true}).click()
+  await dialog.getByLabel('搜索模板或贴纸').fill('A1-13')
+  await dialog.getByLabel('A1-13 份数').fill('1')
+  await expect(dialog.getByText('13 张已选 · 13 张实际生成')).toBeVisible()
+  await dialog.getByRole('button',{name:'应用选择'}).click()
+  await expect(page.locator('.customer-submit-bar')).toContainText('实际生成 13 张')
   await page.getByRole('navigation').getByRole('button',{name:'模板库',exact:true}).click()
   await page.getByLabel('搜索模板',{exact:true}).fill('A1 13')
   await page.getByRole('button',{name:'编辑',exact:true}).click()
@@ -43,6 +45,12 @@ test('variable template counts, edits and multi-term search reach the workbench'
   await expect(page.locator('.library-details')).toContainText('A2-14')
   await expect(page.locator('.library-details')).toContainText('1 张')
   await page.getByRole('navigation').getByRole('button',{name:'工作台',exact:true}).click()
-  await expect(page.locator('.submit-bar')).toContainText('预计生成 1 张')
+  await page.getByRole('button').filter({hasText:order.order_number}).first().click()
+  await page.getByLabel('上传头像').setInputFiles({name:'更新后.png',mimeType:'image/png',buffer:pixel})
+  await page.getByRole('button',{name:'选择模板和贴纸',exact:true}).click()
+  await dialog.getByLabel('搜索模板或贴纸').fill('A2-14')
+  await dialog.getByLabel('A2-14 份数').fill('1')
+  await dialog.getByRole('button',{name:'应用选择'}).click()
+  await expect(page.locator('.customer-submit-bar')).toContainText('实际生成 1 张')
   await page.screenshot({path:'/tmp/avatar-studio-fal-qa/variable-template-workbench.png'})
 })
