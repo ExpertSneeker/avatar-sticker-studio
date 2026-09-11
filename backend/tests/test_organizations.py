@@ -163,3 +163,37 @@ def test_migration_keeps_unmatched_legacy_holds_for_audit(tmp_path):
     with db.transaction() as tx:
         assert tx.get('generations','unmatched')['status']=='reserved'
         assert tx.get('users','u')['credits']['frozen']==0
+
+
+@pytest.mark.parametrize('current_generation,current_request', [
+    ('new-generation','new-request'),
+    ('new-generation','old-request'),
+    ('old-unknown','new-request'),
+    ('old-unknown',None),
+])
+def test_migration_keeps_old_unknown_hold_when_item_or_request_was_reused(tmp_path,current_generation,current_request):
+    db=Database(tmp_path)
+    with db.transaction() as tx:
+        tx.delete('migrations','organizations-v1')
+        tx.put('users',{'id':'owner','username':'oldstaff','role':'staff','credits':{'available':0,'frozen':1,'spent':1,'version':2}})
+        tx.put('generations',{'id':'old-unknown','owner':'owner','item_id':'reused','order_id':'order','status':'review','request_id':'old-request'})
+        tx.put('items',{'id':'reused','owner':'owner','order_id':'order','status':'completed','generation_id':current_generation,'fal_request_id':current_request})
+    Database(tmp_path)
+    with db.transaction() as tx:
+        assert tx.get('generations','old-unknown')['status']=='review'
+        assert tx.get('users','owner')['credits']=={'available':0,'frozen':1,'spent':1,'version':2}
+        assert not tx.all('credit_ledger')
+
+
+def test_migration_releases_matching_current_terminal_request_once(tmp_path):
+    db=Database(tmp_path)
+    with db.transaction() as tx:
+        tx.delete('migrations','organizations-v1')
+        tx.put('users',{'id':'owner','username':'oldstaff','role':'staff','credits':{'available':0,'frozen':1,'spent':0,'version':0}})
+        tx.put('generations',{'id':'known','owner':'owner','item_id':'item','order_id':'order','status':'review','request_id':'matching-request'})
+        tx.put('items',{'id':'item','owner':'owner','order_id':'order','status':'completed','generation_id':'known','fal_request_id':'matching-request'})
+    Database(tmp_path); Database(tmp_path)
+    with db.transaction() as tx:
+        assert tx.get('generations','known')['status']=='released'
+        assert tx.get('users','owner')['credits']=={'available':1,'frozen':0,'spent':0,'version':1}
+        assert [entry['event'] for entry in tx.all('credit_ledger')]==['release']

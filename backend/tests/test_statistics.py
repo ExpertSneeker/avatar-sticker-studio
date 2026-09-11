@@ -76,3 +76,25 @@ def test_statistics_local_dates_archive_cleanup_and_no_generation(context):
     stats = client.get('/api/statistics').json()
     assert stats['summary']['orders'] == 0 and stats['templates'] == []
     assert provider.calls == []
+
+
+def test_customer_statistics_follow_business_states_and_delivery_availability(context):
+    app, client, clock, _=context
+    owner=client.get('/api/auth/me').json()['id']
+    with app.state.db.transaction() as tx:
+        for id,state,ready,statuses in (
+            ('cancelled','cancelled',True,['completed']),
+            ('submitted','submitted',True,['completed','failed']),
+            ('packing','submitted',False,['completed']),
+            ('review','review',False,['completed','failed']),
+            ('draft','draft',False,[]),
+        ):
+            tx.put('orders',{'id':id,'owner':owner,'workflow_version':3,'state':state,'created_at':datetime.fromtimestamp(clock(),timezone.utc).isoformat(),'delivery_ready':ready,'overview_ready':True})
+            for n,status in enumerate(statuses):
+                tx.put('items',{'id':id+str(n),'owner':owner,'order_id':id,'status':status,'attempt':1})
+    for endpoint in ('/api/statistics','/api/admin/statistics'):
+        result=client.get(endpoint).json()
+        assert result['summary']['ready_orders']==1
+        assert result['summary']['orders']==5
+        assert result['summary']['failed']==2  # retain task history independently of business state
+        assert result['order_statuses']=={'draft':1,'review':1,'submitted':2,'cancelled':1,'queued':0,'processing':0,'completed':0,'failed':0,'unknown':0,'paused':0,'archived':0}

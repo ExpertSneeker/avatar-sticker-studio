@@ -35,10 +35,14 @@ def summarize(tx, actor, now, days=30, offset=480, global_scope=False):
             total[status] += counts[status]
         total['attempts'] += sum(i.get('attempt', 0) for i in items)
         total['extra_attempts'] += sum(max(0, i.get('attempt', 0) - 1) for i in items)
-        done = bool(items) and counts['completed'] == len(items) and order.get('overview_ready')
-        status = ('archived' if order.get('archived') else 'paused' if order.get('paused') else
-                  'unknown' if counts['unknown'] else 'failed' if counts['failed'] or order.get('processing_error') else
-                  'completed' if done else 'processing' if counts['running'] or counts['completed'] else 'queued')
+        if order.get('workflow_version') == 3:
+            status = order['state']
+            done = status == 'submitted' and order.get('delivery_ready', False)
+        else:
+            done = bool(items) and counts['completed'] == len(items) and order.get('overview_ready')
+            status = ('archived' if order.get('archived') else 'paused' if order.get('paused') else
+                      'unknown' if counts['unknown'] else 'failed' if counts['failed'] or order.get('processing_error') else
+                      'completed' if done else 'processing' if counts['running'] or counts['completed'] else 'queued')
         statuses[status] += 1
         total['ready_orders'] += int(bool(done))
         member = members.setdefault(order['owner'], {'id':order['owner'], 'orders':0, 'images':0, 'completed':0, 'failed':0, 'attempts':0})
@@ -66,7 +70,7 @@ def summarize(tx, actor, now, days=30, offset=480, global_scope=False):
     keys = ('orders', 'ready_orders', 'images', 'completed', 'failed', 'unknown', 'running', 'queued', 'attempts', 'extra_attempts')
     result = {'scope':'global' if global_scope else 'personal', 'days':days,
               'generated_at':current.isoformat(), 'summary':{k:total[k] for k in keys},
-              'order_statuses':{k:statuses[k] for k in ('queued','processing','completed','failed','unknown','paused','archived')},
+              'order_statuses':{k:statuses[k] for k in ('queued','processing','completed','failed','unknown','paused','archived','draft','review','submitted','cancelled')},
               'daily':list(daily.values()),
               'templates':sorted(templates.values(), key=lambda v:(-v['orders'], v['code']))}
     if global_scope:

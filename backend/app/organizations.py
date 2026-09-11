@@ -42,7 +42,13 @@ def migrate_organizations(tx):
     for generation in tx.all('generations'):
         item = tx.get('items', generation.get('item_id',''))
         owner = tx.get('users', generation.get('owner',''))
-        if owner and wallet(owner)['frozen'] > 0 and generation.get('status') in {'reserved','review'} and item and item.get('status') in {'completed','failed'} and not item.get('remote_reserved') and not item.get('cutout_inflight'):
+        # Legacy reruns reuse item rows. Their current outcome is evidence only
+        # for the generation and remote request that the row still identifies.
+        current_request = bool(item and item.get('generation_id') == generation['id']
+                               and item.get('fal_request_id') == generation.get('request_id'))
+        terminal = bool(current_request and item.get('status') in {'completed','failed'}
+                        and not item.get('remote_reserved') and not item.get('cutout_inflight'))
+        if terminal and owner and wallet(owner)['frozen'] > 0 and generation.get('status') in {'reserved','review'}:
             settle(tx, generation['id'], 'release', time.time(), reason='取消积分制：释放已结束请求的历史冻结')
     tx.put('migrations', {'id':'organizations-v1','default_organization_id':org['id']})
 
