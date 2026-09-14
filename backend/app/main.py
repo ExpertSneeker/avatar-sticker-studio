@@ -128,6 +128,16 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
             active = False
         return JSONResponse({'status': 'ready' if active else 'not_ready'}, status_code=200 if active else 503)
 
+    @app.get('/api/staff-guide')
+    def staff_guide(request: Request, response: Response):
+        # Authorize before reading content; guest sessions cannot satisfy user().
+        with db.transaction() as tx:
+            user(tx, request)
+        response.headers['Cache-Control'] = 'private, no-store'
+        response.headers['Vary'] = 'Cookie, X-Studio-User'
+        guide = Path(__file__).resolve().parents[1] / 'content' / 'staff-guide.json'
+        return json.loads(guide.read_text(encoding='utf-8'))
+
     @app.get('/api/auth/status')
     def auth_status(request: Request):
         with db.transaction() as tx:

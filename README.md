@@ -59,3 +59,9 @@ npm run test:e2e
 发布使用 [迁移审计脚本](deploy/audit_framework.py) 在隔离副本上验证组织迁移、幂等性、历史记录及原图哈希，再核对在途任务、停止服务、备份并切换。**不以本地数据库覆盖生产数据**。旧代码不兼容新角色和订单模型，回退需遵守 [备份与回退边界](deploy/framework-release.md)。
 
 [实施契约](docs/superpowers/plans/2026-09-11-organization-guest.md) · [完整需求](docs/superpowers/specs/2026-09-11-framework-source.md) · [生产运行配置](deploy/README.md)
+
+## 后台使用说明与维护
+
+登录后台后，点击“使用说明”阅读和搜索操作指南。所有有效后台账号可阅读，正文由 `/api/staff-guide` 校验后台会话后提供；访客和未登录用户无法读取。正文源文件为 `backend/content/staff-guide.json`，不会打包到公共前端资源。
+
+每次功能变化必须同步更新对应说明、版本、日期和更新记录，规则见 [AGENTS.md](AGENTS.md)。`npm test` 已包含漏改检查；也可单独运行 `npm run check:docs`，跨提交审查时加 `-- --base <基础提交或分支>`。检查无法代替内容审查，不能只更新时间而不修改行为说明。
