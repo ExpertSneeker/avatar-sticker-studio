@@ -175,3 +175,15 @@ python3 deploy/audit_public_library.py --data-dir /var/lib/avatar-sticker-studio
 python3 deploy/audit_public_library.py --data-dir /var/lib/avatar-sticker-studio \
   --baseline /private/path/before-public-library.json
 ```
+
+## Pinduoduo / Agiso integration
+
+See [the shop setup and acceptance guide](../docs/agiso-setup.md). Install the
+locked `cryptography` dependency, provision the four `STUDIO_AGISO_*` connection
+variables from `production.env.example`, and retain the encryption key alongside
+the existing private environment configuration. All shop automation defaults off;
+aftersales must remain off until real provider events are verified. The service
+unit disables request access logs; inspect any proxy or Cloudflare logging as well
+to avoid recording guest order query strings or authorization codes. Production
+continues to use its existing Cloudflare tunnel; no additional public port or
+Windows software is installed on the Linux website server.

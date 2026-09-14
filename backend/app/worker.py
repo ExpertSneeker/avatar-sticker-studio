@@ -9,6 +9,7 @@ import time
 from collections import Counter
 from .auth import generation_limit
 from .db import uid
+from .agiso_service import order_allowed
 from . import credits
 from .processing import PRINT_LAYOUT_STYLE, decode, encode, overview, pack_set
 from .providers import CutoutDeferred, FalProvider, ProviderFailure, YeziProvider
@@ -71,9 +72,9 @@ class Worker:
             active_users = {u['id']: u for u in tx.all('users') if u['active']}
             candidates = [i for i in items if i['status'] == 'queued' and not i.get('cutout_inflight') and i.get('next_at', 0) <= now]
             eligible = [i for i in candidates if
-                (i.get('processing_stage') == 'postprocess' and processing_inflight < 2 and not orders[i['order_id']]['paused'] and i['owner'] in active_users) or
+                (i.get('processing_stage') == 'postprocess' and processing_inflight < 2 and order_allowed(tx, orders[i['order_id']]) and not orders[i['order_id']]['paused'] and i['owner'] in active_users) or
                 (i.get('fal_request_id') and i.get('processing_stage') != 'postprocess' and configured) or
-                (i.get('processing_stage') != 'postprocess' and generation_admitted and not orders[i['order_id']]['paused'] and i['owner'] in active_users
+                (i.get('processing_stage') != 'postprocess' and generation_admitted and order_allowed(tx, orders[i['order_id']]) and not orders[i['order_id']]['paused'] and i['owner'] in active_users
                  and owner_inflight[i['owner']] < generation_limit(active_users[i['owner']]))]
             # Prefer the least occupied account, rotating ties durably even with one slot.
             # Recovery and saved-image processing never need a new generation slot.
@@ -108,7 +109,7 @@ class Worker:
                 if current.get('cutout_inflight'):
                     raise ProviderFailure(CUTOUT_UNCERTAIN, 'unknown')
                 order = tx.get('orders', item['order_id'])
-                if order.get('workflow_version') == 3 and order['state'] == 'cancelled' and (current.get('processing_stage') == 'postprocess' or not current.get('fal_request_id')):
+                if order.get('workflow_version') == 3 and not order_allowed(tx, order) and (current.get('processing_stage') == 'postprocess' or not current.get('fal_request_id')):
                     current.update(status='queued', remote_reserved=False)
                     tx.put('items', current)
                     return
@@ -153,7 +154,7 @@ class Worker:
                     credits.settle(tx, latest.get('generation_id'), 'charge', self.clock())
                     latest.update(raw_result_id=raw['id'], remote_reserved=False, processing_stage='postprocess')
                     latest_order = tx.get('orders', item['order_id'])
-                    if latest_order.get('workflow_version') == 3 and latest_order['state'] == 'cancelled':
+                    if latest_order.get('workflow_version') == 3 and not order_allowed(tx, latest_order):
                         # Reconcile the already submitted generation, then pause before any new processing call.
                         latest.update(status='queued', next_at=0)
                         tx.put('items', latest)
@@ -172,7 +173,7 @@ class Worker:
                     if latest.get('cutout_inflight'):
                         raise ProviderFailure(CUTOUT_UNCERTAIN, 'unknown')
                     latest_order = tx.get('orders', item['order_id'])
-                    if latest_order.get('workflow_version') == 3 and latest_order['state'] == 'cancelled':
+                    if latest_order.get('workflow_version') == 3 and not order_allowed(tx, latest_order):
                         latest.update(status='queued', next_at=0, remote_reserved=False, processing_stage='postprocess')
                         tx.put('items', latest)
                         return
@@ -226,7 +227,7 @@ class Worker:
     def cutout_allowed(self, tx, item):
         latest = tx.get('items', item['id'])
         order = tx.get('orders', item['order_id'])
-        return bool(latest and order and order.get('state') != 'cancelled' and latest['status'] == 'running' and
+        return bool(latest and order and order_allowed(tx, order) and latest['status'] == 'running' and
                     latest.get('worker_id') == self.id and latest.get('run_id') == item.get('run_id'))
 
     def checkpoint(self, item, **fields):

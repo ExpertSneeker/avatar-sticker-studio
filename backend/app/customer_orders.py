@@ -149,6 +149,10 @@ def dto(tx, order, guest=False):
     if guest and order['state'] == 'cancelled':
         return {k: order[k] for k in ('id', 'order_number', 'state')}
     result = {k: order[k] for k in ('id', 'order_number', 'state', 'version', 'generation_limit', 'final_count', 'rerun_limit', 'created_at')}
+    from .agiso_service import order_allowed
+    effective_hold=bool(integration_held(order) or order.get('agiso_id') and not order_allowed(tx,order))
+    result.update(paused=bool(order.get('paused') or effective_hold),
+                  hold_reason=('订单售后处理中，请联系工作人员' if integration_held(order) else '订单暂不可操作，请联系工作人员') if effective_hold else None)
     result.update(preview_url=media_url(order, order.get('overview_id'), guest) if order.get('overview_ready') else None,
                   delivery_ready=order['state'] == 'submitted' and bool(order.get('delivery_ready')))
     if not guest or order['state'] != 'submitted':
@@ -256,6 +260,34 @@ def delivery_folder(order):
     return label
 
 
+def create_customer_order(tx, actor, data, at):
+    """Shared creation path snapshots owner defaults for every order source."""
+    config = tx.get('config', 'settings')
+    order = {'id': uid(), **data.model_dump(exclude={'client_token'}), 'workflow_version': 3,
+             'owner': actor['id'], 'organization_id': actor['organization_id'], 'state': 'draft', 'version': 1,
+             'name': data.order_number, 'watermark': actor.get('watermark', '').strip() or actor['display_name'],
+             'watermark_version': 1, 'media_version': 1, 'print_settings': actor['print_defaults'],
+             'avatars': [], 'slots': [], 'created_at': datetime.fromtimestamp(at, timezone.utc).isoformat(),
+             'prompt': config['prompt'], 'prompt_version': config.get('prompt_version', 1), 'paused': False,
+             'content_version': 1, 'artifact_version': 0, 'delivery_version': 0, 'delivery_ready': False,
+             'artifacts': [], 'overview_ready': False, 'overview_id': None, 'publish_signatures': {}}
+    tx.put('orders', order)
+    return order
+
+
+def integration_held(order):
+    return bool(order.get('integration_holds'))
+
+
+def require_active_order(order, tx=None):
+    if tx is not None and order.get('agiso_id'):
+        from .agiso_service import order_allowed
+        if not order_allowed(tx, order):
+            raise HTTPException(409, '订单暂不可操作，请联系工作人员')
+    if order.get('paused') or integration_held(order) or order.get('state') == 'cancelled':
+        raise HTTPException(409, '订单暂不可操作，请联系工作人员')
+
+
 def register_customer_orders(app, db, user):
     now = app.state.clock
 
@@ -280,16 +312,7 @@ def register_customer_orders(app, db, user):
                 return dto(tx, customer(tx, prior['order_id']))
             if any(o.get('order_number') == data.order_number for o in tx.all('orders')):
                 raise HTTPException(409, '订单号已使用')
-            config = tx.get('config', 'settings')
-            order = {'id': uid(), **data.model_dump(exclude={'client_token'}), 'workflow_version': 3,
-                     'owner': actor['id'], 'organization_id': actor['organization_id'], 'state': 'draft', 'version': 1,
-                     'name': data.order_number, 'watermark': actor.get('watermark', '').strip() or actor['display_name'],
-                     'watermark_version': 1, 'media_version': 1, 'print_settings': actor['print_defaults'],
-                     'avatars': [], 'slots': [], 'created_at': datetime.fromtimestamp(now(), timezone.utc).isoformat(),
-                     'prompt': config['prompt'], 'prompt_version': config.get('prompt_version', 1), 'paused': False,
-                     'content_version': 1, 'artifact_version': 0, 'delivery_version': 0, 'delivery_ready': False,
-                     'artifacts': [], 'overview_ready': False, 'overview_id': None, 'publish_signatures': {}}
-            tx.put('orders', order)
+            order = create_customer_order(tx, actor, data, now())
             remember(tx, key, fingerprint, order['id'])
             audit(tx, order, 'open', actor['id'], now())
             return dto(tx, order)
@@ -376,6 +399,10 @@ def register_customer_orders(app, db, user):
                         tx.put('guest_login_limits', b)
                     denied = (401, '订单号无效')
                 else:
+                    for linked in tx.all('agiso_orders'):
+                        if linked.get('customer_order_id') == order['id']:
+                            linked['entered_at'] = now()
+                            tx.put('agiso_orders', linked)
                     token = secrets.token_urlsafe(32)
                     tx.put('guest_sessions', {'id': token_hash(token), 'order_id': order['id'], 'expires': now()+7*86400})
                     response.set_cookie(COOKIE, token, max_age=7*86400, httponly=True, samesite='strict', secure=os.environ.get('STUDIO_SECURE_COOKIE') == '1', path='/api/guest')
@@ -415,6 +442,10 @@ def register_customer_orders(app, db, user):
     def mutate(request, data, action, id=None, guest=False, slot_id=None):
         with db.transaction() as tx:
             order, actor = access(tx, request, id, guest)
+            if action not in {'cancel', 'restore', 'resolve', 'repack'}:
+                require_active_order(order, tx)
+            if action == 'restore' and integration_held(order):
+                raise HTTPException(409, '售后处理中的订单不能恢复')
             key, fingerprint, prior = operation(tx, order['id'], data, [action, slot_id])
             if prior:
                 return dto(tx, order, guest)
@@ -589,6 +620,7 @@ def register_customer_orders(app, db, user):
 
     def guest_upload(tx, request, id=None, writable=False):
         order = guest_order(tx, request, now())
+        require_active_order(order, tx)
         if order['state'] not in {'draft', 'review'} or writable and order['state'] != 'draft':
             raise HTTPException(409, '当前订单不能上传头像')
         value = tx.get('uploads', id) if id else None

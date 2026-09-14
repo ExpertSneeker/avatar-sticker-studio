@@ -40,13 +40,17 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
         app.state.worker = Worker(db, provider=provider, clock=now)
         if start_worker:
             await app.state.worker.start()
+            await app.state.agiso_worker.start()
         yield
         if start_worker:
+            await app.state.agiso_worker.stop()
             await app.state.worker.stop()
 
     app = FastAPI(title='Avatar Sticker Studio', lifespan=lifespan)
     app.state.db, app.state.clock = db, now
     app.state.preview_cache = PreviewCache(db)
+    from .agiso_worker import AgisoWorker
+    app.state.agiso_worker = AgisoWorker(db, now)
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(request, exc):
@@ -66,6 +70,7 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
                 return JSONResponse({'detail': '请求来源不受信任'}, status_code=403)
         response = await call_next(request)
         response.headers['X-Content-Type-Options'] = 'nosniff'
+        response.headers['Referrer-Policy'] = 'no-referrer'
         response.headers.setdefault('Cache-Control', 'no-store')
         return response
 
@@ -399,6 +404,8 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
 
     from .customer_orders import register_customer_orders
     register_customer_orders(app, db, user)
+    from .agiso_routes import register_agiso
+    register_agiso(app, db, user)
 
     from .library import register_library
     register_library(app, db, user)

@@ -32,7 +32,7 @@ function run(command,args,env={}){
 }
 const port=process.env.STUDIO_PORT||'8000'
 if(!/^\d+$/.test(port)||Number(port)<1024||Number(port)>65535)throw new Error('STUDIO_PORT 必须为 1024–65535')
-const server=()=>run('uv',['run','uvicorn','backend.app.main:app_factory','--factory','--host','127.0.0.1','--port',port],{STUDIO_DATA_DIR:process.env.STUDIO_DATA_DIR||path.join(root,'.data')})
+const server=()=>run('uv',['run','uvicorn','backend.app.main:app_factory','--factory','--host','127.0.0.1','--port',port,'--no-access-log'],{STUDIO_DATA_DIR:process.env.STUDIO_DATA_DIR||path.join(root,'.data')})
 try{
   if(mode==='setup'){
     await run('uv',['sync','--python','3.12'])

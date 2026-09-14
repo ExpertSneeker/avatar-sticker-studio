@@ -2,7 +2,16 @@
 name = "avatar-sticker-studio"
 version = "0.1.0"
 requires-python = ">=3.12,<3.14"
-dependencies = ["fastapi>=0.115", "uvicorn>=0.34", "httpx>=0.28", "python-multipart>=0.0.20", "pillow>=11", "numpy>=2", "pydantic>=2"]
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn>=0.34",
+    "httpx>=0.28",
+    "python-multipart>=0.0.20",
+    "pillow>=11",
+    "numpy>=2",
+    "pydantic>=2",
+    "cryptography>=44",
+]
 [dependency-groups]
 dev = ["pytest>=8"]
 [tool.pytest.ini_options]

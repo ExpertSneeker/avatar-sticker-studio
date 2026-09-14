@@ -15,7 +15,7 @@ export interface GuestOrder {
   id:string; order_number:string; state:OrderState; version?:number
   generation_limit:number; final_count:number; rerun_limit:number
   avatars?:CustomerAvatar[]; slots?:CustomerSlot[]; preview_url?:string|null
-  delivery_ready?:boolean; created_at?:string
+  delivery_ready?:boolean; created_at?:string; paused?:boolean; hold_reason?:string|null
 }
 export interface CustomerOrder extends GuestOrder {
   version:number;
