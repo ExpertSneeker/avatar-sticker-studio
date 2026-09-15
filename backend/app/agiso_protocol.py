@@ -164,6 +164,9 @@ async def request_json(method,url,transport=None,token_response=False,**kwargs):
             payload=result.get('Data',result.get('data'))
             names=('FromPlatform','ShopId','ShopName','Token','ExpiresIn')
             types={name:type(payload.get(name,payload.get(name[0].lower()+name[1:]))).__name__ for name in names} if isinstance(payload,dict) else {}
+            identity=payload.get('UserId',payload.get('userId')) if isinstance(payload,dict) else None
+            identity_hash=hashlib.sha256(str(identity).encode()).hexdigest() if type(identity) in (str,int) else 'missing'
+            logging.getLogger(__name__).warning('Agiso token UserId digest=%s',identity_hash)
             success=result.get('IsSuccess',result.get('isSuccess'))
             error=result.get('Error_Code',result.get('error_Code'))
             logging.getLogger(__name__).warning('Agiso token schema: success=%s error_code=%s fields=%s',success if type(success) is bool else 'invalid',error if type(error) is int else 'unavailable',types)
