@@ -1,11 +1,6 @@
 import { expect, it } from 'vitest'
-import { ruleError, testRules, guestLink, integrationError, type SkuRule } from '../src/lib/agiso'
+import { ruleError, guestLink, integrationError, type SkuRule } from '../src/lib/agiso'
 const rule: SkuRule = { goods_id:'123',sku_id:'456',goods_name:'补差价专用',sku_name:'10张',generation_limit:10,final_count:10,rerun_limit:2,enabled:false }
-it('test presets leave live identifiers empty and automation disabled', () => {
-  expect(testRules().map(r => [r.goods_id,r.sku_id,r.generation_limit,r.final_count,r.rerun_limit,r.enabled])).toEqual([
-    ['','',10,10,2,false],['','',20,20,2,false],
-  ])
-})
 it('requires real unique identifiers and valid quotas before saving', () => {
   expect(ruleError([rule])).toBe('')
   expect(ruleError([{...rule,sku_id:''}])).toContain('SKU ID')

@@ -131,6 +131,8 @@ def register_agiso(app,db,user):
             fields={'page':str(page),'pageSize':'100'}
             if goods_name:fields['goodsName']=goods_name
             result=await protocol.api('Goods/List',fields,shop,config,app.state.agiso_worker.transport,now())
+            if result['IsSuccess'] is False and result.get('Error_Code')==17:
+                return {**failure,'message':'阿奇索已禁用此应用的拼多多接口（错误码 17）。请联系阿奇索客服开通商品查询等接口权限；开通前可手动填写已核实的商品 ID 和 SKU ID。'}
             data=result.get('Data')
             if result['IsSuccess'] is not True or not isinstance(data,dict) or type(data.get('total_count')) is not int or data['total_count']<0 or not isinstance(data.get('goods_list'),list) or len(data['goods_list'])>100:raise ValueError()
             rows=[]

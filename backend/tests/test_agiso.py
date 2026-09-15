@@ -485,3 +485,12 @@ def test_pdd_identity_rejects_conflicts_and_wrong_platform(configured,extra):
     data={'FromPlatform':'PddAlds','ShopName':'测试店','Token':'private-token','ExpiresIn':86400,**extra}
     with pytest.raises((p.ProtocolError,ValueError)):
         asyncio.run(p.exchange('code',p.settings(),httpx.MockTransport(lambda r:httpx.Response(200,json={'IsSuccess':True,'Data':data})),1000))
+
+
+def test_goods_disabled_permission_has_actionable_safe_message(configured):
+    app,c,clock=configured;s=shop(configured)
+    app.state.agiso_worker.transport=httpx.MockTransport(lambda r:httpx.Response(200,json={'IsSuccess':False,'Error_Code':17,'Error_Msg':'private provider details'}))
+    result=c.get('/api/agiso/shops/'+s['id']+'/goods').json()
+    assert result['available'] is False and result['goods']==[]
+    assert '17' in result['message'] and '权限' in result['message']
+    assert 'private provider' not in result['message']

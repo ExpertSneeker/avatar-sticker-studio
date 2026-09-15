@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Copy, Plus, RefreshCw, Store, Trash2 } from 'lucide-react'
 import { api, patch, post } from '../lib/api'
-import { integrationLabel, integrationError, ruleError, testRules } from '../lib/agiso'
+import { integrationLabel, integrationError, ruleError } from '../lib/agiso'
 import type { AgisoStatus, GoodsPage, Shop, ShopEvent, ShopOrder, SkuRule } from '../lib/agiso'
 import { Modal, Spinner } from '../components/UI'
 import './Shops.css'
@@ -59,7 +59,7 @@ export function Shops() {
       <p className="hint">实体贴纸仍在寄件时填写物流。这里只发送选图入口，不会提前标记已发货。{!status.aftersales_enabled && ' 自动售后尚未启用，须先核实真实退款通知。'}</p>
       <details><summary>接入配置详情</summary><dl>{status.missing.length > 0 && <><dt>待配置项目</dt><dd><code>{status.missing.join('、')}</code></dd></>}{status.authorization_callback_url && <><dt>店铺授权回调</dt><dd><code>{status.authorization_callback_url}</code></dd></>}{status.webhook_url && <><dt>订单通知地址</dt><dd><code>{status.webhook_url}</code></dd></>}</dl><a href="https://www.yuque.com/agiso/open/owplxcrlyxpzw1cq" target="_blank" rel="noreferrer">查看阿奇索授权说明</a></details>
     </section>}
-    {loading ? <div className="shop-empty"><Spinner/>正在读取店铺</div> : !shops.length ? <div className="settings-section shop-empty"><Store size={28}/><h3>还没有连接店铺</h3><p>首次先连接「草木造物」，只配置“补差价专用”的 10张、20张规格。</p></div> :
+    {loading ? <div className="shop-empty"><Spinner/>正在读取店铺</div> : !shops.length ? <div className="settings-section shop-empty"><Store size={28}/><h3>还没有连接店铺</h3><p>连接店铺后，按真实商品和规格配置生成、提交及重做额度。</p></div> :
       <div className="shops-layout"><aside className="shop-list" aria-label="已连接店铺">{shops.map(shop => <button className={'shop-card ' + (shop.id === selected ? 'active' : '')} key={shop.id} onClick={() => setSelected(shop.id)} aria-pressed={shop.id === selected}><strong>{shop.shop_name}</strong><small>负责账户：{shop.owner_name}</small><small>{shop.enabled ? '自动开户已开启' : '自动开户已关闭'} · {shop.authorized ? '已授权' : '需要重新授权'}</small></button>)}</aside>{selectedShop && <ShopDetail key={selectedShop.id} shop={selectedShop} configured={!!status?.configured} onUpdate={reload}/>}</div>}
   </>
 }
@@ -69,7 +69,7 @@ function ShopDetail({ shop, configured, onUpdate }: { shop: Shop; configured: bo
   const [tab, setTab] = useState<'rules' | 'orders' | 'events'>('rules')
   const [rules, setRules] = useState<SkuRule[]>([]), [orders, setOrders] = useState<ShopOrder[]>([]), [events, setEvents] = useState<ShopEvent[]>([])
   const [loading, setLoading] = useState(true), [busy, setBusy] = useState(false), [dirty, setDirty] = useState(false), [error, setError] = useState(''), [notice, setNotice] = useState('')
-  const [sourceOpen, setSourceOpen] = useState(false), [source, setSource] = useState<GoodsPage | null>(null), [search, setSearch] = useState('补差价'), [page, setPage] = useState(1)
+  const [sourceOpen, setSourceOpen] = useState(false), [source, setSource] = useState<GoodsPage | null>(null), [search, setSearch] = useState(''), [page, setPage] = useState(1)
   const [copiedLink, setCopiedLink] = useState<string | null>(null)
   const lifetime = useRef(new AbortController())
   useEffect(() => {
@@ -121,7 +121,7 @@ function ShopDetail({ shop, configured, onUpdate }: { shop: Shop; configured: bo
     {error && <div className="error-banner" role="alert">{error}</div>}{notice && <p role="status">{notice}</p>}
     {tab === 'rules' && <>
       <p className="hint">生成和提交张数按购买件数累加；每张重做次数不变。最多 360 张，未配置的 SKU 转人工处理。</p>
-      {shop.can_manage && <div className="button-group"><button className="button" disabled={busy || loading} onClick={() => { setSourceOpen(true); void findGoods() }}>从店铺选择规格</button><button className="button" disabled={busy || loading} onClick={() => { setRules(previous => [...previous, blankRule()]); setDirty(true) }}><Plus size={15}/>手动添加</button>{!rules.length && <button className="button" disabled={busy || loading} onClick={() => { setRules(testRules()); setDirty(true) }}>填入 10张 / 20张测试套餐</button>}</div>}
+      {shop.can_manage && <div className="button-group"><button className="button" disabled={busy || loading} onClick={() => { setSourceOpen(true); void findGoods() }}>从店铺选择规格</button><button className="button" disabled={busy || loading} onClick={() => { setRules(previous => [...previous, blankRule()]); setDirty(true) }}><Plus size={15}/>手动添加</button></div>}
       {loading ? <div className="shop-empty"><Spinner/></div> : !rules.length ? <p className="shop-empty">尚未配置商品套餐。添加规则后，需要分别启用 SKU 和店铺开关。</p> : <div className="shop-rules">{rules.map((rule, index) => <article className="shop-rule" key={index}>
         <div className="shop-rule-head"><strong>{rule.goods_name || '商品'} · {rule.sku_name || '规格 ' + (index + 1)}</strong>{shop.can_manage && <button className="icon-button" aria-label={'删除规则 ' + (index + 1)} disabled={busy} onClick={() => { setRules(previous => previous.filter((_, i) => i !== index)); setDirty(true) }}><Trash2 size={16}/></button>}</div>
         <div className="shop-rule-grid">{(['goods_name', 'sku_name', 'goods_id', 'sku_id'] as const).map((field, i) => <label className="field" key={field}>{['商品名称', '规格名称', '商品 ID', 'SKU ID'][i]}<input aria-label={`${['商品名称', '规格名称', '商品 ID', 'SKU ID'][i]} ${index + 1}`} value={rule[field]} disabled={!shop.can_manage || busy} maxLength={field.endsWith('id') ? 100 : 200} onChange={e => edit(index, { [field]: e.target.value.trim() })}/></label>)}</div>

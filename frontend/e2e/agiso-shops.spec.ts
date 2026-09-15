@@ -20,7 +20,14 @@ test('套餐必须填真实 ID，保存精确额度，消息结果不确定时�
   })
   await page.goto('/')
   await page.getByRole('button', { name: '店铺接入', exact: true }).click()
-  await page.getByRole('button', { name: '填入 10张 / 20张测试套餐' }).click()
+  await expect(page.getByRole('button', { name: '填入 10张 / 20张测试套餐' })).toHaveCount(0)
+  for (const n of [1,2]) {
+    await page.getByRole('button', { name: '手动添加', exact:true }).click()
+    await page.getByLabel('商品名称 '+n,{exact:true}).fill('补差价专用')
+    await page.getByLabel('规格名称 '+n,{exact:true}).fill(n===1?'10张':'20张')
+    await page.getByLabel('每件可生成 '+n,{exact:true}).fill(n===1?'10':'20')
+    await page.getByLabel('每件最终提交 '+n,{exact:true}).fill(n===1?'10':'20')
+  }
   await expect(page.getByLabel('每件可生成 2', { exact:true })).toHaveValue('20')
   await expect(page.getByRole('button', { name: '开启自动开户' })).toBeDisabled()
   await page.getByRole('button', { name: '保存套餐' }).click()

@@ -27,9 +27,6 @@ export interface GoodsPage {
   available: boolean; goods: { goods_id: string; goods_name: string; skus: { sku_id: string; sku_name: string }[] }[]
   total?: number; page?: number; message: string
 }
-export function testRules(): SkuRule[] {
-  return [10, 20].map(count => ({ goods_id: '', sku_id: '', goods_name: '补差价专用', sku_name: count + '张', generation_limit: count, final_count: count, rerun_limit: 2, enabled: false }))
-}
 export function ruleError(rules: SkuRule[]): string {
   const keys = new Set<string>()
   for (const [index, rule] of rules.entries()) {
