@@ -1,5 +1,6 @@
 """Strict, fixed-origin Agiso protocol. No provider detail is returned to clients."""
 import hashlib
+import logging
 import os
 from decimal import Decimal, InvalidOperation
 from datetime import datetime
@@ -159,6 +160,13 @@ async def request_json(method,url,transport=None,token_response=False,**kwargs):
     import json
     result=json.loads(data)
     if token_response:
+        if isinstance(result,dict):
+            payload=result.get('Data',result.get('data'))
+            names=('FromPlatform','ShopId','ShopName','Token','ExpiresIn')
+            types={name:type(payload.get(name,payload.get(name[0].lower()+name[1:]))).__name__ for name in names} if isinstance(payload,dict) else {}
+            success=result.get('IsSuccess',result.get('isSuccess'))
+            error=result.get('Error_Code',result.get('error_Code'))
+            logging.getLogger(__name__).warning('Agiso token schema: success=%s error_code=%s fields=%s',success if type(success) is bool else 'invalid',error if type(error) is int else 'unavailable',types)
         result=token_aliases(result,('IsSuccess','Data'))
     if not isinstance(result,dict) or type(result.get('IsSuccess')) is not bool:
         raise ProtocolError()
