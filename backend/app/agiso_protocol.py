@@ -181,9 +181,11 @@ async def exchange(code,config,transport,now):
     result=await request_json('GET','https://aldspdd.agiso.com/auth/token',transport,token_response=True,params={**fields,'sign':sign(config['secret'],fields)})
     data=result.get('Data')
     if isinstance(data,dict):
-        data=token_aliases(data,('FromPlatform','ShopId','ShopName','Token','ExpiresIn'))
+        data=token_aliases(data,('FromPlatform','ShopId','UserId','ShopName','Token','ExpiresIn'))
     if result['IsSuccess'] is not True or not isinstance(data,dict) or data.get('FromPlatform')!='PddAlds': raise ProtocolError()
-    shop_id=identifier(data.get('ShopId'))
+    shop_id=identifier(data.get('ShopId') if data.get('ShopId') is not None else data.get('UserId'))
+    if data.get('ShopId') is not None and data.get('UserId') is not None and identifier(data['UserId'])!=shop_id:
+        raise ProtocolError()
     token=data.get('Token');expires=data.get('ExpiresIn');name=data.get('ShopName')
     if not isinstance(token,str) or not token or len(token)>16384 or type(expires) is not int or expires<=0 or not isinstance(name,str) or len(name)>1000:
         raise ProtocolError()
