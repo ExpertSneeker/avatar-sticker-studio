@@ -446,3 +446,21 @@ def test_pending_refund_dto_matches_admission_even_with_expired_authorization(co
     assert c.get('/api/guest/order').json()['paused']
     push(c,refund(op=1304,modified=2000),topic='16');process(app)
     assert c.get('/api/customer-orders').json()[0]['state']=='cancelled'
+
+@pytest.mark.parametrize('camel',[False,True])
+def test_token_exchange_accepts_documented_and_live_casing(configured,camel):
+    from backend.app import agiso_protocol as p
+    data={'FromPlatform':'PddAlds','ShopId':'999','ShopName':'测试店','Token':'private-token','ExpiresIn':86400}
+    body={'IsSuccess':True,'Data':data}
+    if camel:
+        body={'isSuccess':True,'data':{k[0].lower()+k[1:]:v for k,v in data.items()}}
+    transport=httpx.MockTransport(lambda r:httpx.Response(200,json=body))
+    result=asyncio.run(p.exchange('code',p.settings(),transport,1000))
+    assert result['shop_id']=='999' and result['expires_at']==87400
+
+
+def test_token_exchange_rejects_conflicting_aliases(configured):
+    from backend.app import agiso_protocol as p
+    body={'IsSuccess':False,'isSuccess':True}
+    with pytest.raises(p.ProtocolError):
+        asyncio.run(p.exchange('code',p.settings(),httpx.MockTransport(lambda r:httpx.Response(200,json=body)),1000))

@@ -137,7 +137,18 @@ class ProtocolError(Exception):
     pass
 
 
-async def request_json(method,url,transport=None,**kwargs):
+def token_aliases(data, names):
+    if not isinstance(data,dict): raise ProtocolError()
+    result=dict(data)
+    for name in names:
+        alias=name[0].lower()+name[1:]
+        if name in data and alias in data:
+            if type(data[name]) is not type(data[alias]) or data[name]!=data[alias]: raise ProtocolError()
+        if alias in data: result[name]=data[alias]
+    return result
+
+
+async def request_json(method,url,transport=None,token_response=False,**kwargs):
     async with httpx.AsyncClient(transport=transport, timeout=15, follow_redirects=False) as client:
         async with client.stream(method,url,**kwargs) as response:
             response.raise_for_status()
@@ -147,6 +158,8 @@ async def request_json(method,url,transport=None,**kwargs):
                 if len(data)>1024*1024: raise ProtocolError()
     import json
     result=json.loads(data)
+    if token_response:
+        result=token_aliases(result,('IsSuccess','Data'))
     if not isinstance(result,dict) or type(result.get('IsSuccess')) is not bool:
         raise ProtocolError()
     return result
@@ -154,8 +167,10 @@ async def request_json(method,url,transport=None,**kwargs):
 
 async def exchange(code,config,transport,now):
     fields={'appId':config['app_id'],'code':code}
-    result=await request_json('GET','https://aldspdd.agiso.com/auth/token',transport,params={**fields,'sign':sign(config['secret'],fields)})
+    result=await request_json('GET','https://aldspdd.agiso.com/auth/token',transport,token_response=True,params={**fields,'sign':sign(config['secret'],fields)})
     data=result.get('Data')
+    if isinstance(data,dict):
+        data=token_aliases(data,('FromPlatform','ShopId','ShopName','Token','ExpiresIn'))
     if result['IsSuccess'] is not True or not isinstance(data,dict) or data.get('FromPlatform')!='PddAlds': raise ProtocolError()
     shop_id=identifier(data.get('ShopId'))
     token=data.get('Token');expires=data.get('ExpiresIn');name=data.get('ShopName')
