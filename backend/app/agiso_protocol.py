@@ -182,7 +182,7 @@ async def exchange(code,config,transport,now):
     data=result.get('Data')
     if isinstance(data,dict):
         data=token_aliases(data,('FromPlatform','ShopId','UserId','ShopName','Token','ExpiresIn'))
-    if result['IsSuccess'] is not True or not isinstance(data,dict) or data.get('FromPlatform')!='PddAlds':
+    if result['IsSuccess'] is not True or not isinstance(data,dict) or data.get('FromPlatform') not in ('PddAlds','AldsPdd'):
         platform=data.get('FromPlatform') if isinstance(data,dict) else None
         logging.getLogger(__name__).warning('Agiso platform mismatch: %s',platform if isinstance(platform,str) and platform.isalnum() and len(platform)<32 else 'invalid')
         raise ProtocolError()

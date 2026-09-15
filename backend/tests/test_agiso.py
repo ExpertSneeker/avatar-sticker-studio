@@ -466,9 +466,10 @@ def test_token_exchange_rejects_conflicting_aliases(configured):
         asyncio.run(p.exchange('code',p.settings(),httpx.MockTransport(lambda r:httpx.Response(200,json=body)),1000))
 
 @pytest.mark.parametrize('camel',[False,True])
-def test_pdd_user_id_fallback_binds_once(configured,camel):
+@pytest.mark.parametrize('platform',['PddAlds','AldsPdd'])
+def test_pdd_user_id_fallback_binds_once(configured,camel,platform):
     app,c,clock=configured
-    data={'FromPlatform':'PddAlds','UserId':999,'ShopName':'测试店','Token':'private-token','ExpiresIn':86400}
+    data={'FromPlatform':platform,'UserId':999,'ShopName':'测试店','Token':'private-token','ExpiresIn':86400}
     if camel:data={k[0].lower()+k[1:]:v for k,v in data.items()}
     app.state.agiso_worker.transport=httpx.MockTransport(lambda r:httpx.Response(200,json={'isSuccess':True,'data':data}))
     for _ in range(2):
