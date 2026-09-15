@@ -1,5 +1,6 @@
 """Tenant-scoped management and authenticated, bounded Agiso push ingress."""
 import hmac
+import logging
 import json
 import os
 import secrets
@@ -63,6 +64,7 @@ def register_agiso(app,db,user):
 
     @app.get('/api/agiso/callback')
     async def callback(request:Request,code:str='',state:str=''):
+        stage='state'
         try:
             config=require_config()
             if not code or len(code)>2048 or not state or len(state)>200:raise ValueError()
@@ -74,7 +76,9 @@ def register_agiso(app,db,user):
                 if not session or session['expires']<=now() or session['user_id']!=entry['owner'] or not actor or not actor['active'] or entry['organization_id']!=actor.get('organization_id'):raise ValueError()
                 if request.cookies.get('studio_session') and user(tx,request)['id']!=actor['id']:raise ValueError()
                 entry['used']=True;tx.put('agiso_oauth',entry)
+            stage='exchange'
             authorization=await protocol.exchange(code,config,app.state.agiso_worker.transport,now())
+            stage='bind'
             with db.transaction() as tx:
                 current=tx.get('users',actor['id']);org=tx.get('organizations',entry['organization_id'])
                 if not current or not current['active'] or current.get('organization_id')!=entry['organization_id'] or not org or not org['active']:raise ValueError()
@@ -85,7 +89,8 @@ def register_agiso(app,db,user):
             response=RedirectResponse('/?agiso=connected',status_code=303)
             response.delete_cookie('studio_agiso_oauth',path='/api/agiso/callback')
             return response
-        except Exception:
+        except Exception as exc:
+            logging.getLogger(__name__).warning('Agiso callback failed stage=%s type=%s',stage,type(exc).__name__)
             response=RedirectResponse('/?agiso=error',status_code=303)
             response.delete_cookie('studio_agiso_oauth',path='/api/agiso/callback')
             return response
