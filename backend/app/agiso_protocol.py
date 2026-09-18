@@ -60,7 +60,8 @@ class Trade(Payload):
     MallId: str
     Tid: str
     OrderSn: str
-    ConfirmTime: str = Field(min_length=1,max_length=100)
+    # 拼多多付款后即可推送订单，未成团时成交时间可能为空；该字段不参与开户判断。
+    ConfirmTime: str = Field('',max_length=100)
     CreatedTime: str = Field(min_length=1,max_length=100)
     PayAmount: str
     ItemList: list[Item] = Field(min_length=1,max_length=200)
@@ -70,6 +71,8 @@ class Trade(Payload):
     @field_validator('ConfirmTime','CreatedTime')
     @classmethod
     def confirmed_time(cls,value):
+        if value=='':
+            return value
         try:
             parsed=datetime.fromisoformat(value)
             if parsed.year<2000 or len(value)<19: raise ValueError()

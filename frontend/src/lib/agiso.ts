@@ -61,5 +61,6 @@ export function integrationError(value: string): string {
     aftersales_review: '售后情况需要人工核对。', aftersales_disabled: '自动售后尚未启用，通知已保留。',
     refunded: '整单退款已成功，客户访问已取消。', send_unknown: '发送结果不确定，请先在拼多多核对消息。',
     send_failed: '消息发送失败，请检查发送助手和店铺授权。',
+    unsupported_topic: '该类型通知暂未参与自动处理，已记录在通知记录中。',
   } as Record<string, string>)[value] || '需要人工核对，请查看通知记录或联系管理员。'
 }

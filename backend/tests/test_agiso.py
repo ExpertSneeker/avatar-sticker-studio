@@ -252,10 +252,31 @@ def test_concurrent_confirmation_creates_exactly_one_order(configured):
     with app.state.db.transaction() as tx:assert len(tx.all('agiso_outbox'))==1
 
 
-def test_confirmation_requires_real_confirmation_time(configured):
+def test_invalid_confirmation_time_is_rejected(configured):
     app,c,_=configured;shop(configured)
     assert push(c,trade(ConfirmTime='0')).status_code==422
     assert push(c,trade(ConfirmTime='not confirmed')).status_code==422
+    assert c.get('/api/customer-orders').json()==[]
+
+
+def test_payment_before_group_without_confirmation_time_still_opens(configured):
+    app,c,_=configured;shop(configured)
+    payload=trade();payload.pop('ConfirmTime')
+    assert push(c,payload).status_code==200
+    process(app)
+    orders=c.get('/api/customer-orders').json()
+    assert len(orders)==1 and orders[0]['order_number']=='ORDER-1'
+
+
+def test_unsupported_push_topic_is_recorded_without_processing(configured):
+    app,c,_=configured;s=shop(configured)
+    assert push(c,{'MallId':'999','Tid':'ORDER-1','OrderSn':'ORDER-1','Status':'70'},topic='4096').status_code==200
+    assert c.get('/api/customer-orders').json()==[]
+    events=c.get('/api/agiso/shops/'+s['id']+'/events').json()
+    assert len(events)==1 and events[0]['topic']=='4096' and events[0]['status']=='ignored'
+    assert not events[0]['can_replay']
+    process(app)
+    assert c.get('/api/customer-orders').json()==[]
 
 
 def test_durable_unprocessed_refund_blocks_generation_admission(configured):

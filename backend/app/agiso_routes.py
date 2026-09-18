@@ -225,20 +225,37 @@ def register_agiso(app,db,user):
             if not isinstance(payload,dict):raise ValueError()
             topic=query['aopic']
             if topic=='1':
+                family='trade'
                 if {'refund_id','operation','mall_id'} & payload.keys():raise ValueError()
                 payload=protocol.Trade.model_validate(payload).model_dump();mall=payload['MallId'];number=payload['OrderSn']
             elif topic in {'8','16','32'}:
+                family='refund'
                 if {'ItemList','MallId','ConfirmTime'} & payload.keys():raise ValueError()
                 payload=protocol.Refund.model_validate(payload).model_dump();mall=payload['mall_id'];number=payload['tid']
-            else:raise ValueError()
+            else:
+                # 已授权但暂未自动处理的推送（交易成功、买家备注修改等）：验签通过后仅记录，避免推送端反复重试。
+                family='other'
+                def soft(field):
+                    value=payload.get(field)
+                    return str(value) if isinstance(value,(str,int)) and not isinstance(value,bool) and 0<len(str(value))<=100 else ''
+                mall=soft('MallId') or soft('mall_id') or soft('PlatformShopId')
+                number=soft('OrderSn') or soft('Tid') or soft('tid')
         except (ValueError,ValidationError,TypeError):raise HTTPException(422,'通知内容无效')
         # Topic is not signed; derive identity from the validated signed payload and family.
-        event_id=token_hash(('trade:' if topic=='1' else 'refund:')+json.dumps(payload,sort_keys=True,ensure_ascii=False))
+        prefix={'trade':'trade:','refund':'refund:','other':'topic'+topic+':'}[family]
+        event_id=token_hash(prefix+json.dumps(payload,sort_keys=True,ensure_ascii=False))
         with db.transaction() as tx:
             if not tx.get('agiso_events',event_id):
                 shop=next((s for s in tx.all('agiso_shops') if s['shop_id']==mall),None)
+                if not shop:logging.getLogger(__name__).warning('Agiso push for unknown shop topic=%s',topic)
+                if family=='other':
+                    status,error='ignored','unsupported_topic'
+                elif shop and (shop['enabled'] or topic!='1'):
+                    status,error='pending',None
+                else:
+                    status,error='disabled','shop_disabled'
                 tx.put('agiso_events',{'id':event_id,'shop_id':shop['id'] if shop else '', 'topic':topic,'payload':payload,
-                       'order_number':number,'status':'pending' if shop and (shop['enabled'] or topic!='1') else 'disabled','error':None if shop and (shop['enabled'] or topic!='1') else 'shop_disabled',
+                       'order_number':number,'status':status,'error':error,
                        'received_at':now(),'lease_until':0})
                 if shop:shop['last_event_at']=now();tx.put('agiso_shops',shop)
         return Response(status_code=200,content=b'')
