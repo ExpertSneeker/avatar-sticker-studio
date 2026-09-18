@@ -2,7 +2,7 @@
 import asyncio
 import logging
 from . import agiso_protocol as protocol
-from .agiso_service import apply_trade, apply_refund, executable, order_allowed, integration_id
+from .agiso_service import apply_trade, apply_refund, apply_memo, executable, order_allowed, integration_id
 from .db import uid
 
 log=logging.getLogger(__name__)
@@ -54,6 +54,9 @@ class AgisoWorker:
             if row['topic']=='1':
                 link=apply_trade(tx,shop,row['payload'],config,self.clock())
                 row.update(status='processed' if link['open_status']=='opened' else 'blocked' if link['open_status']=='held' else 'manual',error=link.get('error'))
+            elif row['topic']=='64':
+                apply_memo(tx,shop,row['payload'],self.clock())
+                row.update(status='processed',error=None)
             elif config['aftersales_enabled']:
                 apply_refund(tx,shop,row['payload'],self.clock())
                 row.update(status='processed',error=None)

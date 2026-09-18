@@ -174,6 +174,8 @@ def dto(tx, order, guest=False):
         result.update({k: order[k] for k in ('owner', 'notes', 'organization_id', 'watermark', 'print_settings', 'delivery_version')})
         result['owner_name'] = owner.get('display_name', '')
         result['processing_error'] = order.get('processing_error')
+        result['buyer_memo'] = order.get('buyer_memo', '')
+        result['platform_remark'] = order.get('platform_remark', '')
     return result
 
 

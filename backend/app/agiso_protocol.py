@@ -43,6 +43,14 @@ def identifier(value):
     return value
 
 
+def optional_text(value):
+    if value is None:
+        return ''
+    if not isinstance(value, str):
+        raise ValueError('invalid text')
+    return value
+
+
 class Payload(BaseModel):
     model_config = ConfigDict(extra='ignore')
 
@@ -64,9 +72,12 @@ class Trade(Payload):
     ConfirmTime: str = Field('',max_length=100)
     CreatedTime: str = Field(min_length=1,max_length=100)
     PayAmount: str
+    BuyerMemo: str = Field('',max_length=2000)
+    Remark: str = Field('',max_length=2000)
     ItemList: list[Item] = Field(min_length=1,max_length=200)
     _ids = field_validator('MallId','Tid','OrderSn',mode='before')(identifier)
     _number = field_validator('OrderSn')(safe_name)
+    _texts = field_validator('BuyerMemo','Remark',mode='before')(optional_text)
 
     @field_validator('ConfirmTime','CreatedTime')
     @classmethod
@@ -102,6 +113,14 @@ class Refund(Payload):
     modified: int = Field(strict=True,gt=0)
     operation: int = Field(strict=True,ge=0)
     _ids = field_validator('mall_id','tid','refund_id',mode='before')(identifier)
+
+
+class BuyerMemo(Payload):
+    mall_id: str
+    tid: str
+    buyer_memo: str = Field('',max_length=2000)
+    _ids = field_validator('mall_id','tid',mode='before')(identifier)
+    _text = field_validator('buyer_memo',mode='before')(optional_text)
 
 
 class Rule(BaseModel):

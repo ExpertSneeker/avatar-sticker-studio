@@ -117,9 +117,25 @@ def apply_trade(tx,shop,payload,config,now):
                 order=create_customer_order(tx,owner,body,now)
                 order['agiso_id']=key
                 order['agiso_rule_snapshot']=[dict(r) for r in matched]
+                if (payload.get('BuyerMemo') or '').strip():order['buyer_memo']=payload['BuyerMemo'].strip()[:2000]
+                if (payload.get('Remark') or '').strip():order['platform_remark']=payload['Remark'].strip()[:2000]
                 tx.put('orders',order)
                 audit(tx,order,'agiso_open',owner['id'],now)
                 link.update(customer_order_id=order['id'],open_status='opened',error=None,guest_url=config['origin']+'/guest?'+urlencode({'order_number':payload['OrderSn']}))
                 tx.put('agiso_outbox',{'id':key,'integration_id':key,'shop_id':shop['id'],'status':'pending','attempts':0,'next_at':now,'lease_until':0})
     tx.put('agiso_orders',link)
     return link
+
+
+def apply_memo(tx,shop,payload,now):
+    """买家备注修改通知：更新已开户订单的客户留言。"""
+    key=integration_id(shop['id'],payload['tid'])
+    link=tx.get('agiso_orders',key)
+    order=tx.get('orders',(link or {}).get('customer_order_id') or '')
+    if not order:return
+    memo=(payload.get('buyer_memo') or '').strip()[:2000]
+    if order.get('buyer_memo','')==memo:return
+    order['buyer_memo']=memo
+    order['version']=order.get('version',0)+1
+    tx.put('orders',order)
+    audit(tx,order,'agiso_memo','agiso',now)

@@ -259,6 +259,26 @@ def test_invalid_confirmation_time_is_rejected(configured):
     assert c.get('/api/customer-orders').json()==[]
 
 
+def test_trade_push_keeps_buyer_memo_and_platform_remark(configured):
+    app,c,_=configured;shop(configured)
+    assert push(c,trade(BuyerMemo='两个颜色',Remark='商家备注')).status_code==200
+    process(app)
+    order=c.get('/api/customer-orders').json()[0]
+    assert order['buyer_memo']=='两个颜色' and order['platform_remark']=='商家备注'
+
+
+def test_buyer_memo_push_updates_existing_order_without_touching_state(configured,monkeypatch):
+    app,c,_=configured;shop(configured)
+    push(c,trade());process(app)
+    monkeypatch.setenv('STUDIO_AGISO_AFTERSALES_VERIFIED','0')
+    assert push(c,{'mall_id':'999','tid':'ORDER-1','buyer_memo':'改成红色'},topic='64').status_code==200
+    process(app)
+    order=c.get('/api/customer-orders').json()[0]
+    assert order['buyer_memo']=='改成红色'
+    assert order['state']=='draft' and not order['paused']
+    assert push(c,trade(),topic='64').status_code==422
+
+
 def test_payment_before_group_without_confirmation_time_still_opens(configured):
     app,c,_=configured;shop(configured)
     payload=trade();payload.pop('ConfirmTime')

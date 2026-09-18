@@ -232,6 +232,10 @@ def register_agiso(app,db,user):
                 family='refund'
                 if {'ItemList','MallId','ConfirmTime'} & payload.keys():raise ValueError()
                 payload=protocol.Refund.model_validate(payload).model_dump();mall=payload['mall_id'];number=payload['tid']
+            elif topic=='64':
+                family='memo'
+                if {'ItemList','MallId','ConfirmTime'} & payload.keys():raise ValueError()
+                payload=protocol.BuyerMemo.model_validate(payload).model_dump();mall=payload['mall_id'];number=payload['tid']
             else:
                 # 已授权但暂未自动处理的推送（交易成功、买家备注修改等）：验签通过后仅记录，避免推送端反复重试。
                 family='other'
@@ -242,7 +246,7 @@ def register_agiso(app,db,user):
                 number=soft('OrderSn') or soft('Tid') or soft('tid')
         except (ValueError,ValidationError,TypeError):raise HTTPException(422,'通知内容无效')
         # Topic is not signed; derive identity from the validated signed payload and family.
-        prefix={'trade':'trade:','refund':'refund:','other':'topic'+topic+':'}[family]
+        prefix={'trade':'trade:','refund':'refund:','memo':'memo:','other':'topic'+topic+':'}[family]
         event_id=token_hash(prefix+json.dumps(payload,sort_keys=True,ensure_ascii=False))
         with db.transaction() as tx:
             if not tx.get('agiso_events',event_id):
