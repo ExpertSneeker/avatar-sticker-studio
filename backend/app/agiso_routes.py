@@ -228,10 +228,14 @@ def register_agiso(app,db,user):
                 family='trade'
                 if {'refund_id','operation','mall_id'} & payload.keys():raise ValueError()
                 payload=protocol.Trade.model_validate(payload).model_dump();mall=payload['MallId'];number=payload['OrderSn']
-            elif topic in {'8','16','32'}:
+            elif topic in {'8','16','512'}:
                 family='refund'
                 if {'ItemList','MallId','ConfirmTime'} & payload.keys():raise ValueError()
                 payload=protocol.Refund.model_validate(payload).model_dump();mall=payload['mall_id'];number=payload['tid']
+            elif topic=='32':
+                family='shipping'
+                if {'ItemList','MallId','ConfirmTime','refund_id','operation','bill_type','refund_fee','modified'} & payload.keys():raise ValueError()
+                payload=protocol.Shipment.model_validate(payload).model_dump();mall=payload['mall_id'];number=payload['tid']
             elif topic=='64':
                 family='memo'
                 if {'ItemList','MallId','ConfirmTime'} & payload.keys():raise ValueError()
@@ -246,7 +250,7 @@ def register_agiso(app,db,user):
                 number=soft('OrderSn') or soft('Tid') or soft('tid')
         except (ValueError,ValidationError,TypeError):raise HTTPException(422,'通知内容无效')
         # Topic is not signed; derive identity from the validated signed payload and family.
-        prefix={'trade':'trade:','refund':'refund:','memo':'memo:','other':'topic'+topic+':'}[family]
+        prefix={'trade':'trade:','refund':'refund:','shipping':'shipping:','memo':'memo:','other':'topic'+topic+':'}[family]
         event_id=token_hash(prefix+json.dumps(payload,sort_keys=True,ensure_ascii=False))
         with db.transaction() as tx:
             if not tx.get('agiso_events',event_id):
@@ -254,6 +258,8 @@ def register_agiso(app,db,user):
                 if not shop:logging.getLogger(__name__).warning('Agiso push for unknown shop topic=%s',topic)
                 if family=='other':
                     status,error='ignored','unsupported_topic'
+                elif family=='shipping':
+                    status,error='processed',None
                 elif shop and (shop['enabled'] or topic!='1'):
                     status,error='pending',None
                 else:

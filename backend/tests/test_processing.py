@@ -32,6 +32,13 @@ def test_overview_is_single_white_full_order_grid():
     assert image.getpixel((0, 0)) == (255, 255, 255)
 
 
+def test_customer_print_title_appends_seller_remark():
+    from backend.app.publication import customer_print_title
+    assert customer_print_title({'order_number': '260918-1'}) == '260918-1'
+    assert customer_print_title({'order_number': '260918-1', 'platform_remark': ' 已补差价 '}) == '260918-1 已补差价'
+    assert customer_print_title({'order_number': '260918-1', 'platform_remark': '长' * 200}) == '260918-1 ' + '长' * 60
+
+
 def test_cjk_watermarks_render_distinct_glyphs_and_keep_long_text_tail():
     first = processing.overview([png()] * 12, '甲乙丙丁')
     second = processing.overview([png()] * 12, '春夏秋冬')

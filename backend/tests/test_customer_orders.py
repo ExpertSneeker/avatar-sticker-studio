@@ -163,6 +163,38 @@ def test_watermark_rotation_and_optimistic_idempotency(context):
     assert c.post(path,json={**mutation,'expected_version':999}).status_code==409
 
 
+def test_seller_remark_is_idempotent_and_version_checked(context):
+    app,c,_,_=context
+    o=opened(c)
+    body={'remark':'已补差价','client_token':'remark-1','expected_version':o['version']}
+    first=c.post('/api/customer-orders/'+o['id']+'/remark',json=body)
+    assert first.status_code==200,first.text
+    assert first.json()['platform_remark']=='已补差价'
+    repeat=c.post('/api/customer-orders/'+o['id']+'/remark',json=body)
+    assert repeat.json()['version']==first.json()['version']
+    assert c.post('/api/customer-orders/'+o['id']+'/remark',json={**body,'expected_version':999}).status_code==409
+
+
+def test_seller_remark_edit_republishes_submitted_order(context):
+    app,c,_,_=context
+    o=generate(c,opened(c),sticker(c,'ONE')['id']); run(app)
+    o=c.get('/api/customer-orders/'+o['id']).json()
+    submitted=action(c,o,'submit',slot_ids=[slot['id'] for slot in o['slots']])
+    assert submitted.status_code==200,submitted.text
+    o=submitted.json()
+    app.state.worker.publish(o['id'])
+    o=c.get('/api/customer-orders/'+o['id']).json()
+    assert o['delivery_ready']
+    before=o['delivery_version']
+    result=action(c,o,'remark',remark='加急制作')
+    assert result.status_code==200,result.text
+    o=result.json()
+    assert o['platform_remark']=='加急制作' and o['delivery_ready'] is False and o['delivery_version']>before
+    app.state.worker.publish(o['id'])
+    o=c.get('/api/customer-orders/'+o['id']).json()
+    assert o['delivery_ready']
+
+
 def test_login_throttle_survives_failed_transactions_and_inactive_org(context):
     app,c,_,_=context; o=opened(c)
     g=TestClient(app)

@@ -6,6 +6,12 @@ from .schemas import PrintSettings
 from .storage import save_asset
 
 
+def customer_print_title(order):
+    """客户订单打印页标题：订单号 + 卖家备注，过长时截断。"""
+    remark = ' '.join((order.get('platform_remark') or '').split())[:60]
+    return order['order_number'] + ((' ' + remark) if remark else '')
+
+
 def publish_selection(db, order, items, binaries, owner, force=False, watermark_only=False):
     entries = order['export_entries']
     lookup = {i['id']: i for i in items}
@@ -65,14 +71,15 @@ def publish_customer(db, order, force=False, watermark_only=False):
     with db.transaction() as tx:
         originals = [asset_bytes(db, tx.get('assets', e['asset_id'])) for e in entries]
     digest = lambda v: hashlib.sha256(json.dumps(v, sort_keys=True).encode()).hexdigest()
-    print_signature = digest([PRINT_LAYOUT_STYLE, order['order_number'], order['print_settings'], entries])
+    title = customer_print_title(order)
+    print_signature = digest([PRINT_LAYOUT_STYLE, title, order['print_settings'], entries])
     overview_signature = digest([entries, order['watermark'], order['watermark_version'], 'guest-overview-v1'])
     previous = order.get('publish_signatures', {})
     needs_print = not watermark_only and (force or not order.get('delivery_ready') or previous.get('_merged') != print_signature)
     needs_overview = force or not order.get('overview_ready') or previous.get('_overview') != overview_signature
     if not needs_print and not needs_overview:
         return False
-    pages = pack_set(originals, order['order_number'], '拼版', PrintSettings(**order['print_settings'])) if needs_print else []
+    pages = pack_set(originals, title, '拼版', PrintSettings(**order['print_settings'])) if needs_print else []
     # No notes enter any rendered image. The guest endpoint preserves this already watermarked overview.
     preview = overview(originals, order['watermark']) if needs_overview else None
     with db.transaction() as tx:

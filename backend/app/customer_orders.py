@@ -69,6 +69,10 @@ class Repack(Mutation):
     print_settings: PrintSettings | None = None
 
 
+class SellerRemark(Mutation):
+    remark: str = Field('', max_length=2000)
+
+
 class Resolve(Mutation):
     confirmed_ended: Literal[True]
 
@@ -556,6 +560,14 @@ def register_customer_orders(app, db, user):
                 if data.print_settings:
                     order['print_settings'] = data.print_settings.model_dump()
                 order.update(delivery_ready=False, delivery_version=order['delivery_version']+1, processing_error=None, publish_signatures={})
+            elif action == 'remark':
+                if guest:
+                    raise HTTPException(403, '需要工作人员处理')
+                remark = ' '.join(data.remark.split())[:2000]
+                if remark != order.get('platform_remark', ''):
+                    order['platform_remark'] = remark
+                    if order['state'] == 'submitted':
+                        order.update(delivery_ready=False, delivery_version=order['delivery_version']+1, publish_signatures={})
             order['version'] += 1
             order['content_version'] += 1
             tx.put('orders', order)
@@ -595,6 +607,10 @@ def register_customer_orders(app, db, user):
     @app.post('/api/customer-orders/{id}/repack')
     def repack(id: str, data: Repack, request: Request):
         return mutate(request, data, 'repack', id)
+
+    @app.post('/api/customer-orders/{id}/remark')
+    def remark(id: str, data: SellerRemark, request: Request):
+        return mutate(request, data, 'remark', id)
 
     def delivery(tx, request, id):
         order, _ = access(tx, request, id)

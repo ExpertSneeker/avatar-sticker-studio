@@ -125,7 +125,7 @@ def test_refund_hold_blocks_guest_and_full_success_cancels(configured):
     assert c.post('/api/guest/order/preflight',json=body).status_code==409
     push(c,refund(op=1304,modified=2000),topic='16');process(app)
     assert c.get('/api/customer-orders').json()[0]['state']=='cancelled'
-    push(c,refund(op=1300,modified=3000),topic='32');process(app)
+    push(c,refund(op=1300,modified=3000),topic='512');process(app)
     assert c.get('/api/customer-orders').json()[0]['state']=='cancelled'
 
 
@@ -207,11 +207,11 @@ def test_overlapping_refunds_release_only_own_hold_and_no_manual_resume(configur
     app,c,_=configured;shop(configured)
     push(c,trade());process(app)
     for rid in ('R1','R2'):push(c,refund(rid=rid),topic='8');process(app)
-    push(c,refund(op=1300,modified=2000),topic='32');process(app)
+    push(c,refund(op=1300,modified=2000),topic='512');process(app)
     assert c.get('/api/customer-orders').json()[0]['paused']
     with app.state.db.transaction() as tx:
         order=tx.all('orders')[0];order['paused']=True;tx.put('orders',order)
-    push(c,refund(rid='R2',op=1303,modified=2000),topic='32');process(app)
+    push(c,refund(rid='R2',op=1303,modified=2000),topic='512');process(app)
     assert c.get('/api/customer-orders').json()[0]['paused']
     push(c,refund(rid='R2',op=1200,modified=1000),topic='8');process(app)
     with app.state.db.transaction() as tx:assert not tx.all('orders')[0]['integration_holds']
@@ -277,6 +277,30 @@ def test_buyer_memo_push_updates_existing_order_without_touching_state(configure
     assert order['buyer_memo']=='改成红色'
     assert order['state']=='draft' and not order['paused']
     assert push(c,trade(),topic='64').status_code==422
+
+
+def test_after_sale_close_push_shares_refund_family_and_releases_hold(configured):
+    app,c,_=configured;shop(configured)
+    push(c,trade());process(app)
+    push(c,refund(),topic='8');process(app)
+    assert c.get('/api/customer-orders').json()[0]['paused'] is True
+    assert push(c,refund(op=1300,modified=2000),topic='512').status_code==200
+    process(app)
+    order=c.get('/api/customer-orders').json()[0]
+    assert order['paused'] is False and order['state']=='draft'
+
+
+def test_shipping_notice_is_recorded_without_refund_processing(configured):
+    app,c,_=configured;s=shop(configured)
+    push(c,trade());process(app)
+    assert push(c,{'mall_id':'999','tid':'ORDER-1'},topic='32').status_code==200
+    process(app)
+    order=c.get('/api/customer-orders').json()[0]
+    assert order['state']=='draft' and not order['paused'] and not order['buyer_memo']
+    events=c.get('/api/agiso/shops/'+s['id']+'/events').json()
+    shipping=[e for e in events if e['topic']=='32']
+    assert len(shipping)==1 and shipping[0]['status']=='processed'
+    assert push(c,refund(),topic='32').status_code==422
 
 
 def test_payment_before_group_without_confirmation_time_still_opens(configured):
@@ -390,7 +414,7 @@ def test_pending_refund_before_trade_resumes_only_after_all_holds_release(config
     push(c,refund(),topic='8');process(app)
     push(c,trade());process(app)
     assert c.get('/api/customer-orders').json()==[]
-    push(c,refund(op=1300,modified=2000),topic='32');process(app);process(app)
+    push(c,refund(op=1300,modified=2000),topic='512');process(app);process(app)
     assert len(c.get('/api/customer-orders').json())==1
 
 

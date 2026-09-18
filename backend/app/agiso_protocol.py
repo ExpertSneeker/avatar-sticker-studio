@@ -123,6 +123,12 @@ class BuyerMemo(Payload):
     _text = field_validator('buyer_memo',mode='before')(optional_text)
 
 
+class Shipment(Payload):
+    mall_id: str
+    tid: str
+    _ids = field_validator('mall_id','tid',mode='before')(identifier)
+
+
 class Rule(BaseModel):
     model_config = ConfigDict(extra='forbid')
     goods_id: str
