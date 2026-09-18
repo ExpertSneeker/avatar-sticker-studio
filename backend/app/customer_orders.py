@@ -294,6 +294,11 @@ def require_active_order(order, tx=None):
         raise HTTPException(409, '订单暂不可操作，请联系工作人员')
 
 
+def rerun_budget(order):
+    """整单共用的重试额度：所有位置已用与处理中的重试之和。"""
+    return sum((slot.get('reruns_used') or 0) + (slot.get('reruns_reserved') or 0) for slot in order.get('slots') or [])
+
+
 def register_customer_orders(app, db, user):
     now = app.state.clock
 
@@ -494,8 +499,8 @@ def register_customer_orders(app, db, user):
                     elif action == 'reprocess':
                         if not item.get('raw_result_id') or item['status'] not in {'failed', 'unknown'} or item.get('cutout_inflight') or item.get('remote_reserved'):
                             raise HTTPException(409, '请先核对原请求，或暂无可恢复原图')
-                        if slot['reruns_used']+slot['reruns_reserved'] >= order['rerun_limit'] and item['id'] != slot['initial_item_id']:
-                            raise HTTPException(409, '该位置重跑次数已用完')
+                        if rerun_budget(order) >= order['rerun_limit'] and item['id'] != slot['initial_item_id']:
+                            raise HTTPException(409, '整单重试次数已用完')
                         if item['id'] != slot['initial_item_id'] and not slot.get('reservation_item_id'):
                             slot.update(reservation_item_id=item['id'], reruns_reserved=slot['reruns_reserved']+1)
                         item.update(status='queued', processing_stage='postprocess', next_at=0, error=None)
@@ -512,8 +517,8 @@ def register_customer_orders(app, db, user):
                 elif action == 'rerun':
                     if item['status'] not in {'completed', 'failed'} or item.get('remote_reserved') or item.get('cutout_inflight') or slot['pending_version_id']:
                         raise HTTPException(409, '请等待生成并选择待确认结果')
-                    if slot['reruns_used'] + slot['reruns_reserved'] >= order['rerun_limit']:
-                        raise HTTPException(409, '该位置重跑次数已用完')
+                    if rerun_budget(order) >= order['rerun_limit']:
+                        raise HTTPException(409, '整单重试次数已用完')
                     avatar = next(a for a in order['avatars'] if a['id'] == slot['avatar_id'])
                     item = new_item(tx, order, uid(), avatar['asset_id'], slot['sticker'], now(), len(tx.all('items')))
                     slot.update(active_item_id=item['id'], reservation_item_id=item['id'], reruns_reserved=slot['reruns_reserved']+1)

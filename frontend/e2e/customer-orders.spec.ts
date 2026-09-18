@@ -15,7 +15,7 @@ test('staff opens order; guest uploads two avatars, repeats choices, compares re
   const create=page.getByRole('dialog',{name:'开新订单'})
   const number='Guest-'+randomUUID().slice(0,8)
   await create.getByLabel('订单号',{exact:true}).fill(number)
-  await create.getByLabel('可选图片上限').fill('4');await create.getByLabel('最终成品数量').fill('2');await create.getByLabel('每张可重跑次数').fill('1')
+  await create.getByLabel('可预览数量').fill('4');await create.getByLabel('最终提交数量').fill('2');await create.getByLabel('整单重试次数').fill('1')
   await create.getByLabel('内部备注').fill('仅员工可见的备注')
   await create.getByRole('button',{name:'创建订单',exact:true}).click()
   await expect(page.getByRole('heading',{name:'订单 '+number,level:2})).toBeVisible()

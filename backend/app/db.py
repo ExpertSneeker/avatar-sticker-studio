@@ -67,6 +67,16 @@ class Database:
                     item['billing_legacy']=True
                     tx.put('items', item)
                 tx.put('migrations', {'id':'personal-credits-v1'})
+            if not tx.get('migrations', 'order-shared-rerun-v1'):
+                for order in tx.all('orders'):
+                    if order.get('workflow_version') != 3:
+                        continue
+                    limit = int(order.get('generation_limit') or 0)
+                    if order.get('rerun_limit') != limit:
+                        order['rerun_limit'] = limit
+                        order['version'] = order.get('version', 0) + 1
+                        tx.put('orders', order)
+                tx.put('migrations', {'id':'order-shared-rerun-v1'})
             from .library import migrate_library
             migrate_library(tx)
             from .categories import seed_categories

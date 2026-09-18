@@ -74,6 +74,32 @@ def test_duplicates_independent_rerun_selection_and_print_only_delivery(context)
     with zipfile.ZipFile(io.BytesIO(data.content)) as z: assert z.namelist()==[manifest['folder_name']+'/'+f['path'] for f in manifest['files']]
 
 
+def test_rerun_budget_is_shared_across_slots(context):
+    app,c,_,_=context
+    o=generate(c,opened(c),sticker(c,'ONE')['id']); run(app)
+    o=c.get('/api/customer-orders/'+o['id']).json()
+    first,second=o['slots']
+    assert action(c,o,'slots/'+first['id']+'/rerun').status_code==200
+    o=c.get('/api/customer-orders/'+o['id']).json()
+    blocked=action(c,o,'slots/'+second['id']+'/rerun')
+    assert blocked.status_code==409 and '整单重试次数已用完' in blocked.json()['detail']
+
+
+def test_existing_orders_adopt_shared_rerun_budget(tmp_path):
+    from backend.app.db import Database
+    first=Database(tmp_path)
+    with first.transaction() as tx:
+        tx.put('orders',{'id':'o1','workflow_version':3,'generation_limit':4,'rerun_limit':2,'version':1,'state':'draft'})
+        tx.put('orders',{'id':'o2','workflow_version':2,'rerun_limit':2,'version':1})
+        # 模拟升级前已存在的数据：迁移标记尚未写入。
+        tx.delete('migrations','order-shared-rerun-v1')
+    second=Database(tmp_path)
+    with second.transaction() as tx:
+        migrated=tx.get('orders','o1')
+        assert migrated['rerun_limit']==4 and migrated['version']==2
+        assert tx.get('orders','o2')['rerun_limit']==2
+
+
 def test_guest_privacy_cancel_restore_submitted_and_media(context):
     app,c,_,_=context
     o=generate(c,opened(c),sticker(c,'ONE')['id']); run(app)
