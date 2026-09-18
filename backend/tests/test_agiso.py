@@ -440,6 +440,19 @@ def test_unverified_refund_on_disabled_shop_remains_record_only(configured,monke
     assert order['state']=='draft' and not order['paused']
 
 
+def test_refunds_recorded_while_aftersales_disabled_apply_once_enabled(configured,monkeypatch):
+    app,c,_=configured;shop(configured)
+    push(c,trade());process(app)
+    monkeypatch.setenv('STUDIO_AGISO_AFTERSALES_VERIFIED','0')
+    push(c,refund(),topic='8');process(app)
+    push(c,refund(op=1304,modified=2000),topic='16');process(app)
+    assert c.get('/api/customer-orders').json()[0]['state']=='draft'
+    monkeypatch.setenv('STUDIO_AGISO_AFTERSALES_VERIFIED','1')
+    process(app);process(app)
+    assert c.get('/api/customer-orders').json()[0]['state']=='cancelled'
+    assert c.get('/api/guest/order').status_code==401
+
+
 def test_previously_switch_disabled_refund_is_recovered_without_reopening_shop(configured):
     app,c,_=configured;s=shop(configured)
     push(c,trade());process(app)

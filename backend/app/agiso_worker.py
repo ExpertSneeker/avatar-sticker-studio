@@ -36,7 +36,7 @@ class AgisoWorker:
                 # Signed refund facts do not require an active outbound authorization
                 # or an enabled auto-opening switch. Recover earlier switch-blocked facts.
                 if event['topic']!='1' and config['aftersales_enabled'] and tx.get('agiso_shops',event['shop_id']):
-                    if event['status']=='blocked' or event['status']=='disabled' and event.get('error')=='shop_disabled':return True
+                    if event['status']=='blocked' or event['status']=='disabled' and event.get('error') in {'shop_disabled','aftersales_disabled'}:return True
                 if event['status']=='pending':return True
                 if event['status']!='blocked' or not executable(tx,tx.get('agiso_shops',event['shop_id']),self.clock()):return False
                 if event.get('error')=='aftersales_pending':
