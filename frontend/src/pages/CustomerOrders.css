@@ -8,3 +8,7 @@
 
 .customer-order-thumb{flex:0 0 auto;width:56px;height:56px;border-radius:8px;overflow:hidden;background:#f2f2f3;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:11px}
 .customer-order-thumb img{width:100%;height:100%;object-fit:cover;display:block}
+
+.customer-selection-badge-wrap{position:sticky;top:0;z-index:8;display:flex;justify-content:flex-start;padding:8px 0;pointer-events:none}
+.customer-selection-badge{display:inline-flex;align-items:center;padding:7px 14px;border-radius:999px;background:#16161c;color:#fff;font-size:13px;font-weight:600;box-shadow:0 6px 20px #16161c33}
+@media(max-width:720px){.customer-selection-badge-wrap{justify-content:center}}
