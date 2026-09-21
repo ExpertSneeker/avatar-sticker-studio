@@ -7,7 +7,7 @@ from PIL import Image, ImageDraw
 from .processing import watermark_font
 from .storage import asset_bytes
 
-PIPELINE = 'guest-heavy-diagonal-flat-v2'
+PIPELINE = 'guest-light-diagonal-flat-v3'
 _cache = OrderedDict()
 _lock = threading.Lock()
 _CACHE_BYTES = 32 * 1024 * 1024
@@ -38,7 +38,7 @@ def render(data, mark, size, already_watermarked=False):
     tile = Image.new('RGBA', (width, text_height * max(1, len(lines)) + 10))
     draw = ImageDraw.Draw(tile)
     for row, line in enumerate(lines):
-        draw.text((8, row*text_height), line, font=font, fill=(50, 50, 50, 175), stroke_width=2, stroke_fill=(255, 255, 255, 210))
+        draw.text((8, row*text_height), line, font=font, fill=(50, 50, 50, 70), stroke_width=2, stroke_fill=(255, 255, 255, 84))
     tile = tile.rotate(35, resample=Image.Resampling.BICUBIC, expand=True)
     layer = Image.new('RGBA', canvas.size)
     step_x = max(70, tile.width - 10)
