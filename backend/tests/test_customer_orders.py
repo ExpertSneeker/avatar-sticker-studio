@@ -221,11 +221,11 @@ def test_seller_remark_edit_republishes_submitted_order(context):
     assert o['delivery_ready']
 
 
-def test_login_throttle_survives_failed_transactions_and_inactive_org(context):
+def test_login_repeated_failures_do_not_block_valid_order_and_inactive_org(context):
     app,c,_,_=context; o=opened(c)
     g=TestClient(app)
-    for _ in range(12): assert g.post('/api/guest/login',json={'order_number':'invalid'}).status_code==401
-    assert g.post('/api/guest/login',json={'order_number':'invalid'}).status_code==429
+    for _ in range(20): assert g.post('/api/guest/login',json={'order_number':'invalid'}).status_code==401
+    assert g.post('/api/guest/login',json={'order_number':o['order_number']}).status_code==200
     with app.state.db.transaction() as tx:
         org=tx.get('organizations',o['organization_id']); org['active']=False;tx.put('organizations',org)
     other=TestClient(app,client=('different-client',1))

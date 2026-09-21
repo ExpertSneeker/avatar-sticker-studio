@@ -391,33 +391,19 @@ def register_customer_orders(app, db, user):
     def login(data: Login, request: Request, response: Response):
         denied = None
         with db.transaction() as tx:
-            # Durable IP and credential buckets; never save attempted plaintext order numbers.
-            keys = [digest(['ip', request.client.host if request.client else 'unknown']), digest(['number', data.order_number.strip()])]
-            buckets = []
-            for key in keys:
-                b = tx.get('guest_login_limits', key) or {'id': key, 'started': now(), 'attempts': 0}
-                if now() - b['started'] >= 900:
-                    b.update(started=now(), attempts=0)
-                buckets.append(b)
-            if any(b['attempts'] >= 12 for b in buckets):
-                denied = (429, '尝试次数过多，请稍后再试')
+            order = next((o for o in tx.all('orders') if o.get('workflow_version') == 3 and o['order_number'] == data.order_number.strip()), None)
+            organization = tx.get('organizations', order.get('organization_id', '')) if order else None
+            if not order or organization and not organization.get('active', True):
+                denied = (401, '订单号无效')
             else:
-                order = next((o for o in tx.all('orders') if o.get('workflow_version') == 3 and o['order_number'] == data.order_number.strip()), None)
-                organization = tx.get('organizations', order.get('organization_id', '')) if order else None
-                if not order or organization and not organization.get('active', True):
-                    for b in buckets:
-                        b['attempts'] += 1
-                        tx.put('guest_login_limits', b)
-                    denied = (401, '订单号无效')
-                else:
-                    for linked in tx.all('agiso_orders'):
-                        if linked.get('customer_order_id') == order['id']:
-                            linked['entered_at'] = now()
-                            tx.put('agiso_orders', linked)
-                    token = secrets.token_urlsafe(32)
-                    tx.put('guest_sessions', {'id': token_hash(token), 'order_id': order['id'], 'expires': now()+7*86400})
-                    response.set_cookie(COOKIE, token, max_age=7*86400, httponly=True, samesite='strict', secure=os.environ.get('STUDIO_SECURE_COOKIE') == '1', path='/api/guest')
-                    result = dto(tx, order, True)
+                for linked in tx.all('agiso_orders'):
+                    if linked.get('customer_order_id') == order['id']:
+                        linked['entered_at'] = now()
+                        tx.put('agiso_orders', linked)
+                token = secrets.token_urlsafe(32)
+                tx.put('guest_sessions', {'id': token_hash(token), 'order_id': order['id'], 'expires': now()+7*86400})
+                response.set_cookie(COOKIE, token, max_age=7*86400, httponly=True, samesite='strict', secure=os.environ.get('STUDIO_SECURE_COOKIE') == '1', path='/api/guest')
+                result = dto(tx, order, True)
         if denied:
             raise HTTPException(*denied)
         return result
