@@ -1,0 +1,35 @@
+import {test,expect} from '@playwright/test'
+import {randomUUID} from 'node:crypto'
+import {uploadStickers} from './library-fixtures'
+import {createCustomer,pixel,staffLogin} from './customer-fixtures'
+
+test('mobile picker scroll reaches apply and preflight shows final allowance',async({page})=>{
+  await page.setViewportSize({width:390,height:700})
+  await staffLogin(page.request)
+  const suffix=randomUUID().slice(0,8)
+  const stickers=await uploadStickers(page.request,Array.from({length:12},(_,i)=>({name:`SCROLL-${suffix}-${i}.png`,mimeType:'image/png',buffer:pixel})))
+  const order=await createCustomer(page.request,{generation_limit:18,final_count:15})
+  const errors:string[]=[];page.on('pageerror',e=>errors.push(e.message))
+  await page.goto('/guest')
+  await page.getByLabel('订单号',{exact:true}).fill(order.order_number)
+  await page.getByRole('button',{name:'进入订单'}).click()
+  await page.getByLabel('上传头像').setInputFiles({name:'avatar.png',mimeType:'image/png',buffer:pixel})
+  await page.getByRole('button',{name:'选择模板和贴纸'}).click()
+  const picker=page.getByRole('dialog',{name:'选择模板和贴纸'})
+  await picker.getByRole('button',{name:'单张贴纸',exact:true}).click()
+  await picker.getByLabel('搜索模板或贴纸').fill(suffix)
+  await expect(picker.locator('.customer-catalog article')).toHaveCount(12)
+  await picker.getByLabel(stickers[0].code+' 份数',{exact:true}).fill('18')
+  expect(await picker.locator('.customer-catalog').evaluate(el=>getComputedStyle(el).overflowY)).toBe('visible')
+  await picker.locator('.customer-catalog article').first().hover()
+  await page.mouse.wheel(0,10000)
+  await expect(picker.getByRole('button',{name:'应用选择'})).toBeInViewport()
+  await page.screenshot({path:'/tmp/customer-picker-scroll-mobile.png'})
+  await picker.getByRole('button',{name:'应用选择'}).click()
+  await page.getByRole('button',{name:'核对并开始生成'}).click()
+  const check=page.getByRole('dialog',{name:'生成前核对'})
+  await expect(check.locator('.customer-counts>div').filter({hasText:'可最终提交'})).toHaveText('可最终提交15')
+  await expect(check.getByText('实际生成',{exact:true})).toHaveCount(0)
+  await page.screenshot({path:'/tmp/customer-preflight-mobile.png'})
+  expect(errors).toEqual([])
+})
