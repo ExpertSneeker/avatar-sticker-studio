@@ -62,12 +62,16 @@ def test_exact_quotas_durable_duplicate_and_snapshot(configured,quota,count):
     o=c.get('/api/customer-orders').json()[0]
     assert (o['generation_limit'],o['final_count'],o['rerun_limit'])==(quota*count,quota*count,2)
     assert o['watermark']=='管理员'
+    assert o['shop_id']==s['id']
+    assert o['shop_name']==s['shop_name']
     push(c,trade(count=count)); process(app)
     assert len(c.get('/api/customer-orders').json())==1
     process(app)
     row=c.get('/api/agiso/shops/'+s['id']+'/orders').json()[0]
     assert row['message_status']=='sent' and row['guest_url']=='https://studio.example/guest?order_number=ORDER-1'
     c.post('/api/guest/login',json={'order_number':'ORDER-1'})
+    guest=c.get('/api/guest/order').json()
+    assert 'shop_id' not in guest and 'shop_name' not in guest
     assert c.get('/api/agiso/shops/'+s['id']+'/orders').json()[0]['entered_at']==clock()
     assert 'private-token' not in json.dumps(c.get('/api/agiso/shops').json())
     assert b'private-token' not in app.state.db.path.read_bytes()

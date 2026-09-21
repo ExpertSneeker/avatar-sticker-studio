@@ -19,7 +19,7 @@ export interface GuestOrder {
 }
 export interface CustomerOrder extends GuestOrder {
   version:number;
-  owner:string; owner_name:string; organization_id:string; notes:string
+  shop_id?:string|null; shop_name?:string; owner:string; owner_name:string; organization_id:string; notes:string
   watermark:string; print_settings:PrintSettings; delivery_version:number
   buyer_memo?:string; platform_remark?:string
 }

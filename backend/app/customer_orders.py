@@ -177,6 +177,12 @@ def dto(tx, order, guest=False):
         owner = tx.get('users', order['owner']) or {}
         result.update({k: order[k] for k in ('owner', 'notes', 'organization_id', 'watermark', 'print_settings', 'delivery_version')})
         result['owner_name'] = owner.get('display_name', '')
+        linked = tx.get('agiso_orders', order.get('agiso_id', '')) or {}
+        shop = tx.get('agiso_shops', linked.get('shop_id', '')) or {}
+        if shop.get('organization_id') != order.get('organization_id'):
+            shop = {}
+        result['shop_id'] = shop.get('id')
+        result['shop_name'] = shop.get('shop_name', '')
         result['processing_error'] = order.get('processing_error')
         result['buyer_memo'] = order.get('buyer_memo', '')
         result['platform_remark'] = order.get('platform_remark', '')
