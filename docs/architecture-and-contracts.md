@@ -26,6 +26,8 @@
 
 数据库不是每种业务一张传统关系表：主要记录放在 `records(kind,id,doc)` 的 JSON 文档中，`starts` 用于速率记录。`Database(...)` 会创建目录、修改权限、执行迁移，`transaction()` 使用 `BEGIN IMMEDIATE`，不能作为无副作用只读诊断入口。禁止在真实数据上随意执行初始化代码。
 
+高频查询不要再用 `tx.all(kind)` 全表解析后过滤：`Database` 启动时为 `INDEXED_FIELDS`（`status`、`remote_reserved`、`state`、`workflow_version`、`order_id`、`order_number`、`guest_order_id`、`customer_order_id`）建立 `(kind, json_extract(doc,'$.字段'))` 表达式索引，使用 `tx.where(kind, 字段, 值...)`、`tx.find(kind, (SQL条件, 参数)...)` 和 `tx.count(kind)`。它们按 rowid 返回与 `all()` 相同的顺序；SQL 只做超集预筛，调用处保留原来的 Python 精确判断。索引不改变文档，旧代码会忽略它们。Worker 与 Agiso worker 的调度、访客登录、上传查重、访客媒体授权都依赖这些索引。
+
 ## 权限和隐私
 
 - `superadmin` 管组织、全站设置与统计；独立超管可以不属于组织，因此不一定有组织工作台。`org_admin` 管本组织成员、图库授权与账号并发；`staff` 在组织内协作。服务器仍需对每个资源校验组织和角色。
@@ -48,7 +50,7 @@
 | `submitted` | 已锁定，服务端生成水印总览及打印拼图；后台可手动下载、重新排版或解锁 |
 | `cancelled` | 取消并保留记录；受规则约束可恢复，退款取消另受售后保护 |
 
-工作台仅显示 `draft/review`；历史订单显示全部 v3 订单，并可筛选已提交、已取消等。订单详情在弹窗中打开，两处页面共用逻辑。列表支持关联店铺及无关联店铺筛选。
+工作台仅显示 `draft/review`；历史订单显示全部 v3 订单，并可筛选已提交、已取消等。订单详情在弹窗中打开，两处页面共用逻辑。列表轮询使用 `GET /api/customer-orders?summary=1`，响应省略 `avatars`/`slots`（仍对每单执行 `reconcile`）；弹窗单独请求 `GET /api/customer-orders/{id}` 取得完整订单，列表发现版本更新时再刷新详情。不带 `summary` 的列表接口保持完整数据。列表支持关联店铺及无关联店铺筛选。
 
 | 字段 | 必须保持的语义 |
 | --- | --- |

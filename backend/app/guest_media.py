@@ -70,7 +70,7 @@ def register_guest_media(app, db, user):
         if not is_guest or order['state'] != 'submitted':
             ids.update(a['asset_id'] for a in order['avatars'])
             ids.update(v['asset_id'] for s in order['slots'] for v in s['versions'])
-            ids.update(u.get('asset_id') for u in tx.all('uploads') if u.get('guest_order_id') == order_id)
+            ids.update(u.get('asset_id') for u in tx.where('uploads', 'guest_order_id', order_id) if u.get('guest_order_id') == order_id)
             stickers, _ = library_records(tx, order)
             ids.update(s['image']['id'] for s in stickers)
         asset = tx.get('assets', asset_id)
@@ -87,12 +87,13 @@ def register_guest_media(app, db, user):
                                    and asset.get('kind') == 'overview'
                                    and order.get('overview_style') == 'guest-overview-v1')
             key = digest([asset['id'], asset['sha256'], order['owner'], order['watermark'], order['watermark_version'], v, size, PIPELINE, already_watermarked])
-            data = asset_bytes(db, asset)
             mark = order['watermark']
-        with _lock:
-            rendered = _cache.get(key)
-            if rendered is not None:
-                _cache.move_to_end(key)
+            with _lock:
+                rendered = _cache.get(key)
+                if rendered is not None:
+                    _cache.move_to_end(key)
+            # Read the original only when this derivative must be rendered.
+            data = asset_bytes(db, asset) if rendered is None else None
         if rendered is None:
             try:
                 rendered = render(data, mark, size, already_watermarked)

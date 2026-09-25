@@ -23,6 +23,19 @@ _publish_lock = threading.Lock()
 CUTOUT_UNCERTAIN = '抠图请求可能已计费，结果待确认；原始图片和已有结果已保留，请人工选择重新处理，不会自动重试'
 
 
+class LazyRecords:
+    """Mapping view like {r['id']: r for r in tx.all(kind)}, loading only requested records."""
+    def __init__(self, tx, kind):
+        self.tx, self.kind, self.cache = tx, kind, {}
+
+    def __getitem__(self, id):
+        if id not in self.cache:
+            self.cache[id] = self.tx.get(self.kind, id)
+        if self.cache[id] is None:
+            raise KeyError(id)
+        return self.cache[id]
+
+
 class Worker:
     def __init__(self, db, provider=None, clock=None):
         self.db, self.provider, self.clock = db, provider, clock or time.time
@@ -35,7 +48,7 @@ class Worker:
     def recover(self):
         with self.db.transaction() as tx:
             now = self.clock()
-            for item in tx.all('items'):
+            for item in tx.where('items', 'status', 'running'):
                 if item['status'] == 'running':
                     owner = tx.get('workers', item.get('worker_id', ''))
                     if not owner or owner['expires'] < now:
@@ -63,12 +76,13 @@ class Worker:
             tx.put('workers', {'id': self.id, 'expires': now + 30})
             config = tx.get('config', 'settings')
             configured = self.provider is not None or bool(os.environ.get('FAL_KEY') or config.get('fal_api_key'))
-            items = tx.all('items')
+            # Only queued, running or remotely reserved items affect admission; the rest cannot be chosen or counted.
+            items = tx.find('items', ("json_extract(doc,'$.status') IN ('queued','running')", ()), ("json_extract(doc,'$.remote_reserved') = 1", ()))
             generation_inflight = sum(bool(i.get('remote_reserved')) for i in items)
             owner_inflight = Counter(i['owner'] for i in items if i.get('remote_reserved'))
             processing_inflight = sum(i['status'] == 'running' and i.get('processing_stage') == 'postprocess' for i in items)
             generation_admitted = configured and generation_inflight < config['max_inflight'] and now >= config.get('fal_retry_at', 0)
-            orders = {o['id']: o for o in tx.all('orders')}
+            orders = LazyRecords(tx, 'orders')
             active_users = {u['id']: u for u in tx.all('users') if u['active']}
             candidates = [i for i in items if i['status'] == 'queued' and not i.get('cutout_inflight') and i.get('next_at', 0) <= now]
             eligible = [i for i in candidates if
@@ -224,6 +238,17 @@ class Worker:
             # Once a request starts, unexpected failures must not trigger another paid request.
             self.fail(item, ProviderFailure('结果处理失败：' + (str(exc)[:180] if isinstance(exc, ValueError) else type(exc).__name__) + '；不会自动重新生图', 'failed' if response_received else 'unknown'))
 
+    def unpublished(self):
+        with self.db.transaction() as tx:
+            # SQL preselects a superset: submitted orders not yet fully published, plus every legacy
+            # order (workflow_version missing or not 3). The Python filter below stays authoritative.
+            wv = "json_extract(doc,'$.workflow_version')"
+            unfinished = "json_extract(doc,'$.state') = 'submitted' AND (json_extract(doc,'$.delivery_ready') IS NOT 1 OR json_extract(doc,'$.overview_ready') IS NOT 1)"
+            orders = tx.find('orders', (unfinished, ()), (wv + ' IS NULL', ()), (wv + ' < 3', ()), (wv + ' > 3', ()))
+            return [o['id'] for o in orders if not o.get('processing_error') and
+                    ((o.get('workflow_version') == 3 and o['state'] == 'submitted' and (not o.get('delivery_ready') or not o.get('overview_ready'))) or
+                     (o.get('workflow_version') != 3 and (not o.get('overview_ready') or o.get('overview_style') != 'bold-outline-shadow-v3')))]
+
     def cutout_allowed(self, tx, item):
         latest = tx.get('items', item['id'])
         order = tx.get('orders', item['order_id'])
@@ -281,11 +306,12 @@ class Worker:
                     customer_order = order
                 else:
                     customer_order = None
-                owner = tx.get('users', order['owner'])
-                items = sorted([i for i in tx.all('items') if i['order_id'] == order_id], key=lambda i: (i['set_index'], i['position']))
-                snapshot = order['content_version']
-                binaries = {i['id']: asset_bytes(self.db, tx.get('assets', i['result_id'])) for i in items if i.get('result_id')}
+                    owner = tx.get('users', order['owner'])
+                    items = sorted([i for i in tx.where('items', 'order_id', order_id) if i['order_id'] == order_id], key=lambda i: (i['set_index'], i['position']))
+                    snapshot = order['content_version']
+                    binaries = {i['id']: asset_bytes(self.db, tx.get('assets', i['result_id'])) for i in items if i.get('result_id')}
             if customer_order:
+                # publish_customer reads exactly the frozen final entries itself.
                 from .publication import publish_customer
                 return publish_customer(self.db, customer_order, force, watermark_only)
             if order.get('selection_version') == 2:
@@ -365,12 +391,9 @@ class Worker:
         while not self.stopping:
             try:
                 self.heartbeat()
-                self.recover()
+                await asyncio.to_thread(self.recover)
                 # Startup or racing publishers may have saved images but not their derived files.
-                with self.db.transaction() as tx:
-                    pending = [o['id'] for o in tx.all('orders') if not o.get('processing_error') and
-                               ((o.get('workflow_version') == 3 and o['state'] == 'submitted' and (not o.get('delivery_ready') or not o.get('overview_ready'))) or
-                                (o.get('workflow_version') != 3 and (not o.get('overview_ready') or o.get('overview_style') != 'bold-outline-shadow-v3')))]
+                pending = await asyncio.to_thread(self.unpublished)
                 for id in pending:
                     await asyncio.to_thread(self.publish, id)
                 while not self.stopping:

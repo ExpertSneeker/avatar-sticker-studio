@@ -275,5 +275,6 @@ curl --noproxy '*' --fail --silent --show-error http://127.0.0.1:8001/api/ready
 3. framework rehearsal 的嵌套 integrity 与 Agiso 排空状态需额外核对，退出码 0 不能单独作为发布许可。
 4. [Agiso 文档](agiso-setup.md) 中旧的“未成团不开户”验收项已随本次交接修正；[test_agiso.py](../backend/tests/test_agiso.py) 的 `test_payment_before_group_without_confirmation_time_still_opens` 覆盖付款通知成交时间为空仍可开户。真实第三方字段与消息送达仍需另验。
 5. [后端 README](../backend/README.md) 已修正固定十二图和旧分类说明；部署历史章节仍保留旧积分/角色等阶段性记录。测试选择、恢复操作和默认值以当前源码为准，不把历史记录当作当前线上事实。
+6. 2026-09-26 在 `946b160` 上完整运行 E2E：`customer-orders`（首个用例）、`z-accounts-credits`、`z-public-mixed`、`z-variable-templates` 共 4 个用例在未改动的基线上同样失败：其中 3 个断言仍使用 2026-09-21 前的界面文案（如“实际生成”已改为“可最终提交”），`z-accounts-credits` 的原因尚未逐一核实；它们不是 `codex/perf-indexed-queries` 性能改动引起；修正断言前不要把全套 E2E 通过当作前提。
 
 交付下一位 Agent 时，列出本次实际修改文件、运行过的命令及结果、使用的隔离数据/端口、未验证项，以及是否涉及外部调用或生产变更。不要附私密原始证据；只提供脱敏摘要与受控证据位置。

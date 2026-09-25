@@ -148,7 +148,8 @@ def reconcile(tx, order):
     return order
 
 
-def dto(tx, order, guest=False):
+def dto(tx, order, guest=False, summary=False):
+    """summary omits avatars/slots for staff list views; reconciliation still runs for every order."""
     reconcile(tx, order)
     if guest and order['state'] == 'cancelled':
         return {k: order[k] for k in ('id', 'order_number', 'state')}
@@ -159,7 +160,7 @@ def dto(tx, order, guest=False):
                   hold_reason=('订单售后处理中，请联系工作人员' if integration_held(order) else '订单暂不可操作，请联系工作人员') if effective_hold else None)
     result.update(preview_url=media_url(order, order.get('overview_id'), guest) if order.get('overview_ready') else None,
                   delivery_ready=order['state'] == 'submitted' and bool(order.get('delivery_ready')))
-    if not guest or order['state'] != 'submitted':
+    if not summary and (not guest or order['state'] != 'submitted'):
         result['avatars'] = [{'id': a['id'], 'name': a['name'], 'preview_url': media_url(order, a['asset_id'], guest)} for a in order['avatars']]
         result['slots'] = []
         for slot in order['slots']:
@@ -327,7 +328,7 @@ def register_customer_orders(app, db, user):
             key, fingerprint, prior = operation(tx, actor['id'], data, 'open')
             if prior:
                 return dto(tx, customer(tx, prior['order_id']))
-            if any(o.get('order_number') == data.order_number for o in tx.all('orders')):
+            if any(o.get('order_number') == data.order_number for o in tx.where('orders', 'order_number', data.order_number)):
                 raise HTTPException(409, '订单号已使用')
             order = create_customer_order(tx, actor, data, now())
             remember(tx, key, fingerprint, order['id'])
@@ -336,11 +337,11 @@ def register_customer_orders(app, db, user):
 
     @app.get('/api/customer-orders')
     def list_orders(request: Request, state: str | None = None, owner: str | None = None, order_number: str | None = None,
-                    date_from: str | None = None, date_to: str | None = None):
+                    date_from: str | None = None, date_to: str | None = None, summary: bool = False):
         with db.transaction() as tx:
             actor = user(tx, request)
             orders = [o for o in tx.all('orders') if o.get('workflow_version') == 3 and scoped(o, actor)]
-            return [dto(tx, o) for o in reversed(orders) if (not state or o['state'] == state) and (not owner or o['owner'] == owner)
+            return [dto(tx, o, summary=summary) for o in reversed(orders) if (not state or o['state'] == state) and (not owner or o['owner'] == owner)
                     and (not order_number or order_number in o['order_number']) and (not date_from or o['created_at'][:10] >= date_from)
                     and (not date_to or o['created_at'][:10] <= date_to)]
 
@@ -397,12 +398,13 @@ def register_customer_orders(app, db, user):
     def login(data: Login, request: Request, response: Response):
         denied = None
         with db.transaction() as tx:
-            order = next((o for o in tx.all('orders') if o.get('workflow_version') == 3 and o['order_number'] == data.order_number.strip()), None)
+            number = data.order_number.strip()
+            order = next((o for o in tx.where('orders', 'order_number', number) if o.get('workflow_version') == 3 and o['order_number'] == number), None)
             organization = tx.get('organizations', order.get('organization_id', '')) if order else None
             if not order or organization and not organization.get('active', True):
                 denied = (401, '订单号无效')
             else:
-                for linked in tx.all('agiso_orders'):
+                for linked in tx.where('agiso_orders', 'customer_order_id', order['id']):
                     if linked.get('customer_order_id') == order['id']:
                         linked['entered_at'] = now()
                         tx.put('agiso_orders', linked)
@@ -501,7 +503,7 @@ def register_customer_orders(app, db, user):
                         if item['status'] != 'failed' or item.get('remote_reserved') or item.get('cutout_inflight') or item.get('raw_result_id') or item['id'] != slot['initial_item_id']:
                             raise HTTPException(409, '仅可重试确定失败的首次生成；已有原图请恢复处理')
                         avatar = next(a for a in order['avatars'] if a['id'] == slot['avatar_id'])
-                        replacement = new_item(tx, order, uid(), avatar['asset_id'], slot['sticker'], now(), len(tx.all('items')))
+                        replacement = new_item(tx, order, uid(), avatar['asset_id'], slot['sticker'], now(), tx.count('items'))
                         # Initial duplicates share retry work, preserving deduplication and history.
                         for linked in order['slots']:
                             if linked['initial_item_id'] == item['id'] and linked['active_item_id'] == item['id']:
@@ -512,7 +514,7 @@ def register_customer_orders(app, db, user):
                     if rerun_budget(order) >= order['rerun_limit']:
                         raise HTTPException(409, '整单重试次数已用完')
                     avatar = next(a for a in order['avatars'] if a['id'] == slot['avatar_id'])
-                    item = new_item(tx, order, uid(), avatar['asset_id'], slot['sticker'], now(), len(tx.all('items')))
+                    item = new_item(tx, order, uid(), avatar['asset_id'], slot['sticker'], now(), tx.count('items'))
                     slot.update(active_item_id=item['id'], reservation_item_id=item['id'], reruns_reserved=slot['reruns_reserved']+1)
                 else:
                     if not any(v['id'] == data.version_id for v in slot['versions']):
@@ -652,10 +654,11 @@ def register_customer_orders(app, db, user):
             raise HTTPException(422, '只支持JPG、PNG和WebP')
         with db.transaction() as tx:
             order, _ = guest_upload(tx, request, writable=True)
-            existing = next((u for u in tx.all('uploads') if u.get('guest_order_id') == order['id'] and u['sha256'] == data.sha256.lower() and u['size'] == data.size and u['filename'] == data.filename), None)
+            uploads = tx.where('uploads', 'guest_order_id', order['id'])
+            existing = next((u for u in uploads if u.get('guest_order_id') == order['id'] and u['sha256'] == data.sha256.lower() and u['size'] == data.size and u['filename'] == data.filename), None)
             if existing:
                 return upload_dto(order, existing)
-            if sum(u.get('guest_order_id') == order['id'] for u in tx.all('uploads')) >= 360:
+            if sum(u.get('guest_order_id') == order['id'] for u in uploads) >= 360:
                 raise HTTPException(422, '头像上传数量已达上限')
             value = {'id': uid(), 'owner': order['owner'], 'organization_id': order['organization_id'], 'guest_order_id': order['id'],
                      **data.model_dump(), 'sha256': data.sha256.lower(), 'offset': 0, 'complete': False}

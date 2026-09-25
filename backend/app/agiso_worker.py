@@ -16,10 +16,10 @@ class AgisoWorker:
     def recover(self):
         now=self.clock()
         with self.db.transaction() as tx:
-            for row in tx.all('agiso_events'):
+            for row in tx.where('agiso_events','status','processing'):
                 if row['status']=='processing' and row.get('lease_until',0)<=now:
                     row.update(status='pending',lease_until=0);tx.put('agiso_events',row)
-            for row in tx.all('agiso_outbox'):
+            for row in tx.where('agiso_outbox','status','sending','claimed'):
                 if row['status'] in {'sending','claimed'} and row.get('lease_until',0)<=now:
                     row.update(status='unknown' if row['status']=='sending' else 'pending',lease_until=0)
                     tx.put('agiso_outbox',row)
@@ -43,7 +43,8 @@ class AgisoWorker:
                     link=tx.get('agiso_orders',integration_id(event['shop_id'],event['payload']['Tid']))
                     return bool(link and not link.get('holds') and link['open_status'] not in {'cancelled','manual'})
                 return True
-            rows=[r for r in tx.all('agiso_events') if eligible(r)]
+            # eligible() only accepts pending, blocked or disabled events.
+            rows=[r for r in tx.where('agiso_events','status','pending','blocked','disabled') if eligible(r)]
             # Refund admission precedes trade opening and every outbound send.
             row=min(rows,key=lambda r:(r['topic']=='1',r['received_at']),default=None)
             if not row:return False
@@ -68,11 +69,11 @@ class AgisoWorker:
         config=protocol.settings();now=self.clock()
         if not config['configured']:return None
         with self.db.transaction() as tx:
-            if any(e['status']=='pending' for e in tx.all('agiso_events')): return None
-            if any(j['status'] in {'claimed','sending'} and j.get('lease_until',0)>now for j in tx.all('agiso_outbox')):return None
+            if any(e['status']=='pending' for e in tx.where('agiso_events','status','pending')): return None
+            if any(j['status'] in {'claimed','sending'} and j.get('lease_until',0)>now for j in tx.where('agiso_outbox','status','claimed','sending')):return None
             rate=tx.get('agiso_rate','send') or {'id':'send','next_at':0}
             if rate['next_at']>now:return None
-            for job in tx.all('agiso_outbox'):
+            for job in tx.where('agiso_outbox','status','pending'):
                 if job['status']!='pending' or job['next_at']>now:continue
                 link=tx.get('agiso_orders',job['integration_id']);shop=tx.get('agiso_shops',job['shop_id'])
                 order=tx.get('orders',link.get('customer_order_id') or '')
@@ -91,7 +92,7 @@ class AgisoWorker:
             if not current or current['status']!='claimed' or current.get('run_id')!=job['run_id'] or current.get('worker_id')!=self.id:return
             link=tx.get('agiso_orders',current['integration_id']);shop=tx.get('agiso_shops',current['shop_id'])
             order=tx.get('orders',link.get('customer_order_id') or '')
-            pending_refund=any(e['status']=='pending' and e['topic']!='1' and e['shop_id']==shop['id'] for e in tx.all('agiso_events'))
+            pending_refund=any(e['status']=='pending' and e['topic']!='1' and e['shop_id']==shop['id'] for e in tx.where('agiso_events','status','pending'))
             if not config['configured'] or not executable(tx,shop,now) or not order_allowed(tx,order) or link.get('holds') or pending_refund or link['send_attempts']>=5:
                 current.update(status='pending',lease_until=0);tx.put('agiso_outbox',current);return
             current.update(status='sending',attempts=current['attempts']+1,lease_until=now+60)

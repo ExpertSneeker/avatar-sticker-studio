@@ -30,7 +30,7 @@ def order_allowed(tx,order):
         linked=tx.get('agiso_orders',order['agiso_id'])
         shop=tx.get('agiso_shops',linked['shop_id']) if linked else None
         from .agiso_protocol import settings
-        if linked and settings()['aftersales_enabled'] and any(e['shop_id']==linked['shop_id'] and e['topic']!='1' and e['status'] in {'pending','blocked'} and e['payload'].get('tid')==linked['tid'] for e in tx.all('agiso_events')):
+        if linked and settings()['aftersales_enabled'] and any(e['shop_id']==linked['shop_id'] and e['topic']!='1' and e['status'] in {'pending','blocked'} and e['payload'].get('tid')==linked['tid'] for e in tx.where('agiso_events','status','pending','blocked')):
             return False
         # Disabling future shop automation does not stop work on an existing order.
         return bool(shop and account_active(tx,shop) and not order.get('paused'))
@@ -67,7 +67,7 @@ def update_aftersales(tx,link,now):
         if full and order['state']!='cancelled':
             order.update(prior_state=order['state'],state='cancelled',paused=True,media_version=order['media_version']+1)
             # Existing guest media gate checks state/media version. Invalidate login sessions too.
-            for session in tx.all('guest_sessions'):
+            for session in tx.where('guest_sessions','order_id',order['id']):
                 if session['order_id']==order['id']: tx.delete('guest_sessions',session['id'])
             changed=True
             audit(tx,order,'agiso_refund','agiso',now)
@@ -109,7 +109,7 @@ def apply_trade(tx,shop,payload,config,now):
             final=sum(r['final_count']*item['goods_count'] for r,item in zip(matched,payload['ItemList']))
             if not 1<=final<=generation<=360:
                 link.update(open_status='manual',error='quota_exceeded')
-            elif any(o.get('order_number')==payload['OrderSn'] for o in tx.all('orders')):
+            elif any(o.get('order_number')==payload['OrderSn'] for o in tx.where('orders','order_number',payload['OrderSn'])):
                 link.update(open_status='manual',error='order_number_conflict')
             else:
                 owner=tx.get('users',shop['owner'])
