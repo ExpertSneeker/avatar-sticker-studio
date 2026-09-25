@@ -1,5 +1,7 @@
 # Public sticker library release
 
+Historical release record for the public-library stage, before the organization/guest workflow. The credit-reservation, shared-rerun and export descriptions below apply to that stage, not current workflow v3. Current behavior and organization boundaries are documented in [architecture and contracts](architecture-and-contracts.md); the test counts below are historical evidence only.
+
 ## Behavior
 
 A sticker is one versioned source image. Public template sets contain ordered sticker IDs (1–100), never uploaded images. Library editing is granted per member; administrators always retain access. All authenticated users may use active public resources.

@@ -1,13 +1,17 @@
 # Avatar Sticker Studio backend
 
+Read [AGENTS.md](../AGENTS.md) first. The current organization/guest workflow is documented in [architecture and contracts](../docs/architecture-and-contracts.md); safe local and production operations are in [the operations guide](../docs/agent-operations.md). Legacy order APIs remain for compatibility and do not define the current customer UI.
+
 Run from repository root:
 
 ```sh
 uv sync --python 3.12
-uv run uvicorn backend.app.main:app_factory --factory --host 127.0.0.1 --port 8000
+uv run uvicorn backend.app.main:app_factory --factory --host 127.0.0.1 --port 8000 --no-access-log
 ```
 
 The FastAPI lifespan starts the durable worker. A built `frontend/dist` is served automatically; during development use the Vite `/api` proxy. Do not start a second standalone worker implementation. Multiple ASGI processes share SQLite transactions and admission records on this single host.
+
+The command above starts real generation and Agiso workers; it is not a simulation. Set an isolated `STUDIO_DATA_DIR` for development, never point exploratory startup at business data, and note that `Database(...)` runs migrations even without starting a worker. Direct uvicorn does not load the repository `.env` file. Use the test fixtures for synthetic generation.
 
 ## Configuration
 
@@ -30,10 +34,10 @@ The initial administrator can only be created from a loopback connection while n
 - Pause affects only unsubmitted jobs. Already submitted jobs continue lookup even if the order is paused or the account is deactivated. Lowering concurrency does not cancel active jobs; no new slots are admitted until the count falls below the new setting. Manual rerun after a terminal outcome clears remote identity for the new attempt, preserving the old good image until success.
 - Yezi uses a distinct 2-starts/second, 2-in-flight transactional gate. It is called only for opaque generation results when configured. The sync HTTPS API is implemented from the existing script contract; downloads are restricted to HTTPS Yezi/Alibaba OSS domains.
 - Upload chunks are at most 4 MiB; uploads at most 25 MiB. Offset retries must match existing bytes. Completion validates SHA256 and normalizes image orientation. A hash mismatch resets the durable offset to zero for recovery.
-- Templates store immutable revisions of exactly twelve images; `image_order` multipart JSON supports mixing retained `{id}` and newly uploaded `{file_index}` references. Existing orders embed selected template and prompt snapshots.
+- Current templates contain 1–100 ordered, distinct sticker IDs and belong to an organization. Stickers and templates have immutable revisions; current orders freeze source revisions and prompt snapshots. The original twelve-upload template model is historical, not the current write API.
 - Print settings default to A4, 85 mm effective-content long edge, 300 DPI, 10 mm margins and gaps. `brightness` and `color_balance` are booleans, both false by default. Enabled presets apply 1.15 brightness and RGB multipliers [1.04, 1.00, 0.97], preserving alpha.
 - Printing uses transparent alpha-composite and premultiplied-alpha resizing, never masked paste. Whole sets publish atomically. A4 is 2480×3508 with 300 DPI metadata. Set pages start at 1 and stay in selection order.
-- One white full-order overview has 256 px tiles, 4×3 per set, vertically joined, with 45° repeated 25%-opacity account watermark. Repacking/watermark updates do not call image generation.
+- Overview/publication paths differ for legacy orders and customer workflow v3. Current customer orders publish the selected final occurrences, a watermarked overview and print pages; see `publication.py` and `guest_media.py`. Single-preview watermark strength and cache versions are independent of already generated overviews. Repacking/watermark updates do not call image generation or change originals.
 - Manifests use safe filenames relative to the order directory, immutable authenticated asset URLs, SHA256, byte counts and a monotonic artifact version. Previous artifacts remain available after a rerun or processing failure.
 
 ## Verification
@@ -50,7 +54,7 @@ Tests use temporary directories and explicitly injected providers or HTTP transp
 
 `POST /api/orders/{order_id}/items/{item_id}/reprocess` with no body returns the full Order and durably queues only postprocessing of the retained raw image. Items expose `raw_available: boolean` and `processing_stage: "generate" | "postprocess"`. This endpoint requires an existing raw result and rejects already queued/running items with409. It respects the order's paused state. It never calls image generation or increments `attempt` (the number of generation submissions), and works without a FAL key; opaque raw images use the independently limited Yezi API. Failures preserve previous good results/files, and reprocessing remains available across restart. In-progress uncertain cutout outcomes also require explicit operator retry.
 
-Template categories accept Chinese or English inputs and always return canonical `boy` / `girl` values. Display names are trimmed and cannot be whitespace-only.
+Library categories are editable organization-scoped identities, initially seeded from boy/girl/animal/general. Use returned category IDs rather than assuming only `boy` / `girl`. Display names are trimmed and cannot be whitespace-only. Current sticker/template disable endpoints are retired; use the guarded deletion workflow and retain historical references.
 
 Authenticated browser API calls should send `X-Studio-User` containing the account ID captured by that tab. If shared cookies switch to another account, a mismatch returns401 (`登录账号已变化，请重新登录`) before mutation. Logout is guarded too when the header is present. Ordinary `<img>` asset requests may omit it and still require owner/admin session authorization.
 
