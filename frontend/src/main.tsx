@@ -1,5 +1,6 @@
 import { lazy, StrictMode, Suspense } from 'react'
 import { createRoot } from 'react-dom/client'
+import './styles/tokens.css'
 import './styles.css'
 
 // Each entry is loaded independently. Customer browsers never load the staff shell.

@@ -21,6 +21,7 @@
 | 后台壳、访客独立入口 | `frontend/src/App.tsx`、`main.tsx`、`pages/Guest.tsx` |
 | 工作台与历史订单共用页 | `frontend/src/pages/CustomerOrders.tsx`、`CustomerOrders.css` |
 | 后台代操作与访客共用制作界面 | `frontend/src/components/CustomerWorkbench.tsx` |
+| 视觉设计变量与全局样式 | `frontend/src/styles/tokens.css`、`frontend/src/styles.css`；规范见 `docs/design/design-system.md` |
 | API 身份、客户端幂等、交付文件保护 | `frontend/src/lib/api.ts`、`customer-orders.ts`、`delivery.ts`、`sync.ts` |
 | 后台说明正文与页面 | `backend/content/staff-guide.json`、`frontend/src/pages/StaffGuide.tsx` |
 

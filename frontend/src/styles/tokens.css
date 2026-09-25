@@ -1,0 +1,83 @@
+/*
+ * Design tokens — warm "cream + terracotta + coral" theme.
+ * Every colour, radius and shadow in the app should come from here.
+ * Contrast (WCAG 2.1): ink/ink-2/muted text >= 4.5:1 on bg, surface, sidebar, sunken and hover;
+ * white on brand >= 5:1; each status colour >= 4.5:1 on its own soft background.
+ */
+:root {
+  /* Neutrals: warm cream paper and cocoa ink */
+  --bg: #fbf6ef;
+  --surface: #fffdfa;
+  --surface-raised: #ffffff;
+  --sunken: #f7efe5;
+  --sidebar: #f6ede2;
+  --hover: #f1e6d8;
+  --line: #ebe0d3;
+  --line-soft: #f2e9de;
+  --line-strong: #dccbba;
+  --field: #cbb6a2;
+  --field-strong: #a48c79;
+  --ink: #3a2b25;
+  --ink-2: #5f4c43;
+  --muted: #735e53;
+  --faint: #b3a194;
+
+  /* Brand: terracotta for actions, coral for highlights */
+  --brand: #b0512f;
+  --brand-strong: #94412a;
+  --brand-soft: #f7e3d8;
+  --brand-tint: #fcf1ea;
+  --brand-line: #efcdbd;
+  --on-brand: #ffffff;
+  --coral: #ef8a7a;
+  --coral-soft: #fde8e3;
+  --coral-ink: #a8443a;
+
+  /* Status */
+  --ok: #376d4b;
+  --ok-dot: #5f9a70;
+  --ok-soft: #e4f0e5;
+  --warn: #8f5f12;
+  --warn-dot: #d9a146;
+  --warn-soft: #fbefd6;
+  --danger: #b0322f;
+  --danger-strong: #962a27;
+  --danger-soft: #fbe3df;
+  --danger-line: #f1c4bd;
+  --info: #6a5f92;
+  --info-soft: #ece8f5;
+
+  --checker: #f5ede3;
+
+  /* Shape */
+  --r-xs: 6px;
+  --r-sm: 8px;
+  --r-md: 10px;
+  --r-lg: 14px;
+  --r-xl: 20px;
+  --r-pill: 999px;
+
+  /* Depth: warm-tinted shadows */
+  --shadow-xs: 0 1px 2px rgb(92 56 36 / .06);
+  --shadow-sm: 0 1px 2px rgb(92 56 36 / .05), 0 2px 8px -2px rgb(92 56 36 / .08);
+  --shadow-md: 0 2px 4px rgb(92 56 36 / .04), 0 10px 28px -10px rgb(92 56 36 / .22);
+  --shadow-lg: 0 4px 10px rgb(70 40 25 / .06), 0 28px 70px -24px rgb(70 40 25 / .38);
+  --shadow-brand: 0 1px 0 rgb(255 255 255 / .18) inset, 0 3px 10px -3px rgb(176 81 47 / .55);
+  --ring: 0 0 0 3px rgb(176 81 47 / .18);
+  --backdrop: rgb(58 43 37 / .42);
+
+  /* Motion */
+  --ease: cubic-bezier(.2, .7, .3, 1);
+  --t-fast: .15s;
+  --t-base: .22s;
+
+  /* Legacy aliases kept for existing selectors */
+  --accent: var(--brand);
+  --accent-dark: var(--brand-strong);
+  --border: var(--line);
+  --soft: var(--sunken);
+  --orange-soft: var(--brand-soft);
+  --radius: var(--r-md);
+  --background: var(--bg);
+  --text: var(--ink);
+}
