@@ -11,6 +11,7 @@ import { Accounts } from './pages/Accounts'
 import { Account, Admin } from './pages/Settings'
 import { Brand, NoticeContext, Spinner } from './components/UI'
 import { api, expectUser, post } from './lib/api'
+import { visiblePolling } from './lib/polling'
 import { isAdmin, roleLabel, staffLibrary } from './lib/customer-orders'
 import type { Sticker, TemplateSet, User } from './lib/types'
 
@@ -48,7 +49,7 @@ export default function App(){
     if(!hasOrganization){try{const current=await api<User>('/auth/me',{signal});if(!signal.aborted)setUser(current)}catch(e){if(!signal.aborted)setError((e as Error).message)}return}
     try{const [sets,currentUser,assets,cats]=await Promise.all([api<TemplateSet[]>('/templates',{signal}),api<User>('/auth/me',{signal}),api<Sticker[]>('/stickers',{signal}),api<LibraryCategory[]>('/library/categories',{signal})]);if(signal.aborted||identity.current!==userId)return;setTemplates(sets);setStickers(assets);setCategories(cats);setUser(previous=>JSON.stringify(previous)===JSON.stringify(currentUser)?previous:currentUser);setError('')}catch(e){if(!signal.aborted)setError((e as Error).message)}
   },[userId,hasOrganization])
-  useEffect(()=>{void refresh();if(!userId)return;const timer=setInterval(refresh,5000);return()=>clearInterval(timer)},[refresh,userId])
+  useEffect(()=>{void refresh();if(!userId)return;return visiblePolling(()=>void refresh(),5000)},[refresh,userId])
   function changePage(next:Page){setPage(next);setMobileNav(false)}
   if(loading)return <div className="startup"><Brand/><Spinner/></div>
   if(!user)return <NoticeContext.Provider value={notice}>{error?<div className="startup"><Brand/><div className="error-banner">{error}</div><button className="button" onClick={()=>void auth()}>重新连接</button></div>:<Auth needsSetup={needsSetup} onLogin={next=>{updateUser(next);authChannel.current?.postMessage({userId:next.id})}}/>}</NoticeContext.Provider>

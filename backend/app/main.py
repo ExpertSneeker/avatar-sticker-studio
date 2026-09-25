@@ -131,8 +131,7 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
     @app.get('/api/staff-guide')
     def staff_guide(request: Request, response: Response):
         # Authorize before reading content; guest sessions cannot satisfy user().
-        with db.transaction() as tx:
-            user(tx, request)
+        db.read(lambda tx: user(tx, request))
         response.headers['Cache-Control'] = 'private, no-store'
         response.headers['Vary'] = 'Cookie, X-Studio-User'
         guide = Path(__file__).resolve().parents[1] / 'content' / 'staff-guide.json'
@@ -140,12 +139,13 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
 
     @app.get('/api/auth/status')
     def auth_status(request: Request):
-        with db.transaction() as tx:
+        def read(tx):
             try:
                 value = public_user(user(tx, request))
             except HTTPException:
                 value = None
             return {'needs_setup': os.environ.get('STUDIO_ALLOW_SETUP') != '0' and not tx.all('users'), 'user': value}
+        return db.read(read)
 
     @app.post('/api/auth/setup')
     def setup(data: Signup, response: Response, request: Request):
@@ -198,8 +198,7 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
 
     @app.get('/api/auth/me')
     def me(request: Request):
-        with db.transaction() as tx:
-            return public_user(user(tx, request))
+        return db.read(lambda tx: public_user(user(tx, request)))
 
     @app.patch('/api/account')
     def account(data: AccountPatch, request: Request):

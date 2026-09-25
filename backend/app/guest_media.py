@@ -7,10 +7,17 @@ from PIL import Image, ImageDraw
 from .processing import watermark_font
 from .storage import asset_bytes
 
-PIPELINE = 'guest-light-diagonal-flat-v3'
+PIPELINE = 'guest-light-diagonal-flat-webp-v4'
 _cache = OrderedDict()
 _lock = threading.Lock()
 _CACHE_BYTES = 32 * 1024 * 1024
+
+
+def encode_preview(image):
+    # Lossy WebP (q90) is ~5x smaller than PNG for these flattened previews; originals and print files stay PNG.
+    output = io.BytesIO()
+    image.convert('RGB').save(output, 'WEBP', quality=90, method=4)
+    return output.getvalue()
 
 
 def render(data, mark, size, already_watermarked=False):
@@ -20,9 +27,7 @@ def render(data, mark, size, already_watermarked=False):
         canvas = Image.new('RGBA', source.size, 'white')
         canvas.alpha_composite(source)
     if already_watermarked:
-        output = io.BytesIO()
-        canvas.convert('RGB').save(output, 'PNG')
-        return output.getvalue()
+        return encode_preview(canvas)
     font_size = max(14, min(32, size // 14))
     font = watermark_font(mark, font_size)
     # Wrap long content into a tile bounded to the image width, repeating all lines.
@@ -46,9 +51,7 @@ def render(data, mark, size, already_watermarked=False):
     for row, y in enumerate(range(-tile.height//2, canvas.height, step_y)):
         for x in range(-tile.width//2 - (row % 2)*step_x//2, canvas.width, step_x):
             layer.alpha_composite(tile, (x, y))
-    output = io.BytesIO()
-    Image.alpha_composite(canvas, layer).convert('RGB').save(output, 'PNG')
-    return output.getvalue()
+    return encode_preview(Image.alpha_composite(canvas, layer))
 
 
 def register_guest_media(app, db, user):
@@ -80,7 +83,8 @@ def register_guest_media(app, db, user):
 
     def media(order_id, asset_id, request, v, size, is_guest):
         size = max(160, min(1024, size))
-        with db.transaction() as tx:
+
+        def prepare(tx):
             order, asset = authorized(tx, request, order_id, asset_id, v, is_guest)
             already_watermarked = (asset['id'] == order.get('overview_id')
                                    and order.get('overview_ready')
@@ -93,7 +97,9 @@ def register_guest_media(app, db, user):
                 if rendered is not None:
                     _cache.move_to_end(key)
             # Read the original only when this derivative must be rendered.
-            data = asset_bytes(db, asset) if rendered is None else None
+            return key, mark, already_watermarked, rendered, asset_bytes(db, asset) if rendered is None else None
+
+        key, mark, already_watermarked, rendered, data = db.read(prepare)
         if rendered is None:
             try:
                 rendered = render(data, mark, size, already_watermarked)
@@ -104,9 +110,8 @@ def register_guest_media(app, db, user):
                 while sum(len(x) for x in _cache.values()) > _CACHE_BYTES:
                     _cache.popitem(last=False)
         # Cancellation/watermark replacement during rendering must invalidate this response.
-        with db.transaction() as tx:
-            authorized(tx, request, order_id, asset_id, v, is_guest)
-            return Response(rendered, media_type='image/png', headers={'Cache-Control': 'no-store', 'Content-Disposition': 'inline'})
+        db.read(lambda tx: authorized(tx, request, order_id, asset_id, v, is_guest))
+        return Response(rendered, media_type='image/webp', headers={'Cache-Control': 'no-store', 'Content-Disposition': 'inline'})
 
     @app.get('/api/guest/media/{order_id}/{asset_id}')
     def guest_image(order_id: str, asset_id: str, request: Request, v: int, size: int = 640):

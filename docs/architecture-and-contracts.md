@@ -28,6 +28,8 @@
 
 高频查询不要再用 `tx.all(kind)` 全表解析后过滤：`Database` 启动时为 `INDEXED_FIELDS`（`status`、`remote_reserved`、`state`、`workflow_version`、`order_id`、`order_number`、`guest_order_id`、`customer_order_id`）建立 `(kind, json_extract(doc,'$.字段'))` 表达式索引，使用 `tx.where(kind, 字段, 值...)`、`tx.find(kind, (SQL条件, 参数)...)` 和 `tx.count(kind)`。它们按 rowid 返回与 `all()` 相同的顺序；SQL 只做超集预筛，调用处保留原来的 Python 精确判断。索引不改变文档，旧代码会忽略它们。Worker 与 Agiso worker 的调度、访客登录、上传查重、访客媒体授权都依赖这些索引。
 
+只读请求使用 `db.read(fn)`：先以普通 `BEGIN` 读取快照，不等待写锁；`fn` 一旦调用 `put`/`delete` 就抛出 `NeedsWrite`（写入前），随后在原来的 `BEGIN IMMEDIATE` 事务里整体重跑。`fn` 除数据库外不得有副作用，因为它可能执行两次。订单列表/详情、访客订单/图库/媒体、`auth/me`、`auth/status`、图库和分类的 GET 使用它；`dto()` 的 `reconcile` 需要写入时会自动回退。`Database` 另持有一个空闲连接，使每个事务连接关闭时不再触发 checkpoint 和 WAL 删除，因此运行中数据目录会一直存在 `studio.sqlite3-wal`/`-shm`；备份仍须在停服后复制整个数据目录，不能只拷主库文件。
+
 ## 权限和隐私
 
 - `superadmin` 管组织、全站设置与统计；独立超管可以不属于组织，因此不一定有组织工作台。`org_admin` 管本组织成员、图库授权与账号并发；`staff` 在组织内协作。服务器仍需对每个资源校验组织和角色。
@@ -75,6 +77,7 @@
 - 新任务免积分门槛，但历史账本、实际生图记录及旧请求占用保留。全站 `max_inflight` 默认 2（1–40）和账号并发同时约束；访客任务计入开户账号。没有旧 RPM 门槛。
 - 请求 ID 和队列 URL 持久化；超时或下载失败优先查原请求，不重新提交。无 ID 的未知提交也保留占用，人工核对后再确认结束。不要通过清空队列、改状态或重置租约绕过重复计费保护。
 - 原始付费结果先保留，再做可选 Yezi 抠图；抠图有独立凭证和并发/速率控制。存在原图时用“仅重试后处理”，不能误当作重新生图。生产没有 mock 开关，测试通过显式 provider/transport 注入。
+- 访客媒体（含后台订单弹窗里的水印预览）以 WebP q90 输出（`guest_media.PIPELINE` 为缓存版本），原图、打印文件、下载和 ZIP 仍为 PNG。
 - 水印分单张预览、访客媒体、已生成总览等路径；水印强度和缓存版本改变要分别核对，避免给已经带水印的总览再次叠加。原图与打印文件不能带预览水印。
 - 默认打印 A4、300 DPI、内容长边 85mm、边距/间距 10mm；亮度与色彩预设默认关闭。透明通道、预乘 alpha 缩放和不可变原图需要保留。
 - v3 打印标题为订单号加卖家备注（打印最多 60 字）。`platform_remark`、买家留言 `buyer_memo`、内部备注 `notes` 各有用途；修改已提交订单的卖家备注会重新排版，下载目录仍按 `订单号_内部备注` 规则。

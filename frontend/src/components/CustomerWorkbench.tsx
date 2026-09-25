@@ -7,6 +7,7 @@ import { guestUpload } from '../lib/guest-upload'
 import { guestApi, canApplySelection, OrderMutations, quantityIds, selectionCounts, selectionQuantityLimit, selectionError, slotBusy, stateLabels, submissionError } from '../lib/customer-orders'
 import type { AvatarChoice, CustomerLibrary, CustomerSlot, GuestOrder, Preflight } from '../lib/customer-orders'
 import { Empty, Modal, Spinner, Status } from './UI'
+import { visiblePolling } from '../lib/polling'
 import '../pages/CustomerOrders.css'
 
 type DraftAvatar=AvatarChoice&{name:string;preview_url:string}
@@ -25,8 +26,8 @@ export function CustomerWorkbench({initial,mode,library,onChange,onBack}:{initia
     const controller=new AbortController();session.current=controller
     let fetching=false
     const poll=async()=>{if(fetching||lock.current)return;fetching=true;try{await refresh()}catch(e){if(!controller.signal.aborted)setError((e as Error).message)}finally{fetching=false}}
-    const timer=setInterval(()=>void poll(),2500)
-    return()=>{clearInterval(timer);controller.abort()}
+    const stop=visiblePolling(()=>void poll(),2500)
+    return()=>{stop();controller.abort()}
   },[base,mode])
   useEffect(()=>{if(initial.state==='cancelled'&&order.state!=='cancelled'||(initial.version??0)>(order.version??0))accept(initial)},[initial,order.version])
   useEffect(()=>{

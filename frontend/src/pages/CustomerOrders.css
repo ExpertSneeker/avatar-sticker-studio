@@ -12,3 +12,4 @@
 .customer-selection-badge-wrap{position:sticky;top:0;z-index:8;display:flex;justify-content:flex-start;padding:8px 0;pointer-events:none}
 .customer-selection-badge{display:inline-flex;align-items:center;padding:7px 14px;border-radius:999px;background:#16161c;color:#fff;font-size:13px;font-weight:600;box-shadow:0 6px 20px #16161c33}
 @media(max-width:720px){.customer-selection-badge-wrap{justify-content:center}}
+.customer-order-more{display:flex;margin:14px auto 0}

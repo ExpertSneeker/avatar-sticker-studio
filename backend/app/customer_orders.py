@@ -338,12 +338,14 @@ def register_customer_orders(app, db, user):
     @app.get('/api/customer-orders')
     def list_orders(request: Request, state: str | None = None, owner: str | None = None, order_number: str | None = None,
                     date_from: str | None = None, date_to: str | None = None, summary: bool = False):
-        with db.transaction() as tx:
+        def read(tx):
             actor = user(tx, request)
             orders = [o for o in tx.all('orders') if o.get('workflow_version') == 3 and scoped(o, actor)]
             return [dto(tx, o, summary=summary) for o in reversed(orders) if (not state or o['state'] == state) and (not owner or o['owner'] == owner)
                     and (not order_number or order_number in o['order_number']) and (not date_from or o['created_at'][:10] >= date_from)
                     and (not date_to or o['created_at'][:10] <= date_to)]
+        # Reconciliation may need to write; db.read() then reruns this in a write transaction.
+        return db.read(read)
 
     def watermarks(tx, actor, ids):
         if len(set(ids)) != len(ids):
@@ -390,9 +392,7 @@ def register_customer_orders(app, db, user):
 
     @app.get('/api/customer-orders/{id}')
     def get_order(id: str, request: Request):
-        with db.transaction() as tx:
-            order, _ = access(tx, request, id)
-            return dto(tx, order)
+        return db.read(lambda tx: dto(tx, access(tx, request, id)[0]))
 
     @app.post('/api/guest/login')
     def login(data: Login, request: Request, response: Response):
@@ -425,24 +425,25 @@ def register_customer_orders(app, db, user):
 
     @app.get('/api/guest/order')
     def current_order(request: Request):
-        with db.transaction() as tx:
-            return dto(tx, guest_order(tx, request, now()), True)
+        return db.read(lambda tx: dto(tx, guest_order(tx, request, now()), True))
 
     @app.get('/api/guest/library')
     def guest_library(request: Request):
-        with db.transaction() as tx:
-            order = guest_order(tx, request, now())
-            if order['state'] not in {'draft', 'review'}:
-                raise HTTPException(409, '当前订单不能浏览图库')
-            stickers, templates = library_records(tx, order)
-            def image(s):
-                url = media_url(order, s['image']['id'])
-                return {'id': s['image']['id'], 'code': s['code'], 'url': url, 'preview_url': url}
-            by_id = {s['id']: s for s in stickers}
-            return {'stickers': [{**{k:s.get(k, '') for k in ('id', 'code', 'name', 'category', 'revision')}, 'image': image(s), 'preview_url': image(s)['url']} for s in stickers],
-                    'templates': [{**{k:t.get(k, '') for k in ('id', 'code', 'name', 'category')}, 'sticker_ids': t['sticker_ids'],
-                                   'images': [image(by_id[s]) for s in t['sticker_ids'] if s in by_id],
-                                   'preview_url': image(by_id[t['sticker_ids'][0]])['url'] if t['sticker_ids'] and t['sticker_ids'][0] in by_id else None} for t in templates]}
+        return db.read(lambda tx: library_view(tx, request))
+
+    def library_view(tx, request):
+        order = guest_order(tx, request, now())
+        if order['state'] not in {'draft', 'review'}:
+            raise HTTPException(409, '当前订单不能浏览图库')
+        stickers, templates = library_records(tx, order)
+        def image(s):
+            url = media_url(order, s['image']['id'])
+            return {'id': s['image']['id'], 'code': s['code'], 'url': url, 'preview_url': url}
+        by_id = {s['id']: s for s in stickers}
+        return {'stickers': [{**{k:s.get(k, '') for k in ('id', 'code', 'name', 'category', 'revision')}, 'image': image(s), 'preview_url': image(s)['url']} for s in stickers],
+                'templates': [{**{k:t.get(k, '') for k in ('id', 'code', 'name', 'category')}, 'sticker_ids': t['sticker_ids'],
+                               'images': [image(by_id[s]) for s in t['sticker_ids'] if s in by_id],
+                               'preview_url': image(by_id[t['sticker_ids'][0]])['url'] if t['sticker_ids'] and t['sticker_ids'][0] in by_id else None} for t in templates]}
 
     def mutate(request, data, action, id=None, guest=False, slot_id=None):
         with db.transaction() as tx:

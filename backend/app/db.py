@@ -2,6 +2,7 @@
 import json
 import os
 import sqlite3
+import weakref
 from contextlib import contextmanager
 from pathlib import Path
 from uuid import uuid4
@@ -17,9 +18,13 @@ def uid():
     return uuid4().hex
 
 
+class NeedsWrite(BaseException):
+    """A read-only attempt reached a write before touching the database; Database.read() reruns it."""
+
+
 class Transaction:
-    def __init__(self, conn):
-        self.conn = conn
+    def __init__(self, conn, readonly=False):
+        self.conn, self.readonly = conn, readonly
 
     def get(self, kind, id):
         row = self.conn.execute('SELECT doc FROM records WHERE kind=? AND id=?', (kind, id)).fetchone()
@@ -45,6 +50,8 @@ class Transaction:
         return self.conn.execute('SELECT COUNT(*) FROM records WHERE kind=?', (kind,)).fetchone()[0]
 
     def put(self, kind, doc):
+        if self.readonly:
+            raise NeedsWrite()
         if kind in {'orders','items','uploads','assets','generations','templates','template_revisions','stickers','sticker_revisions'} and 'organization_id' not in doc:
             parent = self.get('orders', doc.get('order_id','')) or self.get('users', doc.get('owner',''))
             if parent and parent.get('organization_id'):
@@ -53,6 +60,8 @@ class Transaction:
         return doc
 
     def delete(self, kind, id):
+        if self.readonly:
+            raise NeedsWrite()
         self.conn.execute('DELETE FROM records WHERE kind=? AND id=?', (kind, id))
 
 
@@ -108,18 +117,39 @@ class Database:
             from .organizations import migrate_organizations
             migrate_organizations(tx)
         os.chmod(self.path, 0o600)
+        # An idle connection keeps the WAL open, so closing each per-transaction connection is
+        # no longer "last close" (checkpoint, fsync and WAL deletion on every transaction).
+        # It never starts a transaction; SQLite's automatic checkpoints continue as usual.
+        anchor = sqlite3.connect(self.path, timeout=30, check_same_thread=False)
+        anchor.execute('SELECT 1 FROM records LIMIT 1').fetchall()
+        self._anchor = weakref.finalize(self, anchor.close)
+
+    def close(self):
+        self._anchor()
 
     @contextmanager
-    def transaction(self):
+    def transaction(self, readonly=False):
+        """Write transactions take the lock up front; readonly ones read a snapshot without blocking writers."""
         conn = sqlite3.connect(self.path, timeout=30)
         try:
             conn.execute('PRAGMA journal_mode=WAL')
             conn.execute('PRAGMA busy_timeout=30000')
-            conn.execute('BEGIN IMMEDIATE')
-            yield Transaction(conn)
+            conn.execute('BEGIN' if readonly else 'BEGIN IMMEDIATE')
+            yield Transaction(conn, readonly)
             conn.commit()
         except BaseException:
             conn.rollback()
             raise
         finally:
             conn.close()
+
+    def read(self, fn):
+        """Run fn(tx) as a read-only snapshot; if it needs to write, rerun it in a normal write transaction.
+
+        fn must have no side effects other than database access (it may run twice)."""
+        try:
+            with self.transaction(readonly=True) as tx:
+                return fn(tx)
+        except NeedsWrite:
+            with self.transaction() as tx:
+                return fn(tx)

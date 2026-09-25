@@ -28,9 +28,10 @@ def resolve_category(tx, value, actor=None):
 def register_categories(app, db, user):
     @app.get('/api/library/categories')
     def categories(request: Request):
-        with db.transaction() as tx:
+        def read(tx):
             actor=user(tx,request)
             return [c for c in tx.all('library_categories') if same_organization(c,actor)]
+        return db.read(read)
 
     def write(data, request, id=None):
         with db.transaction() as tx:

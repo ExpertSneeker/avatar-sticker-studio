@@ -491,7 +491,7 @@ def test_cancel_while_waiting_for_cutout_capacity_never_sends_request(context,mo
 
 
 def test_submitted_overview_has_only_one_watermark(context):
-    from PIL import Image, ImageChops
+    from PIL import Image, ImageChops, ImageStat
     from backend.app.storage import asset_bytes
     app,c,_,_=context
     o=generate(c,opened(c),sticker(c,'ONE')['id']); run(app)
@@ -505,7 +505,11 @@ def test_submitted_overview_has_only_one_watermark(context):
     with app.state.db.transaction() as tx:
         order=tx.get('orders',o['id'])
         data=asset_bytes(app.state.db,tx.get('assets',order['overview_id']))
+    from backend.app.guest_media import render
+    # The overview already carries its watermark: the guest copy is only flattened, never watermarked twice.
+    assert response.headers['content-type']=='image/webp'
+    assert response.content==render(data,order['watermark'],640,True)!=render(data,order['watermark'],640,False)
     expected=Image.open(io.BytesIO(data)).convert('RGB')
     expected.thumbnail((640,640),Image.Resampling.LANCZOS)
     actual=Image.open(io.BytesIO(response.content)).convert('RGB')
-    assert ImageChops.difference(actual,expected).getbbox() is None
+    assert actual.size==expected.size and max(ImageStat.Stat(ImageChops.difference(actual,expected)).mean)<4

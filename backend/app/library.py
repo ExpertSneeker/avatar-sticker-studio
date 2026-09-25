@@ -87,9 +87,10 @@ def register_library(app, db, user):
 
     @app.get('/api/stickers')
     def stickers(request: Request):
-        with db.transaction() as tx:
+        def read(tx):
             actor=user(tx,request)
             return [sticker_public(s,actor) for s in tx.all('stickers') if same_organization(s,actor) and not s.get('deleted') and (s['active'] or can_edit_library(actor))]
+        return db.read(read)
 
     async def write_stickers(request,id=None):
         with db.transaction() as tx:
@@ -159,9 +160,10 @@ def register_library(app, db, user):
 
     @app.get('/api/templates')
     def templates(request: Request):
-        with db.transaction() as tx:
+        def read(tx):
             actor=user(tx,request)
             return [template_public(tx,t,actor) for t in tx.all('templates') if same_organization(t,actor) and not t.get('deleted') and (t['active'] or can_edit_library(actor))]
+        return db.read(read)
 
     def write_template(data,request,id=None):
         with db.transaction() as tx:
