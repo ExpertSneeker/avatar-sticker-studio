@@ -35,9 +35,12 @@ test('staff opens order; guest uploads two avatars, repeats choices, compares re
     await guest.getByRole('button',{name:'选择模板和贴纸'}).nth(1).click();picker=guest.getByRole('dialog',{name:'选择模板和贴纸'})
     await picker.getByRole('button',{name:'单张贴纸',exact:true}).click();await picker.getByLabel('搜索模板或贴纸').fill('GUEST-A');await picker.getByLabel('GUEST-A 份数').fill('2');await picker.getByRole('button',{name:'应用选择'}).click()
     await expect(guest.locator('.customer-submit-bar')).toContainText('已选 4 张')
+    // Duplicates of one avatar share the first generation: 4 selections need only 3 generations.
+    await expect(guest.locator('.customer-submit-bar')).toContainText('实际生成 3 张')
     await guest.getByRole('button',{name:'核对并开始生成'}).click()
     const preflight=guest.getByRole('dialog',{name:'生成前核对'})
-    await expect(preflight.locator('.customer-counts strong')).toHaveText(['2','4','3'])
+    // Preflight shows avatars, preview selections and the final submission allowance (可最终提交).
+    await expect(preflight.locator('.customer-counts strong')).toHaveText(['2','4','2'])
     await preflight.getByRole('button',{name:'确认开始生成'}).click()
     await expect(guest.locator('.customer-result')).toHaveCount(4)
     await expect(guest.locator('.customer-result-image img')).toHaveCount(4,{timeout:60000})
