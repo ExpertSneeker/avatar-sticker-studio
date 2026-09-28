@@ -1,5 +1,6 @@
 import { ApiError, post } from './api'
 import type { PrintSettings, Sticker, TemplateSet } from './types'
+import type { LibraryCategory } from './categories'
 
 export type OrderState = 'draft' | 'review' | 'submitted' | 'cancelled'
 export interface CustomerVersion { id:string; preview_url:string }
@@ -24,16 +25,24 @@ export interface CustomerOrder extends GuestOrder {
   buyer_memo?:string; platform_remark?:string
 }
 export interface LibrarySticker {id:string;code:string;name:string;category:string;revision:number;preview_url:string;active?:boolean}
-export interface LibraryTemplate {id:string;code:string;name:string;category:string;sticker_ids:string[];images:{preview_url:string}[];active?:boolean;available?:boolean}
-export interface CustomerLibrary {stickers:LibrarySticker[];templates:LibraryTemplate[]}
+export interface LibraryTemplate {id:string;code:string;name:string;category:string;sticker_ids:string[];images:{preview_url:string;code?:string}[];active?:boolean;available?:boolean}
+export interface CustomerLibrary {stickers:LibrarySticker[];templates:LibraryTemplate[];categories?:LibraryCategory[]}
 export interface AvatarChoice {upload_id:string;template_ids:string[];sticker_ids:string[]}
 export interface Preflight {avatar_count:number;selection_count:number;generation_count:number}
 export const stateLabels:Record<OrderState,string> = {draft:'待制作',review:'选图中',submitted:'已提交',cancelled:'已取消'}
 export const roleLabel=(role:string)=>({superadmin:'超级管理员',org_admin:'组织管理员',staff:'成员'}[role]||role)
 export const isAdmin=(role:string)=>role==='superadmin'||role==='org_admin'
 
-export function staffLibrary(stickers:Sticker[],templates:TemplateSet[]):CustomerLibrary {
-  return {stickers:stickers.map(s=>({...s,preview_url:s.image.url})),templates:templates.map(t=>({...t,sticker_ids:t.sticker_ids||t.images.map(i=>i.sticker_id||'').filter(Boolean),images:t.images.map(i=>({preview_url:i.url}))}))}
+export function staffLibrary(stickers:Sticker[],templates:TemplateSet[],categories:LibraryCategory[]=[]):CustomerLibrary {
+  return {categories,stickers:stickers.map(s=>({...s,preview_url:s.image.url})),templates:templates.map(t=>({...t,sticker_ids:t.sticker_ids||t.images.map(i=>i.sticker_id||'').filter(Boolean),images:t.images.map(i=>({preview_url:i.url,code:i.code}))}))}
+}
+// Enlarged view: guest/staff watermarked media accept a size (max 1024); staff originals are already full size.
+export const zoomUrl=(url:string)=>/[?&]v=\d+/.test(url)?url.replace(/&size=\d+/,'')+'&size=1024':url
+// Category filter options: every organization category (in library order) plus any unknown id in use.
+export function categoryOptions(categories:LibraryCategory[],items:{category:string}[]){
+  const known=new Set(categories.map(c=>c.id))
+  const extra=Array.from(new Set(items.map(i=>i.category).filter(id=>id&&!known.has(id)))).map(id=>({id,name:id}))
+  return [...categories,...extra].map(c=>({...c,count:items.filter(i=>i.category===c.id).length}))
 }
 export function quantityIds(ids:string[],id:string,quantity:number,max=360):string[] {
   const count=Math.max(0,Math.min(max,Number.isFinite(quantity)?Math.floor(quantity):0))

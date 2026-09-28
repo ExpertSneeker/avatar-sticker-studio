@@ -197,3 +197,17 @@ def test_migration_releases_matching_current_terminal_request_once(tmp_path):
         assert tx.get('generations','known')['status']=='released'
         assert tx.get('users','owner')['credits']=={'available':1,'frozen':0,'spent':0,'version':1}
         assert [entry['event'] for entry in tx.all('credit_ledger')]==['release']
+
+
+def test_guest_library_lists_only_own_organization_categories(orgs):
+    app,root,one,two,_=orgs
+    custom=one.post('/api/library/categories',json={'name':'节日'}).json()
+    two.post('/api/library/categories',json={'name':'别家分类'})
+    order=one.post('/api/customer-orders',json={'order_number':'CAT-ORDER','generation_limit':2,'final_count':1,'rerun_limit':0,'client_token':'cat'}).json()
+    with TestClient(app) as guest:
+        assert guest.post('/api/guest/login',json={'order_number':order['order_number']}).status_code==200
+        categories=guest.get('/api/guest/library').json()['categories']
+    staff=one.get('/api/library/categories').json()
+    assert categories==[{'id':c['id'],'name':c['name']} for c in staff]
+    assert {'男孩','女孩','动物','通用','节日'}=={c['name'] for c in categories} and custom['id'] in {c['id'] for c in categories}
+    assert '别家分类' not in {c['name'] for c in categories}

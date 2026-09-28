@@ -104,3 +104,16 @@ it('sanitizes folder names without changing raw notes and caps UTF-8 length',()=
   expect(input.notes).toContain('../坏:名称')
   expect(orderFolderName({order_number:'N',notes:''})).toBe('N')
 })
+describe('picker categories and zoom',()=>{
+  it('lists every organization category with counts, plus unknown ids in use',async()=>{
+    const {categoryOptions}=await import('../src/lib/customer-orders')
+    const options=categoryOptions([{id:'boy',name:'男孩'},{id:'general',name:'通用'}],[{category:'general'},{category:'general'},{category:'legacy'}])
+    expect(options).toEqual([{id:'boy',name:'男孩',count:0},{id:'general',name:'通用',count:2},{id:'legacy',name:'legacy',count:1}])
+  })
+  it('requests a larger watermarked derivative only for versioned media URLs',async()=>{
+    const {zoomUrl}=await import('../src/lib/customer-orders')
+    expect(zoomUrl('/api/guest/media/o/a?v=3')).toBe('/api/guest/media/o/a?v=3&size=1024')
+    expect(zoomUrl('/api/guest/media/o/a?v=3&size=160')).toBe('/api/guest/media/o/a?v=3&size=1024')
+    expect(zoomUrl('/api/assets/'+'a'.repeat(32))).toBe('/api/assets/'+'a'.repeat(32))
+  })
+})

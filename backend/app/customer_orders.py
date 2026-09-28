@@ -440,7 +440,10 @@ def register_customer_orders(app, db, user):
             url = media_url(order, s['image']['id'])
             return {'id': s['image']['id'], 'code': s['code'], 'url': url, 'preview_url': url}
         by_id = {s['id']: s for s in stickers}
-        return {'stickers': [{**{k:s.get(k, '') for k in ('id', 'code', 'name', 'category', 'revision')}, 'image': image(s), 'preview_url': image(s)['url']} for s in stickers],
+        # Category names for the picker filter; ids match the sticker/template `category` field.
+        categories = [{'id': c['id'], 'name': c['name']} for c in tx.all('library_categories') if c.get('organization_id') == order['organization_id']]
+        return {'categories': categories,
+                'stickers': [{**{k:s.get(k, '') for k in ('id', 'code', 'name', 'category', 'revision')}, 'image': image(s), 'preview_url': image(s)['url']} for s in stickers],
                 'templates': [{**{k:t.get(k, '') for k in ('id', 'code', 'name', 'category')}, 'sticker_ids': t['sticker_ids'],
                                'images': [image(by_id[s]) for s in t['sticker_ids'] if s in by_id],
                                'preview_url': image(by_id[t['sticker_ids'][0]])['url'] if t['sticker_ids'] and t['sticker_ids'][0] in by_id else None} for t in templates]}

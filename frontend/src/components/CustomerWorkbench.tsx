@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
-import { ArrowLeft, Check, ImagePlus, Minus, Plus, RefreshCw, Trash2 } from 'lucide-react'
+import { ArrowLeft, Check, ImagePlus, Minus, Plus, RefreshCw, Trash2, ZoomIn } from 'lucide-react'
 import { api } from '../lib/api'
 import { searchMatcher } from '../lib/search'
 import { uploadFile } from '../lib/upload'
 import { guestUpload } from '../lib/guest-upload'
-import { guestApi, canApplySelection, OrderMutations, quantityIds, selectionCounts, selectionQuantityLimit, selectionError, slotBusy, stateLabels, submissionError } from '../lib/customer-orders'
-import type { AvatarChoice, CustomerLibrary, CustomerSlot, GuestOrder, Preflight } from '../lib/customer-orders'
+import { guestApi, canApplySelection, categoryOptions, zoomUrl, OrderMutations, quantityIds, selectionCounts, selectionQuantityLimit, selectionError, slotBusy, stateLabels, submissionError } from '../lib/customer-orders'
+import type { AvatarChoice, CustomerLibrary, CustomerSlot, GuestOrder, LibraryTemplate, Preflight } from '../lib/customer-orders'
 import { Empty, Modal, Spinner, Status } from './UI'
 import { visiblePolling } from '../lib/polling'
 import '../pages/CustomerOrders.css'
@@ -105,10 +105,13 @@ function SelectionSummary({count,max,finalCount}:{count:number;max:number;finalC
 function SelectionPicker({library,avatar,others,max,finalCount,onClose,onSave}:{library:CustomerLibrary;avatar:DraftAvatar;others:AvatarChoice[];max:number;finalCount:number;onClose:()=>void;onSave:(value:AvatarChoice)=>void}){
   const [choice,setChoice]=useState<AvatarChoice>({upload_id:avatar.upload_id,template_ids:avatar.template_ids,sticker_ids:avatar.sticker_ids})
   const [tab,setTab]=useState('templates'),[search,setSearch]=useState(''),[category,setCategory]=useState('all')
+  const [zoom,setZoom]=useState<{title:string;url:string}|null>(null),[setView,setSetView]=useState<LibraryTemplate|null>(null)
   const source=tab==='templates'?library.templates:library.stickers
   const kind=tab==='templates'?'template_ids':'sticker_ids'
   const matches=searchMatcher(search)
-  const filtered=source.filter(s=>s.active!==false&&(!('available' in s)||s.available!==false)&&(category==='all'||s.category===category)&&matches(`${s.name} ${s.code}`))
+  const usable=source.filter(s=>s.active!==false&&(!('available' in s)||s.available!==false))
+  const filtered=usable.filter(s=>(category==='all'||s.category===category)&&matches(`${s.name} ${s.code}`))
+  const categories=categoryOptions(library.categories||[],usable)
   const counts=selectionCounts([choice],library),otherCount=selectionCounts(others,library).selection_count,total=otherCount+counts.selection_count
   function changeQuantity(id:string,value:number){
     setChoice(previous=>{
@@ -122,12 +125,15 @@ function SelectionPicker({library,avatar,others,max,finalCount,onClose,onSave}:{
     <SelectionSummary count={total} max={max} finalCount={finalCount}/>
     <p className="hint">本头像已选 {counts.selection_count} 张 · 其他头像已选 {otherCount} 张。模板按包含的贴纸张数计算，重复选择同样占用份数。</p>
     <div className="tabs"><button className={tab==='templates'?'active':''} onClick={()=>setTab('templates')}>模板套装</button><button className={tab==='stickers'?'active':''} onClick={()=>setTab('stickers')}>单张贴纸</button></div>
-    <div className="customer-picker-filters"><input aria-label="搜索模板或贴纸" placeholder="搜索名称或编号" value={search} onChange={e=>setSearch(e.target.value)}/><select aria-label="贴纸分类" value={category} onChange={e=>setCategory(e.target.value)}><option value="all">全部分类</option>{Array.from(new Set(source.map(s=>s.category))).map(value=><option key={value}>{value}</option>)}</select></div>
+    <div className="customer-picker-filters"><input aria-label="搜索模板或贴纸" placeholder="搜索名称或编号" value={search} onChange={e=>setSearch(e.target.value)}/><select aria-label="贴纸分类" value={category} onChange={e=>setCategory(e.target.value)}><option value="all">全部分类（{usable.length}）</option>{categories.map(option=><option key={option.id} value={option.id} disabled={!option.count&&option.id!==category}>{option.name}（{option.count}）</option>)}</select></div>
     {filtered.length?<div className="customer-catalog">{filtered.map(entry=>{
       const amount=choice[kind].filter(id=>id===entry.id).length
       const limit=selectionQuantityLimit([...others,choice],library,choice.upload_id,kind,entry.id,max,total)
-      return <article key={entry.id} className={amount?'selected':''}><div className="customer-catalog-image">{'images' in entry?entry.images.slice(0,4).map((image,index)=><img key={index} src={image.preview_url} alt="" loading="lazy"/>):<img src={entry.preview_url} alt="" loading="lazy"/>}</div><strong>{entry.name}</strong><span>{entry.code}{'sticker_ids' in entry?` · ${entry.sticker_ids.length} 张 / 套`:''}</span><div className="customer-quantity-control"><span>份数</span><div><button type="button" className="icon-button" aria-label={`${entry.code} 减少份数`} disabled={amount===0} onClick={()=>changeQuantity(entry.id,amount-1)}><Minus size={14}/></button><input aria-label={`${entry.code} 份数`} type="number" min={0} max={limit} disabled={amount===0&&limit===0} value={amount} onChange={e=>changeQuantity(entry.id,Number(e.target.value))}/><button type="button" className="icon-button" aria-label={`${entry.code} 增加份数`} disabled={amount>=limit} onClick={()=>changeQuantity(entry.id,amount+1)}><Plus size={14}/></button></div></div></article>
+      const title=entry.name+(entry.code!==entry.name?' · '+entry.code:''),meta=[entry.code!==entry.name?entry.code:'','sticker_ids' in entry?`${entry.sticker_ids.length} 张/套`:''].filter(Boolean).join(' · ')
+      return <article key={entry.id} className={amount?'selected':''}><div className="customer-catalog-image">{'images' in entry?entry.images.slice(0,4).map((image,index)=><img key={index} src={image.preview_url} alt="" loading="lazy"/>):<img src={entry.preview_url} alt="" loading="lazy"/>}<button type="button" className="customer-zoom-button" aria-label={`放大查看 ${entry.code}`} title={'images' in entry?'查看模板包含的贴纸':'放大查看'} onClick={()=>'images' in entry?setSetView(entry):setZoom({title,url:entry.preview_url})}><ZoomIn size={15}/></button></div><strong>{entry.name}</strong>{meta&&<span>{meta}</span>}<div className="customer-quantity-control"><div><button type="button" className="icon-button" aria-label={`${entry.code} 减少份数`} disabled={amount===0} onClick={()=>changeQuantity(entry.id,amount-1)}><Minus size={14}/></button><input aria-label={`${entry.code} 份数`} type="number" min={0} max={limit} disabled={amount===0&&limit===0} value={amount} onChange={e=>changeQuantity(entry.id,Number(e.target.value))}/><button type="button" className="icon-button" aria-label={`${entry.code} 增加份数`} disabled={amount>=limit} onClick={()=>changeQuantity(entry.id,amount+1)}><Plus size={14}/></button></div></div></article>
     })}</div>:<Empty title="没有匹配的模板或贴纸"/>}
+    {setView&&<Modal title={`${setView.name} · 共 ${setView.images.length} 张`} onClose={()=>setSetView(null)} wide><p className="hint">模板包含以下贴纸，点击可放大查看。</p><div className="customer-set-preview">{setView.images.map((image,index)=>{const label=image.code||`第 ${index+1} 张`;return <button type="button" key={index} aria-label={`放大查看 ${label}`} onClick={()=>setZoom({title:`${setView.name} · ${label}`,url:image.preview_url})}><img src={image.preview_url} alt="" loading="lazy"/><span>{label}</span></button>})}</div></Modal>}
+    {zoom&&<Modal title={zoom.title} onClose={()=>setZoom(null)} wide><div className="customer-zoom-image"><img src={zoomUrl(zoom.url)} alt={zoom.title}/></div></Modal>}
     <div className="modal-footer"><span>本头像 {counts.selection_count} 张 · 订单共 {total} / {max} 张</span><button className="button primary" disabled={!canApplySelection(otherCount+selectionCounts([avatar],library).selection_count,total,max)} onClick={()=>onSave(choice)}>应用选择</button></div>
   </Modal>
 }
