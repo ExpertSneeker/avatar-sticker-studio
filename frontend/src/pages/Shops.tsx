@@ -56,7 +56,7 @@ export function Shops() {
     {status && <section className="settings-section shop-config">
       <h3>{status.configured ? '接入服务已配置' : '尚未完成阿奇索应用配置'}</h3>
       <p>{status.configured ? '每家店铺独立授权。完成套餐配置、发送助手登录和测试后，再打开自动开户。' : '请由网站管理员完成开放平台应用和服务器配置，之后即可连接店铺。'}</p>
-      <p className="hint">实体贴纸仍在寄件时填写物流。这里只发送选图入口，不会提前标记已发货。{!status.aftersales_enabled && ' 自动售后尚未启用，须先核实真实退款通知。'}</p>
+      <p className="hint">实体贴纸仍在寄件时填写物流。选图入口由阿奇索自动发货平台发送，网站不再重复发送，也不会提前标记已发货。{!status.aftersales_enabled && ' 自动售后尚未启用，须先核实真实退款通知。'}</p>
       <details><summary>接入配置详情</summary><dl>{status.missing.length > 0 && <><dt>待配置项目</dt><dd><code>{status.missing.join('、')}</code></dd></>}{status.authorization_callback_url && <><dt>店铺授权回调</dt><dd><code>{status.authorization_callback_url}</code></dd></>}{status.webhook_url && <><dt>订单通知地址</dt><dd><code>{status.webhook_url}</code></dd></>}</dl><a href="https://www.yuque.com/agiso/open/owplxcrlyxpzw1cq" target="_blank" rel="noreferrer">查看阿奇索授权说明</a></details>
     </section>}
     {loading ? <div className="shop-empty"><Spinner/>正在读取店铺</div> : !shops.length ? <div className="settings-section shop-empty"><Store size={28}/><h3>还没有连接店铺</h3><p>连接店铺后，按真实商品和规格配置生成、提交及重做额度。</p></div> :

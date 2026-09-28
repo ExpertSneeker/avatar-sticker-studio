@@ -146,13 +146,9 @@ def register_agiso(app,db,user):
             return {'available':True,'goods':rows,'total':data['total_count'],'page':page,'message':''}
         except Exception:return failure
 
-    def retryable(tx,link,shop):
-        job=tx.get('agiso_outbox',link['id']);order=tx.get('orders',link.get('customer_order_id') or '')
-        return bool(job and job['status']=='failed' and job.get('retry_safe') and link['send_attempts']<5 and executable(tx,shop,now()) and order_allowed(tx,order) and not link.get('holds'))
-
     def order_dto(tx,link,shop,actor):
         row={k:link.get(k) for k in ('id','order_number','customer_order_id','open_status','message_status','guest_url','error','created_at','entered_at')}
-        row['can_retry']=can_manage(actor,shop) and retryable(tx,link,shop)
+        row['can_retry']=False
         if link['message_status']=='pending':
             reason='shop_disabled' if not shop['enabled'] else 'authorization_expired' if shop.get('expires_at',0)<=now() else 'account_disabled' if not account_active(tx,shop) else 'aftersales_pending' if link.get('holds') else None
             if reason:row.update(message_status='blocked',error=reason)
@@ -169,10 +165,7 @@ def register_agiso(app,db,user):
         with db.transaction() as tx:
             _,shop=scoped(tx,request,id,True);link=tx.get('agiso_orders',order_id)
             if not link or link['shop_id']!=id:raise HTTPException(404,'记录不存在')
-            if not retryable(tx,link,shop):raise HTTPException(409,'当前消息不能重试，请人工核对')
-            job=tx.get('agiso_outbox',order_id);job.update(status='pending',next_at=now())
-            link.update(message_status='pending');tx.put('agiso_outbox',job);tx.put('agiso_orders',link)
-        return {'ok':True}
+            raise HTTPException(409,'网站消息发送已停用，请在阿奇索自动发货平台处理')
 
     def replayable(event,shop):
         return bool(shop['enabled'] and event['status']=='manual' and event.get('error') in {'unmapped_sku','conflicting_rules','quota_exceeded'})

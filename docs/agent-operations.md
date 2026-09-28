@@ -261,7 +261,7 @@ curl --noproxy '*' --fail --silent --show-error http://127.0.0.1:8001/api/ready
 | 已有 raw_result，后处理失败 | 优先“重新处理”；不再次 FAL 生图，但原图不透明且配置 Yezi 时仍可能调用付费抠图。 | 宣称所有 reprocess 都完全免费，或直接“重做”一张。 |
 | 仅拼版/水印错误 | 从已保存成品恢复排版/水印，检查中文字体和版式；使用 mock 回归验证。 | 为布局故障重跑生图，丢弃旧版本或原图。 |
 | Agiso 未配置/授权失败/商品选择失败 | 本地用 [test_agiso.py](../backend/tests/test_agiso.py) 的 MockTransport；真实权限、余额和助手状态交给授权操作者。 | 以“查询商品”当零费用探针：真实 `Goods/List` 是外部调用；也不能重复授权/发消息验证健康。 |
-| Agiso message unknown | 保留持久记录，核对真实送达后再决定；[agiso_worker.py](../backend/app/agiso_worker.py) 对不确定发送不自动补发。 | 直接重置 outbox、重放所有 webhook 或点击重试碰运气。 |
+| Agiso message unknown | 网站消息发送已停用，保留持久记录且不重放旧队列；第一条消息送达需在阿奇索自动发货平台核对。 | 直接重置 outbox、重放所有 webhook 或点击重试碰运气。 |
 | E2E 登录/请求 403/连接失败 | 端口占用、前端代理、硬编码 baseURL、Cookie secure、setup 和 origin，确认仍是独立 mock 库。 | 改 `reuseExistingServer` 为 true、放宽生产权限、结束别人的进程。 |
 
 旧订单的 [main.py 恢复接口](../backend/app/main.py) 与客户订单的 [customer_orders.py](../backend/app/customer_orders.py) 路径、状态限制和幂等参数不同；不要互抄 curl。重新生成/首次失败 retry 可能新增付费请求；resolve 是操作者确认，不会替操作者查询事实。保持 client token 和 expected version 的语义，不能为绕过冲突随意更换 token。

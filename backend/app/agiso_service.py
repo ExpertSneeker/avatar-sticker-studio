@@ -39,7 +39,7 @@ def order_allowed(tx,order):
 
 def new_link(shop,tid,number,now):
     return {'id':integration_id(shop['id'],tid),'shop_id':shop['id'],'tid':tid,'order_number':number,'organization_id':shop['organization_id'],
-            'customer_order_id':None,'open_status':'pending','message_status':'pending','guest_url':None,'error':None,
+            'customer_order_id':None,'open_status':'pending','message_status':'disabled','guest_url':None,'error':None,
             'created_at':now,'entered_at':None,'send_attempts':0,'refunds':{}}
 
 
@@ -122,7 +122,6 @@ def apply_trade(tx,shop,payload,config,now):
                 tx.put('orders',order)
                 audit(tx,order,'agiso_open',owner['id'],now)
                 link.update(customer_order_id=order['id'],open_status='opened',error=None,guest_url=config['origin']+'/guest?'+urlencode({'order_number':payload['OrderSn']}))
-                tx.put('agiso_outbox',{'id':key,'integration_id':key,'shop_id':shop['id'],'status':'pending','attempts':0,'next_at':now,'lease_until':0})
     tx.put('agiso_orders',link)
     return link
 

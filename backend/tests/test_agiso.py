@@ -68,7 +68,7 @@ def test_exact_quotas_durable_duplicate_and_snapshot(configured,quota,count):
     assert len(c.get('/api/customer-orders').json())==1
     process(app)
     row=c.get('/api/agiso/shops/'+s['id']+'/orders').json()[0]
-    assert row['message_status']=='sent' and row['guest_url']=='https://studio.example/guest?order_number=ORDER-1'
+    assert row['message_status']=='disabled' and row['guest_url']=='https://studio.example/guest?order_number=ORDER-1'
     c.post('/api/guest/login',json={'order_number':'ORDER-1'})
     guest=c.get('/api/guest/order').json()
     assert 'shop_id' not in guest and 'shop_name' not in guest
@@ -102,17 +102,40 @@ def test_signatures_and_topic_cannot_reinterpret(configured):
     process(app);assert c.get('/api/customer-orders').json()==[]
 
 
-def test_unknown_send_and_crash_do_not_retry(configured):
+def test_opening_no_longer_enqueues_or_sends_messages(configured):
+    app,c,clock=configured;s=shop(configured)
+    requests=[]
+    app.state.agiso_worker.transport=httpx.MockTransport(lambda r: requests.append(r) or provider(r))
+    push(c,trade());process(app);process(app)
+    row=c.get('/api/agiso/shops/'+s['id']+'/orders').json()[0]
+    assert row['open_status']=='opened' and row['message_status']=='disabled'
+    assert not row['can_retry'] and requests==[]
+    with app.state.db.transaction() as tx: assert tx.all('agiso_outbox')==[]
+    assert c.post('/api/guest/login',json={'order_number':'ORDER-1'}).status_code==200
+
+
+@pytest.mark.parametrize('status',['pending','claimed','sending','unknown','failed','sent'])
+def test_legacy_messages_preserved_but_never_sent_or_retried(configured,status):
+    from backend.app.agiso_worker import AgisoWorker
     app,c,clock=configured;s=shop(configured)
     push(c,trade());process(app)
-    def timeout(request): raise httpx.ReadTimeout('do not expose private-token')
-    app.state.agiso_worker.transport=httpx.MockTransport(timeout)
-    process(app)
     row=c.get('/api/agiso/shops/'+s['id']+'/orders').json()[0]
-    assert row['message_status']=='unknown' and not row['can_retry']
+    with app.state.db.transaction() as tx:
+        link=tx.get('agiso_orders',row['id']);link.update(message_status=status,send_attempts=1);tx.put('agiso_orders',link)
+        job={'id':row['id'],'integration_id':row['id'],'shop_id':s['id'],'status':status,'attempts':1,'next_at':0,'lease_until':0,'retry_safe':True}
+        tx.put('agiso_outbox',job)
+    requests=[]
+    worker=AgisoWorker(app.state.db,clock,httpx.MockTransport(lambda r: requests.append(r) or provider(r)))
+    worker.recover()
+    asyncio.run(worker.process_once())
+    assert worker.claim_message() is None
+    asyncio.run(worker.execute_message(job))
+    assert requests==[]
     assert c.post('/api/agiso/shops/'+s['id']+'/orders/'+row['id']+'/retry-message',json={}).status_code==409
-    process(app)
-    assert 'private-token' not in json.dumps(row)
+    assert not c.get('/api/agiso/shops/'+s['id']+'/orders').json()[0]['can_retry']
+    with app.state.db.transaction() as tx:
+        assert tx.get('agiso_outbox',row['id'])==job
+        assert tx.get('agiso_orders',row['id'])['message_status']==status
 
 
 def refund(number='ORDER-1',rid='R1',op=1200,fee=1000,modified=1000):
@@ -175,38 +198,6 @@ def test_disabled_shop_account_and_organization_block_send(configured):
     assert worker.claim_message() is None
 
 
-def test_claim_is_atomic_and_crash_after_send_never_retries(configured):
-    from backend.app.agiso_worker import AgisoWorker
-    from concurrent.futures import ThreadPoolExecutor
-    app,c,clock=configured;shop(configured)
-    push(c,trade());process(app)
-    first=app.state.agiso_worker;second=AgisoWorker(app.state.db,clock,httpx.MockTransport(provider))
-    with ThreadPoolExecutor(2) as pool:
-        claims=list(pool.map(lambda worker:worker.claim_message(),[first,second]))
-    assert sum(job is not None for job in claims)==1
-    job=next(j for j in claims if j)
-    with app.state.db.transaction() as tx:
-        row=tx.get('agiso_outbox',job['id']);row['status']='sending';tx.put('agiso_outbox',row)
-    clock.value+=61;second.recover()
-    with app.state.db.transaction() as tx:
-        assert tx.get('agiso_outbox',job['id'])['status']=='unknown'
-    assert first.claim_message() is None and second.claim_message() is None
-
-
-def test_explicit_retry_is_bounded_and_manual_cap(configured):
-    app,c,clock=configured;s=shop(configured)
-    push(c,trade());process(app)
-    app.state.agiso_worker.transport=httpx.MockTransport(lambda r:httpx.Response(200,json={'IsSuccess':False,'AllowRetry':True}))
-    for _ in range(3):process(app);clock.value+=31
-    row=c.get('/api/agiso/shops/'+s['id']+'/orders').json()[0]
-    assert row['message_status']=='failed' and row['can_retry']
-    for _ in range(2):
-        assert c.post('/api/agiso/shops/'+s['id']+'/orders/'+row['id']+'/retry-message',json={}).status_code==200
-        process(app);clock.value+=31
-    assert c.post('/api/agiso/shops/'+s['id']+'/orders/'+row['id']+'/retry-message',json={}).status_code==409
-    with app.state.db.transaction() as tx:assert tx.get('agiso_orders',row['id'])['send_attempts']==5
-
-
 def test_overlapping_refunds_release_only_own_hold_and_no_manual_resume(configured):
     app,c,_=configured;shop(configured)
     push(c,trade());process(app)
@@ -253,7 +244,7 @@ def test_concurrent_confirmation_creates_exactly_one_order(configured):
     workers=[app.state.agiso_worker,AgisoWorker(app.state.db,clock)]
     with ThreadPoolExecutor(2) as pool:list(pool.map(lambda worker:worker.process_event(),workers))
     assert len(c.get('/api/customer-orders').json())==1
-    with app.state.db.transaction() as tx:assert len(tx.all('agiso_outbox'))==1
+    with app.state.db.transaction() as tx:assert len(tx.all('agiso_outbox'))==0
 
 
 def test_invalid_confirmation_time_is_rejected(configured):
