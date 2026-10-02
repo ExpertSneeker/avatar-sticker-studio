@@ -237,20 +237,6 @@
   text-overflow: ellipsis;
 }
 
-.customer-zoom-image {
-  display: flex;
-  justify-content: center;
-  background: var(--sunken);
-  border-radius: var(--r-md);
-}
-
-.customer-zoom-image img {
-  display: block;
-  max-width: 100%;
-  max-height: 72vh;
-  object-fit: contain;
-}
-
 .customer-picker-filters {
   display: flex;
   gap: 12px;
