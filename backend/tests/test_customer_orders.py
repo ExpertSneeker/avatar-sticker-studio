@@ -518,3 +518,69 @@ def test_submitted_overview_has_only_one_watermark(context):
     expected.thumbnail((640,640),Image.Resampling.LANCZOS)
     actual=Image.open(io.BytesIO(response.content)).convert('RGB')
     assert actual.size==expected.size and max(ImageStat.Stat(ImageChops.difference(actual,expected)).mean)<4
+
+
+def guest_upload(guest, colour=(10, 120, 200, 255), name='avatar.png'):
+    data=png(colour); init={'filename':name,'size':len(data),'sha256':hashlib.sha256(data).hexdigest()}
+    u=guest.post('/api/guest/uploads/init',json=init).json()
+    assert guest.put('/api/guest/uploads/'+u['id'],content=data,headers={'Upload-Offset':'0'}).status_code==200
+    done=guest.post('/api/guest/uploads/'+u['id']+'/complete'); assert done.status_code==200,done.text
+    return done.json()
+
+
+def test_draft_survives_reload_and_is_shared_between_guest_and_staff(context):
+    app,c,_,_=context; o=opened(c); sid=sticker(c,'ONE')['id']
+    guest=TestClient(app); guest.post('/api/guest/login',json={'order_number':o['order_number']})
+    mine=guest_upload(guest)
+    saved=guest.put('/api/guest/order/draft',json={'avatars':[{'upload_id':mine['id'],'template_ids':[],'sticker_ids':[sid,sid]}]})
+    assert saved.status_code==200,saved.text
+    draft=saved.json()['draft']
+    assert draft['revision']==1 and saved.json()['version']==o['version']
+    assert [(a['upload_id'],a['name'],a['sticker_ids']) for a in draft['avatars']]==[(mine['id'],'avatar.png',[sid,sid])]
+    # Unchanged saves keep the revision; drafts never bump the order version used by mutations.
+    assert guest.put('/api/guest/order/draft',json={'avatars':[{'upload_id':mine['id'],'sticker_ids':[sid,sid]}]}).json()['draft']['revision']==1
+    # A reload or another device of the same order sees the same draft and can load its image.
+    other=TestClient(app); other.post('/api/guest/login',json={'order_number':o['order_number']})
+    restored=other.get('/api/guest/order').json()['draft']
+    assert restored['avatars'][0]['sticker_ids']==[sid,sid] and other.get(restored['avatars'][0]['preview_url']).status_code==200
+    # Staff see the customer's progress through staff media, then add an avatar of their own.
+    staff=c.get('/api/customer-orders/'+o['id']).json()['draft']
+    assert staff['avatars'][0]['preview_url'].startswith('/api/customer-orders/') and c.get(staff['avatars'][0]['preview_url']).status_code==200
+    theirs=upload(c,png((200,30,30,255)))
+    both=[{'upload_id':mine['id'],'sticker_ids':[sid]},{'upload_id':theirs['id'],'sticker_ids':[sid]}]
+    result=c.put('/api/customer-orders/'+o['id']+'/draft',json={'avatars':both}); assert result.status_code==200,result.text
+    assert result.json()['draft']['revision']==2
+    seen=guest.get('/api/guest/order').json()
+    assert [a['upload_id'] for a in seen['draft']['avatars']]==[mine['id'],theirs['id']]
+    assert guest.get(seen['draft']['avatars'][1]['preview_url']).status_code==200
+    # The guest may keep and generate with the staff avatar placed in this draft.
+    assert guest.put('/api/guest/order/draft',json={'avatars':both}).status_code==200
+    body={'client_token':'g1','expected_version':seen['version'],'avatars':both}
+    generated=guest.post('/api/guest/order/generate',json=body); assert generated.status_code==200,generated.text
+    assert generated.json()['state']=='review' and 'draft' not in generated.json()
+    assert guest.put('/api/guest/order/draft',json={'avatars':both}).status_code==409
+
+
+def test_draft_rejects_foreign_uploads_and_drops_retired_library_items(context):
+    app,c,_,_=context; o=opened(c); keep,retire=sticker(c,'KEEP')['id'],sticker(c,'RETIRE')['id']
+    guest=TestClient(app); guest.post('/api/guest/login',json={'order_number':o['order_number']})
+    mine=guest_upload(guest)
+    # Staff uploads not yet placed in the draft and other orders' uploads stay out of reach.
+    staff_upload=upload(c)
+    assert guest.put('/api/guest/order/draft',json={'avatars':[{'upload_id':staff_upload['id']}]}).status_code==422
+    other=opened(c,'OTHER'); stranger=TestClient(app); stranger.post('/api/guest/login',json={'order_number':other['order_number']})
+    foreign=guest_upload(stranger,(1,2,3,255))
+    assert guest.put('/api/guest/order/draft',json={'avatars':[{'upload_id':foreign['id']}]}).status_code==422
+    assert c.put('/api/customer-orders/'+o['id']+'/draft',json={'avatars':[{'upload_id':foreign['id']}]}).status_code==422
+    assert guest.put('/api/guest/order/draft',json={'avatars':[{'upload_id':mine['id']}]*2}).status_code==422
+    assert guest.put('/api/guest/order/draft',json={'avatars':[{'upload_id':mine['id'],'sticker_ids':[keep]*5}]}).status_code==422
+    saved=guest.put('/api/guest/order/draft',json={'avatars':[{'upload_id':mine['id'],'sticker_ids':[keep,retire]}]})
+    assert saved.json()['draft']['avatars'][0]['sticker_ids']==[keep,retire]
+    assert c.delete('/api/stickers/'+retire).status_code in {200,204}
+    resaved=guest.put('/api/guest/order/draft',json={'avatars':[{'upload_id':mine['id'],'sticker_ids':[keep,retire,'missing']}]})
+    assert resaved.status_code==200 and resaved.json()['draft']['avatars'][0]['sticker_ids']==[keep]
+    # Cancelled orders refuse drafts; the staff list summary omits draft details.
+    assert 'draft' not in c.get('/api/customer-orders?summary=1').json()[0]
+    current=c.get('/api/customer-orders/'+o['id']).json()
+    assert action(c,current,'cancel').status_code==200
+    assert c.put('/api/customer-orders/'+o['id']+'/draft',json={'avatars':[]}).status_code==409

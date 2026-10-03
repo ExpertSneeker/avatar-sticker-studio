@@ -57,6 +57,11 @@ class Generate(Mutation):
     avatars: list[AvatarSelection] = Field(min_length=1, max_length=360)
 
 
+class DraftSave(Model):
+    """Full replacement of the pre-generation working list; last save wins."""
+    avatars: list[AvatarSelection] = Field(default_factory=list, max_length=360)
+
+
 class Select(Mutation):
     version_id: str
 
@@ -151,6 +156,21 @@ def reconcile(tx, order):
     return order
 
 
+def draft_avatars(order):
+    return (order.get('draft') or {}).get('avatars', []) if order['state'] == 'draft' else []
+
+
+def draft_view(tx, order, guest):
+    """Saved avatars and choices before generation; uploads removed since saving are skipped."""
+    avatars = []
+    for a in draft_avatars(order):
+        upload = tx.get('uploads', a['upload_id'])
+        if upload and upload.get('asset_id') == a['asset_id']:
+            avatars.append({'upload_id': a['upload_id'], 'name': a['name'], 'preview_url': media_url(order, a['asset_id'], guest),
+                            'template_ids': a['template_ids'], 'sticker_ids': a['sticker_ids']})
+    return {'revision': (order.get('draft') or {}).get('revision', 0), 'avatars': avatars}
+
+
 def dto(tx, order, guest=False, summary=False):
     """summary omits avatars/slots for staff list views; reconciliation still runs for every order."""
     reconcile(tx, order)
@@ -163,6 +183,8 @@ def dto(tx, order, guest=False, summary=False):
                   hold_reason=('订单售后处理中，请联系工作人员' if integration_held(order) else '订单暂不可操作，请联系工作人员') if effective_hold else None)
     result.update(preview_url=media_url(order, order.get('overview_id'), guest) if order.get('overview_ready') else None,
                   delivery_ready=order['state'] == 'submitted' and bool(order.get('delivery_ready')))
+    if not summary and order['state'] == 'draft':
+        result['draft'] = draft_view(tx, order, guest)
     if not summary and (not guest or order['state'] != 'submitted'):
         result['avatars'] = [{'id': a['id'], 'name': a['name'], 'preview_url': media_url(order, a['asset_id'], guest)} for a in order['avatars']]
         result['slots'] = []
@@ -224,7 +246,7 @@ def expand(tx, order, body, is_guest):
     avatars, occurrences, unique = [], [], {}
     for selection in body.avatars:
         upload = tx.get('uploads', selection.upload_id)
-        if not upload or not upload.get('complete') or upload.get('organization_id') != order['organization_id'] or (upload.get('guest_order_id') and upload['guest_order_id'] != order['id']) or (is_guest and upload.get('guest_order_id') != order['id']):
+        if not upload or not upload.get('complete') or upload.get('organization_id') != order['organization_id'] or (upload.get('guest_order_id') and upload['guest_order_id'] != order['id']) or (is_guest and upload.get('guest_order_id') != order['id'] and upload['id'] not in {a['upload_id'] for a in draft_avatars(order)}):
             raise HTTPException(422, '头像尚未上传完成或不可用')
         avatar = {'id': upload['id'], 'asset_id': upload['asset_id'], 'name': upload['filename']}
         avatars.append(avatar)
@@ -249,6 +271,36 @@ def expand(tx, order, body, is_guest):
     if len(occurrences) < order['final_count']:
         raise HTTPException(422, '选择数量不能少于最终数量')
     return avatars, occurrences, list(unique.values())
+
+
+def save_draft(tx, order, data, is_guest, now):
+    if order['state'] != 'draft':
+        raise HTTPException(409, '订单选择已冻结')
+    if len(data.avatars) > order['final_count'] or len({a.upload_id for a in data.avatars}) != len(data.avatars):
+        raise HTTPException(422, '头像数量不能超过最终数量，且不能重复')
+    saved = draft_avatars(order)
+    stickers, templates = library_records(tx, order)
+    by_sticker, by_template = {s['id'] for s in stickers}, {t['id']: t for t in templates if t.get('sticker_ids')}
+    count = lambda entries: sum(len([i for i in e['sticker_ids'] if i in by_sticker]) +
+                                sum(len(by_template[t]['sticker_ids']) for t in e['template_ids'] if t in by_template) for e in entries)
+    avatars = []
+    for selection in data.avatars:
+        upload = tx.get('uploads', selection.upload_id)
+        usable = (upload and upload.get('complete') and upload.get('organization_id') == order['organization_id']
+                  and upload.get('guest_order_id') in {None, order['id']})
+        # Guests add only their own uploads, but keep avatars staff already placed in this draft.
+        if not usable or is_guest and upload.get('guest_order_id') != order['id'] and upload['id'] not in {a['upload_id'] for a in saved}:
+            raise HTTPException(422, '头像尚未上传完成或不可用')
+        # Library items retired since selection are dropped instead of blocking every later save.
+        avatars.append({'upload_id': upload['id'], 'asset_id': upload['asset_id'], 'name': upload['filename'],
+                        'template_ids': [t for t in selection.template_ids if t in by_template],
+                        'sticker_ids': [i for i in selection.sticker_ids if i in by_sticker]})
+    if count(avatars) > order['generation_limit'] and count(avatars) >= count(saved):
+        raise HTTPException(422, '选择数量超过订单生成上限')
+    if avatars != saved:
+        order['draft'] = {'revision': (order.get('draft') or {}).get('revision', 0) + 1, 'avatars': avatars,
+                          'updated_by': 'guest' if is_guest else 'staff', 'updated_at': now}
+        tx.put('orders', order)
 
 
 def new_item(tx, order, id, avatar_id, sticker, now, position):
@@ -479,6 +531,7 @@ def register_customer_orders(app, db, user):
                                    'reruns_reserved': 0, 'selected_version_id': None, 'pending_version_id': None}
                                   for a, s, item_id in occurrences]
                 order.update(state='review', generation_count=len(unique), selection_count=len(occurrences))
+                order.pop('draft', None)
             elif action in {'rerun', 'select', 'retry', 'resolve', 'reprocess'}:
                 if state != 'review':
                     raise HTTPException(409, '当前订单不能修改结果')
@@ -593,6 +646,17 @@ def register_customer_orders(app, db, user):
             return [('generate', generate), ('preflight', preflight), ('slots/{slot_id}/rerun', rerun), ('slots/{slot_id}/select', select), ('submit', submit)]
         for suffix, endpoint in endpoints(guest):
             app.add_api_route(prefix+'/'+suffix, endpoint, methods=['POST'])
+    def draft(request, data, id=None, guest=False):
+        with db.transaction() as tx:
+            order, _ = access(tx, request, id, guest)
+            require_active_order(order, tx)
+            save_draft(tx, order, data, guest, now())
+            return dto(tx, order, guest)
+
+    def guest_draft(data: DraftSave, request: Request): return draft(request, data, guest=True)
+    def staff_draft(id: str, data: DraftSave, request: Request): return draft(request, data, id)
+    app.add_api_route('/api/guest/order/draft', guest_draft, methods=['PUT'])
+    app.add_api_route('/api/customer-orders/{id}/draft', staff_draft, methods=['PUT'])
     for name in ('cancel', 'restore', 'unlock'):
         def staff_endpoint(action):
             def endpoint(id: str, data: Mutation, request: Request): return mutate(request, data, action, id)

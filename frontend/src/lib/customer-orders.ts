@@ -10,13 +10,16 @@ export interface CustomerSlot {
   pending_version_id:string|null; versions:CustomerVersion[]; error?:string|null; raw_available?:boolean; needs_resolution?:boolean
 }
 export interface CustomerAvatar {id:string; name:string; preview_url:string}
+export interface AvatarChoice {upload_id:string;template_ids:string[];sticker_ids:string[]}
+// Saved pre-generation working list (draft orders only); its revision is independent of the order version.
+export interface OrderDraft {revision:number; avatars:(AvatarChoice&{name:string;preview_url:string|null})[]}
 // This is the only order shape the guest workbench receives. Submitted/cancelled DTOs
 // deliberately omit avatars and slots; do not fill them from an older response.
 export interface GuestOrder {
   id:string; order_number:string; state:OrderState; version?:number
   generation_limit:number; final_count:number; rerun_limit:number
   avatars?:CustomerAvatar[]; slots?:CustomerSlot[]; preview_url?:string|null
-  delivery_ready?:boolean; created_at?:string; paused?:boolean; hold_reason?:string|null
+  delivery_ready?:boolean; created_at?:string; paused?:boolean; hold_reason?:string|null; draft?:OrderDraft
 }
 export interface CustomerOrder extends GuestOrder {
   version:number;
@@ -27,7 +30,6 @@ export interface CustomerOrder extends GuestOrder {
 export interface LibrarySticker {id:string;code:string;name:string;category:string;revision:number;preview_url:string;active?:boolean}
 export interface LibraryTemplate {id:string;code:string;name:string;category:string;sticker_ids:string[];images:{preview_url:string;code?:string}[];active?:boolean;available?:boolean}
 export interface CustomerLibrary {stickers:LibrarySticker[];templates:LibraryTemplate[];categories?:LibraryCategory[]}
-export interface AvatarChoice {upload_id:string;template_ids:string[];sticker_ids:string[]}
 export interface Preflight {avatar_count:number;selection_count:number;generation_count:number}
 export const stateLabels:Record<OrderState,string> = {draft:'待制作',review:'选图中',submitted:'已提交',cancelled:'已取消'}
 export const roleLabel=(role:string)=>({superadmin:'超级管理员',org_admin:'组织管理员',staff:'成员'}[role]||role)
@@ -60,6 +62,13 @@ export function quantityIds(ids:string[],id:string,quantity:number,max=360):stri
   const count=Math.max(0,Math.min(max,Number.isFinite(quantity)?Math.floor(quantity):0))
   return [...ids.filter(value=>value!==id),...Array.from({length:count},()=>id)]
 }
+// Drops library items no longer offered. The library loads after the order, so nothing is pruned until it arrives.
+export function pruneChoices<T extends AvatarChoice>(avatars:T[],library:CustomerLibrary):T[]{
+  if(!library.stickers.length&&!library.templates.length)return avatars
+  const stickers=new Set(library.stickers.map(s=>s.id)),templates=new Set(library.templates.map(t=>t.id))
+  return avatars.map(a=>({...a,template_ids:a.template_ids.filter(id=>templates.has(id)),sticker_ids:a.sticker_ids.filter(id=>stickers.has(id))}))
+}
+export const draftChoices=(draft:OrderDraft|undefined,library:CustomerLibrary)=>pruneChoices((draft?.avatars||[]).map(a=>({upload_id:a.upload_id,name:a.name,preview_url:a.preview_url||'',template_ids:a.template_ids,sticker_ids:a.sticker_ids})),library)
 export function selectionCounts(avatars:AvatarChoice[],library:CustomerLibrary):Preflight {
   let selection_count=0,generation_count=0
   for(const avatar of avatars){
