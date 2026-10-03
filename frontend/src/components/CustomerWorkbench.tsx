@@ -5,7 +5,7 @@ import { searchMatcher } from '../lib/search'
 import { uploadFile } from '../lib/upload'
 import { guestUpload } from '../lib/guest-upload'
 import { guestApi, canApplySelection, draftChoices, pruneChoices, categoryOptions, mediaSrcSet, pickerImageSizes, zoomUrl, OrderMutations, quantityIds, selectionCounts, selectionQuantityLimit, selectionError, slotBusy, stateLabels, submissionError } from '../lib/customer-orders'
-import type { AvatarChoice, CustomerLibrary, CustomerSlot, GuestOrder, LibraryTemplate, OrderDraft, Preflight } from '../lib/customer-orders'
+import type { AvatarChoice, CustomerLibrary, CustomerSlot, GuestOrder, LibrarySticker, LibraryTemplate, OrderDraft, Preflight } from '../lib/customer-orders'
 import { Empty, Modal, Spinner, Status } from './UI'
 import { visiblePolling } from '../lib/polling'
 import '../pages/CustomerOrders.css'
@@ -152,18 +152,30 @@ function SelectionSummary({count,max,finalCount}:{count:number;max:number;finalC
   const remaining=Math.max(0,max-count)
   return <div className="customer-selection-summary" role="status" aria-label="订单选图统计"><div><strong>订单已选 {count} / {max} 张</strong><span>{count>max?`超出 ${count-max} 张，请减少选择`:`还可选 ${remaining} 张`} · 最终需提交 {finalCount} 张</span></div><progress aria-label="订单选择进度" max={max} value={Math.min(count,max)}/>{count>=max&&<small>已达订单上限，请先减少选择再增加。</small>}</div>
 }
+type PickerKind='template_ids'|'sticker_ids'
+type PickerEntry={kind:PickerKind;item:LibraryTemplate|LibrarySticker}
 function SelectionPicker({library,avatar,others,max,finalCount,onClose,onSave}:{library:CustomerLibrary;avatar:DraftAvatar;others:AvatarChoice[];max:number;finalCount:number;onClose:()=>void;onSave:(value:AvatarChoice)=>void}){
   const [choice,setChoice]=useState<AvatarChoice>({upload_id:avatar.upload_id,template_ids:avatar.template_ids,sticker_ids:avatar.sticker_ids})
-  const [tab,setTab]=useState('stickers'),[search,setSearch]=useState(''),[category,setCategory]=useState('all')
+  const [tab,setTab]=useState<'stickers'|'templates'|'selected'>('stickers'),[search,setSearch]=useState(''),[category,setCategory]=useState('all')
+  // "已选" shows the list captured on entry (templates, then stickers, in selection order): cards stay put while
+  // quantities change, and one reduced to 0 can be added back until the tab is opened again.
+  const [pinned,setPinned]=useState<{kind:PickerKind;id:string}[]>([])
   const [zoom,setZoom]=useState<{title:string;url:string}|null>(null),[setView,setSetView]=useState<LibraryTemplate|null>(null)
-  const source=tab==='templates'?library.templates:library.stickers
-  const kind=tab==='templates'?'template_ids':'sticker_ids'
+  const offered=(s:{active?:boolean;available?:boolean})=>s.active!==false&&s.available!==false
+  const templates=library.templates.filter(offered),stickers=library.stickers.filter(offered)
+  const pool:PickerEntry[]=tab==='selected'?pinned.flatMap(({kind,id})=>{const item=(kind==='template_ids'?templates:stickers).find(value=>value.id===id);return item?[{kind,item}]:[]})
+    :tab==='templates'?templates.map(item=>({kind:'template_ids' as const,item})):stickers.map(item=>({kind:'sticker_ids' as const,item}))
   const matches=searchMatcher(search)
-  const usable=source.filter(s=>s.active!==false&&(!('available' in s)||s.available!==false))
-  const filtered=usable.filter(s=>(category==='all'||s.category===category)&&matches(`${s.name} ${s.code}`))
+  const usable=pool.map(entry=>entry.item)
+  const filtered=pool.filter(({item})=>(category==='all'||item.category===category)&&matches(`${item.name} ${item.code}`))
   const categories=categoryOptions(library.categories||[],usable)
   const counts=selectionCounts([choice],library),otherCount=selectionCounts(others,library).selection_count,total=otherCount+counts.selection_count
-  function changeQuantity(id:string,value:number){
+  function openSelected(){
+    const unique=(ids:string[])=>Array.from(new Set(ids))
+    setPinned([...unique(choice.template_ids).map(id=>({kind:'template_ids' as const,id})),...unique(choice.sticker_ids).map(id=>({kind:'sticker_ids' as const,id}))])
+    setTab('selected')
+  }
+  function changeQuantity(kind:PickerKind,id:string,value:number){
     setChoice(previous=>{
       const amount=previous[kind].filter(value=>value===id).length
       const limit=selectionQuantityLimit([...others,previous],library,previous.upload_id,kind,id,max)
@@ -171,21 +183,25 @@ function SelectionPicker({library,avatar,others,max,finalCount,onClose,onSave}:{
       return {...previous,[kind]:quantityIds(previous[kind],id,value,Math.max(amount,limit))}
     })
   }
+  function card({kind,item:entry}:PickerEntry){
+    const amount=choice[kind].filter(id=>id===entry.id).length
+    const limit=selectionQuantityLimit([...others,choice],library,choice.upload_id,kind,entry.id,max,total)
+    const title=entry.name+(entry.code!==entry.name?' · '+entry.code:''),meta=[entry.code!==entry.name?entry.code:'','sticker_ids' in entry?`${entry.sticker_ids.length} 张/套`:''].filter(Boolean).join(' · ')
+    return <article key={kind+entry.id} className={amount?'selected':''}><div className="customer-catalog-image">{'images' in entry?entry.images.slice(0,4).map((image,index)=><img key={index} src={image.preview_url} srcSet={mediaSrcSet(image.preview_url)} sizes={pickerImageSizes[entry.images.length>1?'setThumbnail':'sticker']} alt="" loading="lazy"/>):<img src={entry.preview_url} srcSet={mediaSrcSet(entry.preview_url)} sizes={pickerImageSizes.sticker} alt="" loading="lazy"/>}<button type="button" className="customer-zoom-button" aria-label={`放大查看 ${entry.code}`} title={'images' in entry?'查看模板包含的贴纸':'放大查看'} onClick={()=>'images' in entry?setSetView(entry):setZoom({title,url:entry.preview_url})}><ZoomIn size={15}/></button></div><strong>{entry.name}</strong>{meta&&<span>{meta}</span>}<div className="customer-quantity-control"><div><button type="button" className="icon-button" aria-label={`${entry.code} 减少份数`} disabled={amount===0} onClick={()=>changeQuantity(kind,entry.id,amount-1)}><Minus size={14}/></button><input aria-label={`${entry.code} 份数`} type="number" min={0} max={limit} disabled={amount===0&&limit===0} value={amount} onChange={e=>changeQuantity(kind,entry.id,Number(e.target.value))}/><button type="button" className="icon-button" aria-label={`${entry.code} 增加份数`} disabled={amount>=limit} onClick={()=>changeQuantity(kind,entry.id,amount+1)}><Plus size={14}/></button></div></div></article>
+  }
   return <Modal title="选择模板和贴纸" onClose={onClose} wide className="customer-picker-modal">
     <SelectionSummary count={total} max={max} finalCount={finalCount}/>
     <p className="hint">本头像已选 {counts.selection_count} 张 · 其他头像已选 {otherCount} 张。模板按包含的贴纸张数计算，重复选择同样占用份数。</p>
     {/* Tabs, search and category stay pinned while long catalogs scroll. */}
-    <div className="customer-picker-toolbar"><div className="tabs"><button className={tab==='stickers'?'active':''} onClick={()=>setTab('stickers')}>单张贴纸</button><button className={tab==='templates'?'active':''} onClick={()=>setTab('templates')}>模板套装</button></div>
+    <div className="customer-picker-toolbar"><div className="tabs"><button className={tab==='stickers'?'active':''} onClick={()=>setTab('stickers')}>单张贴纸</button><button className={tab==='templates'?'active':''} onClick={()=>setTab('templates')}>模板套装</button><button className={tab==='selected'?'active':''} onClick={openSelected}>已选 {counts.selection_count}</button></div>
     <div className="customer-picker-filters"><input aria-label="搜索模板或贴纸" placeholder="搜索名称或编号" value={search} onChange={e=>setSearch(e.target.value)}/><select aria-label="贴纸分类" value={category} onChange={e=>setCategory(e.target.value)}><option value="all">全部分类（{usable.length}）</option>{categories.map(option=><option key={option.id} value={option.id} disabled={!option.count&&option.id!==category}>{option.name}（{option.count}）</option>)}</select></div></div>
-    {filtered.length?<div className="customer-catalog">{filtered.map(entry=>{
-      const amount=choice[kind].filter(id=>id===entry.id).length
-      const limit=selectionQuantityLimit([...others,choice],library,choice.upload_id,kind,entry.id,max,total)
-      const title=entry.name+(entry.code!==entry.name?' · '+entry.code:''),meta=[entry.code!==entry.name?entry.code:'','sticker_ids' in entry?`${entry.sticker_ids.length} 张/套`:''].filter(Boolean).join(' · ')
-      return <article key={entry.id} className={amount?'selected':''}><div className="customer-catalog-image">{'images' in entry?entry.images.slice(0,4).map((image,index)=><img key={index} src={image.preview_url} srcSet={mediaSrcSet(image.preview_url)} sizes={pickerImageSizes[entry.images.length>1?'setThumbnail':'sticker']} alt="" loading="lazy"/>):<img src={entry.preview_url} srcSet={mediaSrcSet(entry.preview_url)} sizes={pickerImageSizes.sticker} alt="" loading="lazy"/>}<button type="button" className="customer-zoom-button" aria-label={`放大查看 ${entry.code}`} title={'images' in entry?'查看模板包含的贴纸':'放大查看'} onClick={()=>'images' in entry?setSetView(entry):setZoom({title,url:entry.preview_url})}><ZoomIn size={15}/></button></div><strong>{entry.name}</strong>{meta&&<span>{meta}</span>}<div className="customer-quantity-control"><div><button type="button" className="icon-button" aria-label={`${entry.code} 减少份数`} disabled={amount===0} onClick={()=>changeQuantity(entry.id,amount-1)}><Minus size={14}/></button><input aria-label={`${entry.code} 份数`} type="number" min={0} max={limit} disabled={amount===0&&limit===0} value={amount} onChange={e=>changeQuantity(entry.id,Number(e.target.value))}/><button type="button" className="icon-button" aria-label={`${entry.code} 增加份数`} disabled={amount>=limit} onClick={()=>changeQuantity(entry.id,amount+1)}><Plus size={14}/></button></div></div></article>
-    })}</div>:<Empty title="没有匹配的模板或贴纸"/>}
+    {tab==='selected'&&!pool.length?<Empty title="还没有选择" description="去“单张贴纸”或“模板套装”挑选，选好的会显示在这里。"/>
+      :!filtered.length?<Empty title="没有匹配的模板或贴纸"/>
+      :tab==='selected'?(['template_ids','sticker_ids'] as const).map(kind=>{const group=filtered.filter(entry=>entry.kind===kind);return group.length?<section key={kind} className="customer-selected-group" aria-label={kind==='template_ids'?'已选模板套装':'已选单张贴纸'}><h3>{kind==='template_ids'?'模板套装':'单张贴纸'}</h3><div className="customer-catalog">{group.map(card)}</div></section>:null})
+      :<div className="customer-catalog">{filtered.map(card)}</div>}
     {setView&&<Modal title={`${setView.name} · 共 ${setView.images.length} 张`} onClose={()=>setSetView(null)} wide><p className="hint">模板包含以下贴纸，点击可放大查看。</p><div className="customer-set-preview">{setView.images.map((image,index)=>{const label=image.code||`第 ${index+1} 张`;return <button type="button" key={index} aria-label={`放大查看 ${label}`} onClick={()=>setZoom({title:`${setView.name} · ${label}`,url:image.preview_url})}><img src={image.preview_url} srcSet={mediaSrcSet(image.preview_url)} sizes={pickerImageSizes.setContents} alt="" loading="lazy"/><span>{label}</span></button>})}</div></Modal>}
     {zoom&&<Modal title={zoom.title} onClose={()=>setZoom(null)} className="modal-media"><div className="media-frame customer-zoom-image"><img src={zoomUrl(zoom.url)} alt={zoom.title}/></div></Modal>}
-    <div className="modal-footer customer-picker-footer"><span>本头像 {counts.selection_count} 张 · 订单共 {total} / {max} 张</span><button className="button primary" disabled={!canApplySelection(otherCount+selectionCounts([avatar],library).selection_count,total,max)} onClick={()=>onSave(choice)}>应用选择</button></div>
+    <div className="modal-footer customer-picker-footer"><span><button type="button" className="text-button customer-selected-link" title="查看已选" onClick={openSelected}>本头像 {counts.selection_count} 张</button> · 订单共 {total} / {max} 张</span><button className="button primary" disabled={!canApplySelection(otherCount+selectionCounts([avatar],library).selection_count,total,max)} onClick={()=>onSave(choice)}>应用选择</button></div>
   </Modal>
 }
 function VersionComparison({slot,limit,used,busy,onClose,onRerun,onSelect,mode,onRecovery,pending,onRetry,error}:{error:string;pending:boolean;onRetry:()=>void;mode:'staff'|'guest';onRecovery:(action:string)=>void;slot:CustomerSlot;limit:number;used:number;busy:boolean;onClose:()=>void;onRerun:()=>void;onSelect:(id:string)=>void}){

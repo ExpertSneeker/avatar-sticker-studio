@@ -316,6 +316,25 @@
   min-width: 0;
 }
 
+.customer-selected-group+.customer-selected-group {
+  margin-top: 18px;
+}
+
+.customer-selected-group h3 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: var(--ink-2);
+}
+
+.customer-picker-footer .customer-selected-link {
+  display: inline;
+  padding: 0;
+  font-size: inherit;
+  color: var(--brand-strong);
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+}
+
 /* The picker dialog scrolls; its toolbar and apply bar stick to the dialog edges. */
 .customer-picker-modal {
   --picker-pad: 28px;
