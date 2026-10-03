@@ -116,4 +116,9 @@ describe('picker categories and zoom',()=>{
     expect(zoomUrl('/api/guest/media/o/a?v=3&size=160')).toBe('/api/guest/media/o/a?v=3&size=1024')
     expect(zoomUrl('/api/assets/'+'a'.repeat(32))).toBe('/api/assets/'+'a'.repeat(32))
   })
+  it('offers fixed thumbnail tiers only for versioned media URLs',async()=>{
+    const {mediaSrcSet}=await import('../src/lib/customer-orders')
+    expect(mediaSrcSet('/api/guest/media/o/a?v=3&size=1024')).toBe('/api/guest/media/o/a?v=3&size=160 160w, /api/guest/media/o/a?v=3&size=320 320w, /api/guest/media/o/a?v=3&size=640 640w')
+    expect(mediaSrcSet('/api/assets/'+'a'.repeat(32))).toBeUndefined()
+  })
 })

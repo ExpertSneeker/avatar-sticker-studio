@@ -126,3 +126,42 @@ def test_cancel_between_conditional_validation_and_response_rejects_304(context,
         return result
     monkeypatch.setattr(app.state.db, 'read', interrupted)
     assert guest.get(link, headers=headers).status_code == 404
+
+
+def test_requested_sizes_snap_to_fixed_tiers_and_share_one_render(context, monkeypatch):
+    import io
+    from PIL import Image
+    from backend.app import guest_media
+    _, _, client, _, link = preview(context)
+    default = client.get(link)
+    assert client.get(link + '&size=640').headers['etag'] == default.headers['etag']
+    renders = []
+    original = guest_media.render
+    monkeypatch.setattr(guest_media, 'render', lambda *args: renders.append(args[2]) or original(*args))
+    guest_media._cache.clear()
+    for requested, expected in ((1, 160), (161, 320), (300, 320), (320, 320), (321, 640), (700, 1024), (5000, 1024)):
+        response = client.get(link + f'&size={requested}')
+        assert response.status_code == 200
+        assert max(Image.open(io.BytesIO(response.content)).size) == expected
+        assert response.headers['etag'] == client.get(link + f'&size={expected}').headers['etag']
+    assert sorted(renders) == [160, 320, 640, 1024]
+
+
+def test_thumbnail_tiers_keep_the_640_watermark_appearance():
+    import io
+    from PIL import Image, ImageChops, ImageStat
+    from backend.app import guest_media
+    source = Image.new('RGBA', (1024, 1024), (240, 170, 120, 255))
+    data = io.BytesIO(); source.save(data, 'PNG'); data = data.getvalue()
+    mark = '贴纸小店·仅供预览'
+    assert guest_media.pipeline(640) == guest_media.pipeline(1024) == guest_media.PIPELINE
+    assert guest_media.pipeline(160) == guest_media.pipeline(320) != guest_media.PIPELINE
+    for size in (160, 320):
+        reference = guest_media.watermarked(data, mark, 640).convert('RGB')
+        reference.thumbnail((size, size), Image.Resampling.LANCZOS)
+        direct = guest_media.watermarked(data, mark, size).convert('RGB')
+        actual = Image.open(io.BytesIO(guest_media.render(data, mark, size))).convert('RGB')
+        difference = lambda image: max(ImageStat.Stat(ImageChops.difference(actual, image)).mean)
+        assert actual.size == (size, size)
+        # Same watermark as the 640 preview, not the heavier small-size layout.
+        assert difference(reference) < 3 and difference(direct) > 6

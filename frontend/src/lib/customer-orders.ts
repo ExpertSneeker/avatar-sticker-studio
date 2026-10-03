@@ -36,8 +36,20 @@ export const isAdmin=(role:string)=>role==='superadmin'||role==='org_admin'
 export function staffLibrary(stickers:Sticker[],templates:TemplateSet[],categories:LibraryCategory[]=[]):CustomerLibrary {
   return {categories,stickers:stickers.map(s=>({...s,preview_url:s.image.url})),templates:templates.map(t=>({...t,sticker_ids:t.sticker_ids||t.images.map(i=>i.sticker_id||'').filter(Boolean),images:t.images.map(i=>({preview_url:i.url,code:i.code}))}))}
 }
-// Enlarged view: guest/staff watermarked media accept a size (max 1024); staff originals are already full size.
-export const zoomUrl=(url:string)=>/[?&]v=\d+/.test(url)?url.replace(/&size=\d+/,'')+'&size=1024':url
+// Watermarked customer media (…&v=N) is served in fixed tiers 160/320/640/1024; staff originals are already full size.
+const isWatermarked=(url:string)=>/[?&]v=\d+/.test(url)
+const sizedUrl=(url:string,size:number)=>url.replace(/&size=\d+/,'')+'&size='+size
+// Enlarged view always uses the largest tier.
+export const zoomUrl=(url:string)=>isWatermarked(url)?sizedUrl(url,1024):url
+// Thumbnails: the browser picks the smallest tier covering the rendered width times screen density.
+export const mediaSrcSet=(url:string)=>isWatermarked(url)?[160,320,640].map(size=>`${sizedUrl(url,size)} ${size}w`).join(', '):undefined
+// Rendered image widths of the picker grid in CustomerOrders.css (wide modal; 6/5/3 catalog columns above 1100px/above 720px/up to 720px,
+// set contents 4/3 columns). Keep in sync with that CSS; e2e/customer-picker-responsive-media.spec.ts checks the chosen tiers.
+export const pickerImageSizes={
+  sticker:'(max-width:720px) calc((100vw - 118px) / 3), (max-width:920px) calc((100vw - 252px) / 5), (max-width:1100px) 134px, 107px',
+  setThumbnail:'(max-width:720px) calc((100vw - 130px) / 6), (max-width:920px) calc((100vw - 275px) / 10), (max-width:1100px) 65px, 52px',
+  setContents:'(max-width:720px) calc((100vw - 124px) / 3), (max-width:920px) calc((100vw - 214px) / 4), 177px',
+}
 // Category filter options: every organization category (in library order) plus any unknown id in use.
 export function categoryOptions(categories:LibraryCategory[],items:{category:string}[]){
   const known=new Set(categories.map(c=>c.id))

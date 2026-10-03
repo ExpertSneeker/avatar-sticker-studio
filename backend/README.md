@@ -6,7 +6,9 @@ Customer watermarked media (guest and staff order routes) permits private browse
 storage with `private, no-cache`, `Vary: Cookie` and versioned weak ETags. Each
 reuse revalidates current authorization before an empty 304; matching requests
 skip original-image reads and encoding. Watermark/media versions and preview
-size distinguish representations. Other guest APIs remain `no-store`; these
+size distinguish representations. Sizes snap up to fixed tiers 160/320/640/1024; the 160/320
+thumbnails are LANCZOS-downscaled from the 640 watermark render (WebP q80) so
+the watermark keeps its 640 appearance. Other guest APIs remain `no-store`; these
 images must not enter shared CDN caches or application-managed IndexedDB.
 
 Run from repository root:

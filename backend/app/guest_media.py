@@ -8,26 +8,48 @@ from .processing import watermark_font
 from .storage import asset_bytes
 
 PIPELINE = 'guest-light-diagonal-flat-webp-v4'
+# Fixed derivative tiers: any requested size snaps up to one, so arbitrary sizes cannot multiply renders or fragment the cache.
+TIERS = (160, 320, 640, 1024)
+# Thumbnail tiers are downscaled from a 640 render, so their watermark looks exactly like the 640 preview shrunk by the browser.
+WATERMARK_REFERENCE = 640
+THUMBNAIL_QUALITY = 80
 _cache = OrderedDict()
 _lock = threading.Lock()
 _CACHE_BYTES = 32 * 1024 * 1024
 
 
-def encode_preview(image):
+def tier(size):
+    return next((value for value in TIERS if value >= size), TIERS[-1])
+
+
+def pipeline(size):
+    # 640/1024 keep the previous pipeline so existing browser validators stay valid.
+    return PIPELINE if size >= WATERMARK_REFERENCE else f'{PIPELINE}-ref{WATERMARK_REFERENCE}-q{THUMBNAIL_QUALITY}'
+
+
+def encode_preview(image, quality=90):
     # Lossy WebP (q90) is ~5x smaller than PNG for these flattened previews; originals and print files stay PNG.
     output = io.BytesIO()
-    image.convert('RGB').save(output, 'WEBP', quality=90, method=4)
+    image.convert('RGB').save(output, 'WEBP', quality=quality, method=4)
     return output.getvalue()
 
 
 def render(data, mark, size, already_watermarked=False):
+    if already_watermarked or size >= WATERMARK_REFERENCE:
+        return encode_preview(watermarked(data, mark, size, already_watermarked))
+    image = watermarked(data, mark, WATERMARK_REFERENCE)
+    image.thumbnail((size, size), Image.Resampling.LANCZOS)
+    return encode_preview(image, THUMBNAIL_QUALITY)
+
+
+def watermarked(data, mark, size, already_watermarked=False):
     with Image.open(io.BytesIO(data)) as source:
         source = source.convert('RGBA')
         source.thumbnail((size, size), Image.Resampling.LANCZOS)
         canvas = Image.new('RGBA', source.size, 'white')
         canvas.alpha_composite(source)
     if already_watermarked:
-        return encode_preview(canvas)
+        return canvas
     font_size = max(14, min(32, size // 14))
     font = watermark_font(mark, font_size)
     # Wrap long content into a tile bounded to the image width, repeating all lines.
@@ -51,7 +73,7 @@ def render(data, mark, size, already_watermarked=False):
     for row, y in enumerate(range(-tile.height//2, canvas.height, step_y)):
         for x in range(-tile.width//2 - (row % 2)*step_x//2, canvas.width, step_x):
             layer.alpha_composite(tile, (x, y))
-    return encode_preview(Image.alpha_composite(canvas, layer))
+    return Image.alpha_composite(canvas, layer)
 
 
 def register_guest_media(app, db, user):
@@ -82,7 +104,7 @@ def register_guest_media(app, db, user):
         return order, asset
 
     def media(order_id, asset_id, request, v, size, is_guest):
-        size = max(160, min(1024, size))
+        size = tier(size)
         candidates = [tag.strip().removeprefix('W/') for tag in request.headers.get('if-none-match', '').split(',')]
 
         def prepare(tx):
@@ -91,7 +113,7 @@ def register_guest_media(app, db, user):
                                    and order.get('overview_ready')
                                    and asset.get('kind') == 'overview'
                                    and order.get('overview_style') == 'guest-overview-v1')
-            key = digest([asset['id'], asset['sha256'], order['owner'], order['watermark'], order['watermark_version'], v, size, PIPELINE, already_watermarked])
+            key = digest([asset['id'], asset['sha256'], order['owner'], order['watermark'], order['watermark_version'], v, size, pipeline(size), already_watermarked])
             mark = order['watermark']
             with _lock:
                 rendered = _cache.get(key)
