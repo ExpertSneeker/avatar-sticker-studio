@@ -165,3 +165,19 @@ def test_thumbnail_tiers_keep_the_640_watermark_appearance():
         assert actual.size == (size, size)
         # Same watermark as the 640 preview, not the heavier small-size layout.
         assert difference(reference) < 3 and difference(direct) > 6
+
+
+def test_render_cache_is_byte_bounded_lru():
+    from backend.app.guest_media import _CACHE_BYTES, _ByteLRU
+    assert _CACHE_BYTES == 256 * 1024 * 1024
+    cache = _ByteLRU(10)
+    cache.put('a', b'1234'); cache.put('b', b'1234')
+    cache.move_to_end('a')
+    cache.put('b', b'12345')  # replacing an entry counts only its new size
+    assert cache.bytes == 9 and list(cache) == ['a', 'b']
+    cache.put('c', b'123')  # evicts least recently used first
+    assert list(cache) == ['b', 'c'] and cache.bytes == 8
+    cache.put('d', b'12345678901')  # an entry larger than the limit is not kept
+    assert not cache and cache.bytes == 0
+    cache.put('e', b'1'); cache.clear()
+    assert cache.bytes == 0

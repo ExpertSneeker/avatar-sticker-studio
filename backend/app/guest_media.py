@@ -13,9 +13,32 @@ TIERS = (160, 320, 640, 1024)
 # Thumbnail tiers are downscaled from a 640 render, so their watermark looks exactly like the 640 preview shrunk by the browser.
 WATERMARK_REFERENCE = 640
 THUMBNAIL_QUALITY = 80
-_cache = OrderedDict()
 _lock = threading.Lock()
-_CACHE_BYTES = 32 * 1024 * 1024
+# In-process only (lost on restart). 256MB holds every thumbnail tier of the whole library for several watermarks.
+_CACHE_BYTES = 256 * 1024 * 1024
+
+
+class _ByteLRU(OrderedDict):
+    """LRU bounded by total value bytes; the running total avoids re-summing every entry per insert."""
+
+    def __init__(self, limit):
+        super().__init__()
+        self.limit, self.bytes = limit, 0
+
+    def put(self, key, value):
+        if key in self:
+            self.bytes -= len(self.pop(key))
+        self[key] = value
+        self.bytes += len(value)
+        while self.bytes > self.limit:
+            self.bytes -= len(self.popitem(last=False)[1])
+
+    def clear(self):
+        super().clear()
+        self.bytes = 0
+
+
+_cache = _ByteLRU(_CACHE_BYTES)
 
 
 def tier(size):
@@ -134,9 +157,7 @@ def register_guest_media(app, db, user):
             except (OSError, ValueError, Image.DecompressionBombError):
                 raise HTTPException(422, '图片预览暂不可用')
             with _lock:
-                _cache[key] = rendered
-                while sum(len(x) for x in _cache.values()) > _CACHE_BYTES:
-                    _cache.popitem(last=False)
+                _cache.put(key, rendered)
         # Cancellation/watermark replacement during rendering must invalidate this response.
         db.read(lambda tx: authorized(tx, request, order_id, asset_id, v, is_guest))
         return Response(rendered, media_type='image/webp', headers={**headers, 'Content-Disposition': 'inline'})
