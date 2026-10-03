@@ -19,6 +19,10 @@ test('mobile picker opens on single stickers and keeps filters and apply pinned 
   await expect(picker.getByRole('button',{name:'单张贴纸',exact:true})).toHaveClass(/active/)
   await picker.getByLabel('搜索模板或贴纸').fill(suffix)
   await expect(picker.locator('.customer-catalog article')).toHaveCount(12)
+  // The whole dialog (pinned tabs on top, apply bar at the bottom) fits the visible screen.
+  await page.evaluate(()=>Promise.allSettled(document.getAnimations().map(animation=>animation.finished)))
+  const box=(await picker.boundingBox())!
+  expect(box.y).toBeGreaterThanOrEqual(0);expect(box.y+box.height).toBeLessThanOrEqual(700)
   await picker.getByLabel(stickers[0].code+' 份数',{exact:true}).fill('18')
   expect(await picker.locator('.customer-catalog').evaluate(el=>getComputedStyle(el).overflowY)).toBe('visible')
   await picker.locator('.customer-catalog article').first().hover()

@@ -659,7 +659,10 @@ small {
   background: var(--surface);
   width: 550px;
   max-width: 100%;
+  /* dvh tracks the visible area; phone browsers measure vh as if their toolbars were hidden,
+     which pushed the dialog's top and bottom (tabs, apply bar) under the browser chrome. */
   max-height: 90vh;
+  max-height: 90dvh;
   overflow: auto;
   border-radius: var(--r-xl);
   padding: 28px;
@@ -1712,7 +1715,8 @@ small {
     padding: 12px;
   }
   .modal {
-    max-height: 93vh;
+    max-height: calc(100vh - 24px);
+    max-height: calc(100dvh - 24px);
     padding: 20px;
     border-radius: 10px;
   }
