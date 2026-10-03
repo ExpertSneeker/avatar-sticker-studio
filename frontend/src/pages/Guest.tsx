@@ -1,3 +1,4 @@
+import { IcpFiling } from '../components/IcpFiling'
 import { useEffect, useRef, useState } from 'react'
 import { LogOut } from 'lucide-react'
 import { Brand, Spinner } from '../components/UI'
@@ -88,6 +89,6 @@ export default function Guest() {
           {otherOrder && <button type="button" className="text-button" disabled={busy} onClick={() => { setOrder(otherOrder); setOtherOrder(null); setError(''); clearLink() }}>继续当前订单</button>}
         </form>}
     </main>
-    <footer className="guest-footer">头像贴纸 · 客户预览</footer>
+    <footer className="guest-footer"><span>头像贴纸 · 客户预览</span><IcpFiling/></footer>
   </div>
 }

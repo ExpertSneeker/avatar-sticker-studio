@@ -31,6 +31,8 @@
 
 只读请求使用 `db.read(fn)`：先以普通 `BEGIN` 读取快照，不等待写锁；`fn` 一旦调用 `put`/`delete` 就抛出 `NeedsWrite`（写入前），随后在原来的 `BEGIN IMMEDIATE` 事务里整体重跑。`fn` 除数据库外不得有副作用，因为它可能执行两次。订单列表/详情、访客订单/图库/媒体、`auth/me`、`auth/status`、图库和分类的 GET 使用它；`dto()` 的 `reconcile` 需要写入时会自动回退。`Database` 另持有一个空闲连接，使每个事务连接关闭时不再触发 checkpoint 和 WAL 删除，因此运行中数据目录会一直存在 `studio.sqlite3-wal`/`-shm`；备份仍须在停服后复制整个数据目录，不能只拷主库文件。
 
+公开页脚由 `frontend/src/components/IcpFiling.tsx` 统一提供，登录页、后台和客户选图页在底部中央显示 `鲁ICP备20019500号`，备案号与其下方查询入口均链接 `https://beian.miit.gov.cn/`（新标签页，`noopener noreferrer`）。页脚位于正常文档流，不覆盖手机选图操作；公开备案信息不依赖后台说明接口。
+
 ## 权限和隐私
 
 - `superadmin` 管组织、全站设置与统计；独立超管可以不属于组织，因此不一定有组织工作台。`org_admin` 管本组织成员、图库授权与账号并发；`staff` 在组织内协作。服务器仍需对每个资源校验组织和角色。
