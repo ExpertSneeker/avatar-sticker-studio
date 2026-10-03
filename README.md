@@ -2,6 +2,8 @@
 
 React + FastAPI + SQLite 贴纸生产网站，支持组织隔离、店铺开户、访客选图、多头像和版本对比、提交拼版及后台手动交付。旧订单、素材快照和原图继续保留。
 
+线上后台：**https://sticker.coreages.com/**；客户选图：**https://sticker.coreages.com/guest**。生产部署在阿里云 ECS `8.130.175.250`，由 Nginx 提供 HTTPS，单个 systemd 服务处理业务。数据、素材和密钥位于服务器私有目录；详见[部署说明](deploy/README.md)。
+
 ## Agent 接手入口
 
 先读 [AGENTS.md](AGENTS.md)。[架构与行为契约](docs/architecture-and-contracts.md)说明代码位置和业务边界，[运维指南](docs/agent-operations.md)说明安全启动、测试及发布，[交接记录](docs/agent-handoff.md)说明核对基线和仍需现场验证的内容。Claude / Gemini 的入口文件引用同一套规则。

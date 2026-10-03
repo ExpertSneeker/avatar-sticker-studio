@@ -25,6 +25,10 @@ The FastAPI lifespan starts the durable worker. A built `frontend/dist` is serve
 
 The command above starts real generation and Agiso workers; it is not a simulation. Set an isolated `STUDIO_DATA_DIR` for development, never point exploratory startup at business data, and note that `Database(...)` runs migrations even without starting a worker. Direct uvicorn does not load the repository `.env` file. Use the test fixtures for synthetic generation.
 
+## Production
+
+Canonical origin: https://sticker.coreages.com. Aliyun ECS `8.130.175.250` runs one Python 3.13 Uvicorn process behind Nginx; paths, certificates and deployment checks are defined in [deploy/README.md](../deploy/README.md). Frontend API requests remain same-origin. Keep bootstrap disabled, preserve the private encryption key and existing provider request IDs, and never start copied production databases as test services.
+
 ## Configuration
 
 - `STUDIO_DATA_DIR`: private data directory, default `.data` in the working directory. Keep on a local filesystem, not a network share. Contains SQLite WAL database, original upload chunks and immutable PNG assets. Directory mode 0700, DB/assets mode 0600.

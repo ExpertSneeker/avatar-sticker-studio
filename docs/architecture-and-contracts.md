@@ -100,3 +100,7 @@
 - `STUDIO_AGISO_ENCRYPTION_KEY` 加密店铺凭证，随意更换会导致旧凭证无法解密。账号授权、真实发信、售后和物流均不可用测试模拟冒充验收。
 
 配置和外部条件见 [Agiso 指南](agiso-setup.md)；其中带日期的店铺、余额、服务有效期和助手在线记录均需重新确认。
+
+## 生产入口与运行边界
+
+统一公网来源为 `https://sticker.coreages.com`，部署于阿里云 ECS `8.130.175.250`。Nginx 在独立虚拟主机终止 TLS 并转发到单个 loopback Uvicorn；数据库仍为单机 SQLite WAL。允许主机、修改请求来源、Secure Cookie 及 Agiso 公网来源必须一致；前端 `/api` 使用相对路径。原入口兼容跳转不承载业务 worker，原图和私有说明不通过静态目录暴露。详情见[生产部署](../deploy/README.md)。

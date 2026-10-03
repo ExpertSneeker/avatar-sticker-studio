@@ -2,6 +2,10 @@
 
 记录日期：2026-09-26。本文件记录此次交接的证据范围；长期规则以 [AGENTS.md](../AGENTS.md) 为入口，业务细节见[架构与行为契约](architecture-and-contracts.md)，命令见[运维指南](agent-operations.md)。接手时重新查看 Git 和运行环境，不把此处快照当作实时状态。
 
+## 当前部署交接
+
+2026-10-03 网站迁移到阿里云 ECS `8.130.175.250`，统一入口 `https://sticker.coreages.com`。当前迁移证据见[迁移验收](aliyun-migration-verification.md)，运行结构和后续发布以[部署说明](../deploy/README.md)为准。下文 2026-09-26 的 Git 和测试结果保留为历史记录。
+
 ## 主分支与本次范围
 
 - 核对并 fetch 后，`origin/main` 与原工作分支 `codex/avatar-sticker-studio` 均为 `e984fdb`；本地 `main` 原为 `1d5d594`，落后 74 个提交，已快进并切换到 `main`。

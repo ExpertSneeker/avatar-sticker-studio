@@ -2,11 +2,15 @@
 
 本文依据 2026-09-26 的源码与现有文档整理，是操作索引，不是线上状态报告。后续代码变化时应重新核对下列链接。本次实际运行的测试及范围见[交接记录](agent-handoff.md)。
 
+## 当前生产部署
+
+统一入口 `https://sticker.coreages.com`，阿里云 ECS `8.130.175.250`；发布使用单个 `avatar-sticker-studio` systemd 服务、独立 Python 3.13 和 Nginx TLS 虚拟主机。配置、DNS、证书续期及迁移顺序见[部署说明](../deploy/README.md)，2026-10-03 验收范围见[迁移记录](aliyun-migration-verification.md)。生产状态仍须现场确认，不能以本文代替线上核对。
+
 ## 1. 接手范围与证据
 
 - 先读 [AGENTS.md](../AGENTS.md)，用 `git status --short` 确认并行改动；不要还原、暂存或提交其他 Agent 的文件。测试、构建和发布应协调端口、工作目录及产物归属。
 - 本文仅维护运维与验证知识。功能、权限、入口、状态或恢复行为变化仍须同步 [后台使用说明](../backend/content/staff-guide.json) 的实际章节、版本、日期及维护记录，规则由 AGENTS.md 定义。
-- [组织框架发布说明](../deploy/framework-release.md) 是升级、备份和回退的操作入口；[部署说明](../deploy/README.md) 提供运行布局。当前 `deploy/` 只有两个审计 `.py` 和服务/环境模板，**没有 `.sh` 一键发布脚本**。不要猜测脚本名或从历史会话拼装发布脚本。
+- [组织框架发布说明](../deploy/framework-release.md) 是升级、备份和回退的操作入口；[部署说明](../deploy/README.md) 提供运行布局。当前 `deploy/` 提供两个审计 `.py`、Nginx 模板和服务/环境模板，**没有 `.sh` 一键发布脚本**。不要猜测脚本名或从历史会话拼装发布脚本。
 - [框架验收记录](framework-verification.md)、[图库发布记录](public-library-release.md)、[验证记录](verification.md)、[Agiso 配置记录](agiso-setup.md) 中的日期、提交、测试数量、账号和第三方状态都是历史证据，不能证明当前线上版本、余额、授权、备份或服务健康。
 - 报告分别写清：源码核实、隔离本地验证、真实第三方联调、生产部署与公网验收；不要将 mock 成功或历史记录写成已上线接通。
 

@@ -1,6 +1,6 @@
-# DMIT production deployment
+# 阿里云生产部署
 
-Production URL: https://sticker.magnusma.online
+Production URL: https://sticker.coreages.com
 
 The current organization/guest workflow and migration procedure are documented
 in [framework-release.md](framework-release.md). Its tenant roles, credit-free
@@ -8,7 +8,20 @@ generation, frozen customer selections and manual print-only downloads supersede
 the historical release notes below. Do not use the original local-data transfer
 procedure to upgrade an existing production database.
 
-The application runs as `sticker` on loopback port 8000, using one systemd-managed Uvicorn process. Cloudflare's existing `sub2api-dmit` tunnel routes this hostname to the application; its other ingress rules and the existing port 443 service are preserved. Do not start another production worker against a copied database.
+生产服务器为阿里云 ECS `8.130.175.250`（Ubuntu 22.04）。`sticker` 账号运行单个 systemd 管理的 Uvicorn 进程，仅监听 `127.0.0.1:8000`；独立 Nginx 虚拟主机负责 HTTPS 和反向代理。主站和 Wiki 使用自己的虚拟主机，不属于本应用发布范围。不要启动第二个生产 worker。
+
+## DNS、SSL 与入口
+
+阿里云 DNS 的 `sticker` A 记录指向 `8.130.175.250`，TTL 为 600 秒。生产后台为 https://sticker.coreages.com/，客户入口为 https://sticker.coreages.com/guest。前端 API 使用同源 `/api`，不需要把服务器 IP 写入前端代码。
+
+- Nginx 模板：[sticker-nginx.conf](sticker-nginx.conf)；生产安装到 `/etc/nginx/sites-available/sticker.coreages.com` 并链接到 `sites-enabled/`。
+- 独立 Let's Encrypt 证书位于 `/etc/letsencrypt/live/sticker.coreages.com/`。HTTP 的 `/.well-known/acme-challenge/` 使用 `/var/www/acme`；其他 HTTP 请求以 308 跳转 HTTPS。
+- 签发命令：`certbot certonly --webroot -w /var/www/acme -d sticker.coreages.com --non-interactive --agree-tos --reuse-key`（首次使用需按账户状态配置联系邮箱）。
+- 现有 `certbot.timer` 管理续期；`/etc/letsencrypt/renewal-hooks/deploy/20-nginx-reload` 在续期后执行 `nginx -t` 并 reload。验证使用 `certbot renew --cert-name sticker.coreages.com --dry-run`。
+- Nginx 不直接公开数据目录，也不为受保护 API 设置共享缓存。请求访问日志关闭，错误请求 URL 不落盘；应用诊断通过 systemd journal 的脱敏业务日志查看。
+- 历史客户入口仅作为服务器端兼容跳转，保留路径和订单号参数；业务、回调和未来消息统一使用新入口。兼容入口也在本服务器续期，不运行另一套业务服务。
+
+官方运行工具：[uv Python 安装](https://docs.astral.sh/uv/guides/install-python/)、[Certbot webroot](https://eff-certbot.readthedocs.io/en/stable/using.html#webroot)。
 
 ## Layout
 
@@ -18,11 +31,11 @@ The application runs as `sticker` on loopback port 8000, using one systemd-manag
 - `/var/lib/avatar-sticker-studio`: private database and assets; owned by `sticker`, mode 0700. Reference images are in `reference-assets/` and deployment verification artifacts in `deployment-qa/`, neither publicly served.
 - `/etc/avatar-sticker-studio.env`: root-owned mode 0600, based on the supplied example. Existing API keys remain in the private database, never Git.
 
-Install `python3-venv`, `fonts-noto-cjk`, `rsync`, and CA certificates. Build the frontend locally with `npm ci --prefix frontend && npm run build`; export production requirements using `uv export --frozen --no-dev --format requirements-txt`. Install dependencies in the server environment, transfer source/build, and install the supplied unit/environment file. Bootstrap is disabled in production; transfer initialized accounts before starting the service.
+Ubuntu 系统 Python 3.10 不满足项目约束。使用官方 uv 在 `/opt/avatar-sticker-studio/python` 安装独立 Python 3.13，并创建 `/opt/avatar-sticker-studio/venv`，不替换系统 Python。安装 `fonts-noto-cjk`、`rsync` 和 CA certificates。生产依赖使用锁文件及其哈希安装；网络较慢时可使用阿里云 PyPI 镜像。 Build the frontend locally with `npm ci --prefix frontend && npm run build`; export production requirements using `uv export --frozen --no-dev --format requirements-txt`. Install dependencies in the server environment, transfer source/build, and install the supplied unit/environment file. Bootstrap is disabled in production; transfer initialized accounts before starting the service.
 
-## Initial data transfer
+## 完整迁移与后续发布
 
-Wait for all in-flight jobs to finish and stop the local server before copying its complete data directory. Transfer through SSH, compare file SHA256 values and all records, run SQLite integrity and asset-reference checks, then start the server. Preserve original account credentials and prompt/API configuration. Never overwrite a production database that has received new orders with an earlier local copy.
+迁移前核对所有在途/未知请求、待处理通知及有效 OAuth 会话；等待可安全结束的任务，停止写入端后复制完整数据目录。保留一份受限的一次性迁移备份。新端先比较全部记录、SQLite 完整性和原图哈希，再修改允许主机、来源及 Agiso 公网 URL；只更新已有接入订单中的派生选图链接，历史快照和消息审计不批量替换。确认旧业务 worker 已停止后，只启动新端。 Transfer through SSH, compare file SHA256 values and all records, run SQLite integrity and asset-reference checks, then start the server. Preserve original account credentials and prompt/API configuration. Never overwrite a production database that has received new orders with an earlier local copy.
 
 The domain change requires logging in again and choosing local output directories again. Browser IndexedDB drafts, directory handles and local download ownership do not transfer between origins. Existing downloaded files without their management records remain protected from overwrite; select a new empty output directory when necessary.
 
