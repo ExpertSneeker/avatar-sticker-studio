@@ -3,13 +3,25 @@ import atexit
 import io
 import os
 import tempfile
+from collections import Counter
 
 from PIL import Image, ImageDraw
 from backend.app.main import create_app
+from backend.app.providers import ProviderFailure
 
 
 class BrowserTestProvider:
+    def __init__(self):
+        self.attempts = Counter()
+
     async def generate(self, template, avatar, prompt):
+        # A solid magenta template (e2e/fixtures/fail-once.png) alternates: each fresh generation fails
+        # once as an unsent upload, then its retry succeeds.
+        with Image.open(io.BytesIO(template)) as source:
+            if source.convert('RGBA').getpixel((0, 0)) == (255, 0, 255, 255):
+                self.attempts[template] += 1
+                if self.attempts[template] % 2:
+                    raise ProviderFailure('连接或上传到FAL失败，请求未送达，可重试', 'failed')
         # Deliberately synthetic test pixels, with real alpha and 1K dimensions.
         image = Image.new('RGBA', (1024, 1024))
         draw = ImageDraw.Draw(image)

@@ -91,6 +91,8 @@ class PasswordChange(Model):
 
 class SettingsPatch(Model):
     max_inflight: int | None = Field(None, ge=1, le=40)
+    max_uploads: int | None = Field(None, ge=1, le=40)
+    fal_upload_timeout: int | None = Field(None, ge=30, le=1800)
     prompt: str | None = Field(None, min_length=20, max_length=10000)
     fal_api_key: str | None = Field(None, max_length=500)
     fal_admin_key: str | None = Field(None, max_length=500)

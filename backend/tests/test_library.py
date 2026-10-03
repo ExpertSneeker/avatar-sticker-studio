@@ -90,3 +90,28 @@ def test_batch_transaction_failure_removes_new_files(context,monkeypatch):
     with app.state.db.transaction() as tx:
         assert not tx.all('stickers') and not tx.all('sticker_revisions') and not tx.all('assets')
     assert not list((app.state.db.root/'assets').glob('*.png'))
+
+
+def test_existing_templates_get_1024_revisions_and_history_is_kept(tmp_path):
+    from PIL import Image
+    from backend.app.db import Database
+    from backend.app.storage import save_asset
+    from backend.tests.test_api import png
+    db = Database(tmp_path)
+    with db.transaction() as tx:
+        old = save_asset(db, tx, png(size=(1254, 1254)), None, 'template', organization_id='org')
+        done = save_asset(db, tx, png(size=(1024, 1024)), None, 'template', organization_id='org')
+        for id, asset in (('big', old), ('ok', done)):
+            tx.put('stickers', {'id': id, 'organization_id': 'org', 'code': id, 'name': id, 'category': 'general', 'active': True, 'revision': 3, 'image': {'id': asset['id'], 'url': asset['url']}})
+        tx.delete('migrations', 'template-1024-v1')
+    Database(tmp_path)
+    Database(tmp_path)  # idempotent: a second start adds no revision
+    with db.transaction() as tx:
+        big, ok = tx.get('stickers', 'big'), tx.get('stickers', 'ok')
+        assert big['revision'] == 4 and big['image']['id'] != old['id'] and ok['revision'] == 3
+        assert tx.get('sticker_revisions', 'big:4')['image'] == big['image']
+        new = tx.get('assets', big['image']['id'])
+        assert new['kind'] == 'template' and new['organization_id'] == 'org' and new['scope'] == 'public'
+        assert tx.get('assets', old['id']) and (db.root / 'assets' / old['file']).exists()
+        assert tx.get('migrations', 'template-1024-v1')['resized'] == [{'sticker_id': 'big', 'from': old['id'], 'to': new['id']}]
+    assert Image.open(db.root / 'assets' / new['file']).size == (1024, 1024)

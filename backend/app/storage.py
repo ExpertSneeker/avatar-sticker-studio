@@ -6,15 +6,31 @@ from fastapi import HTTPException
 from .db import uid
 
 Image.MAX_IMAGE_PIXELS = 30_000_000
+# Generation inputs: templates scale (up or down) to a 1024px long edge; avatars only shrink to a 1024px short edge.
+TEMPLATE_EDGE = 1024
+AVATAR_SHORT_EDGE = 1024
 
 
-def normalize_image(data):
+def fitted_size(width, height, fit=None):
+    if fit == 'template':
+        scale = TEMPLATE_EDGE / max(width, height)
+    elif fit == 'avatar':
+        scale = min(1, AVATAR_SHORT_EDGE / min(width, height))
+    else:
+        return width, height
+    return max(1, round(width * scale)), max(1, round(height * scale))
+
+
+def normalize_image(data, fit=None):
     try:
         with Image.open(io.BytesIO(data)) as image:
             if image.format not in {'PNG', 'JPEG', 'WEBP'} or image.width * image.height > 30_000_000:
                 raise ValueError('只支持JPG、PNG、WebP且像素总量不得超过3000万')
             image = ImageOps.exif_transpose(image).convert('RGBA')
             image.load()
+            size = fitted_size(*image.size, fit)
+            if size != image.size:
+                image = image.resize(size, Image.Resampling.LANCZOS)
             out = io.BytesIO()
             image.save(out, 'PNG')
             return out.getvalue()

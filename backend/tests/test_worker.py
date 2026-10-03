@@ -482,3 +482,23 @@ def test_print_layout_version_rebuilds_pages_from_saved_results_without_generati
     assert [a['id'] for a in before['artifacts'] if a['kind']=='overview']==[a['id'] for a in after['artifacts'] if a['kind']=='overview']
     assert [a['id'] for a in before['artifacts'] if a['kind']=='print']!=[a['id'] for a in after['artifacts'] if a['kind']=='print']
     assert w.publish(o['id']) is False
+
+
+def test_upload_limit_caps_only_submissions_without_request_id(context):
+    app, client, clock, _ = context
+    p = QueueProvider(); w = app.state.worker; w.provider = p
+    me = client.get('/api/auth/me').json()
+    assert client.patch('/api/admin/users/'+me['id']+'/concurrency', json={'generation_concurrency':10,'expected_limit':2}).status_code == 200
+    settings = client.patch('/api/admin/settings', json={'max_inflight':16, 'max_uploads':2}).json()
+    assert settings['max_uploads'] == 2 and settings['fal_upload_timeout'] == 300
+    order(client)
+    first, second = w.claim(), w.claim()
+    assert first and second and w.claim() is None, 'a third simultaneous upload must wait'
+    # Once a submission has a request ID it waits in FAL's queue and frees its upload slot.
+    asyncio.run(w.execute(first))
+    assert p.submissions == 1
+    third = w.claim()
+    assert third and not third.get('fal_request_id') and w.claim() is None
+    assert client.patch('/api/admin/settings', json={'max_uploads':0}).status_code == 422
+    assert client.patch('/api/admin/settings', json={'fal_upload_timeout':29}).status_code == 422
+    assert client.patch('/api/admin/settings', json={'fal_upload_timeout':600}).json()['fal_upload_timeout'] == 600

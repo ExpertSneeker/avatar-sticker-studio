@@ -118,6 +118,8 @@ class Database:
             migrate_library_status(tx)
             from .organizations import migrate_organizations
             migrate_organizations(tx)
+            from .library import migrate_template_size
+            migrate_template_size(self, tx)
         os.chmod(self.path, 0o600)
         # An idle connection keeps the WAL open, so closing each per-transaction connection is
         # no longer "last close" (checkpoint, fsync and WAL deletion on every transaction).

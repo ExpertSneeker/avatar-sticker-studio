@@ -81,7 +81,10 @@
 
 - 当前 provider 源码使用 FAL `openai/gpt-image-2.5/flare/edit`；凭证是 `FAL_KEY` 或后台私有设置，环境变量优先。这描述仓库实现，不保证第三方服务未来仍可用。变更 provider 前核对其当时官方契约。
 - 新任务免积分门槛，但历史账本、实际生图记录及旧请求占用保留。全站 `max_inflight` 默认 2（1–40）和账号并发同时约束；访客任务计入开户账号。没有旧 RPM 门槛。
-- 请求 ID 和队列 URL 持久化；超时或下载失败优先查原请求，不重新提交。无 ID 的未知提交也保留占用，人工核对后再确认结束。不要通过清空队列、改状态或重置租约绕过重复计费保护。
+- 提交阶段（尚无 request ID、正在上传模板和头像）另受全站 `max_uploads`（默认 3，1–40）约束，已拿到 ID 在 FAL 排队的任务不占用；提交 POST 的写超时为全站 `fal_upload_timeout`（默认 300 秒，30–1800），其他 FAL 请求仍为 60 秒。整个 JSON 请求体是一次写入，写超时即上传上限。
+- 请求 ID 和队列 URL 持久化；超时或下载失败优先查原请求，不重新提交。提交时连接失败（ConnectError/ConnectTimeout）或请求体未写完（WriteError/WriteTimeout）FAL 不可能接单，记为 `failed` 并释放占用；其余无 ID 的未知提交（如请求体已发出后读响应中断）仍保留占用，人工核对后再确认结束。不要通过清空队列、改状态或重置租约绕过重复计费保护。
+- 客户订单的首次生成明确失败（`failed`、无占用、无原图、仍是该位置的首次任务）时，DTO 给出 `can_retry`；访客可调用 `POST /api/guest/order/slots/{slot}/retry`，每个位置最多 3 次（`slot.guest_retries`，同一首次任务的重复位置一起计数），后台重试不限且都不占 `rerun_limit`。访客的 `error` 是按状态生成的安全文案，不含供应商原始错误。
+- 贴纸（模板）图片按长边缩放到 1024 像素后入库，头像短边超过 1024 像素时缩小（`storage.normalize_image` 的 `fit`）；启动迁移 `template-1024-v1` 为既有非 1024 像素贴纸生成新资产和新修订，旧资产/修订保留给历史订单。
 - 原始付费结果先保留，再做可选 Yezi 抠图；抠图有独立凭证和并发/速率控制。存在原图时用“仅重试后处理”，不能误当作重新生图。生产没有 mock 开关，测试通过显式 provider/transport 注入。
 - 访客媒体（含后台订单弹窗里的水印预览）以 WebP q90 输出（`guest_media.PIPELINE` 为缓存版本），原图、打印文件、下载和 ZIP 仍为 PNG。
 - 水印媒体三层缓存（`guest_media.py`、`media_cache.py`）：每进程 256MB 内存 LRU → 硬盘缓存（`STUDIO_MEDIA_CACHE_DIR`，生产为 `/var/cache/avatar-sticker-studio/media`，默认 `<数据目录>/media-cache`）→ 现场生成。文件按内容命名，相同贴纸 + 水印文字 + 尺寸在所有订单间共用，生成量与订单数无关。`library/<asset>/` 存在用图库贴纸，在贴纸删除、水印不再被在职账号或未完成订单使用、管线变化时清理；`customer/<org>/<asset>/` 存头像/结果/总览，最后访问满组织设置天数（`organizations.media_cache_days`，默认 15，组织管理员 1–365 天，`/api/organization/settings`）后清理。不设容量上限，磁盘剩余低于 512MB 时只跳过写入。`MediaWarmer` 后台线程（nice 19，每 10 分钟）先清理再预生成：在用水印 × 在用贴纸的 160/320/640 三档（一次水印绘制），以及未完成订单在保留期内的头像/结果和已就绪总览的 640。资产删除通过 `cleanup_files` 的 `media-cache/<asset>` 记录持久重试清理。超管存储面板分别统计图库水印图与客户图片。

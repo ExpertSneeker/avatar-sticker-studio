@@ -1,11 +1,12 @@
 """Shared sticker library and immutable, source-traceable revisions."""
 import json
+from PIL import Image
 from fastapi import HTTPException, Request
 from starlette.datastructures import UploadFile
 from .auth import same_organization, managed_user, can_edit_library, require_library_editor, require_admin, public_user
 from .db import uid
 from .schemas import ActivePatch, LibraryPermissionPatch, TemplateWrite, StickerBatch, safe_name
-from .storage import normalize_image, save_asset
+from .storage import TEMPLATE_EDGE, normalize_image, save_asset
 
 CATEGORIES = {'男孩':'boy', '女孩':'girl', '动物':'animal', '通用':'general'}
 
@@ -103,7 +104,7 @@ def register_library(app, db, user):
                 if not isinstance(file,UploadFile): raise HTTPException(422,'图片上传无效')
                 data=await file.read(25*1024*1024+1)
                 if len(data)>25*1024*1024: raise HTTPException(413,'单张图片不得超过25MB')
-                normalized=normalize_image(data)
+                normalized=normalize_image(data,'template')
                 await file.seek(0)
                 await file.write(normalized)
                 file.file.truncate()
@@ -265,3 +266,31 @@ def migrate_library_status(tx):
                 tx.put(kind,value)
                 snapshot(tx,kind,value)
     tx.put('migrations',{'id':'library-always-available-v1'})
+
+
+def migrate_template_size(db, tx):
+    """Give each live sticker a 1024px image as a new revision; old assets and revisions stay for history."""
+    if tx.get('migrations','template-1024-v1'):
+        return
+    resized=[]
+    for sticker in tx.all('stickers'):
+        asset=tx.get('assets',sticker['image']['id']) if not sticker.get('deleted') else None
+        path=db.root/'assets'/asset['file'] if asset else None
+        if not path or not path.exists():
+            continue
+        try:
+            with Image.open(path) as image:
+                if max(image.size)==TEMPLATE_EDGE:
+                    continue
+            data=normalize_image(path.read_bytes(),'template')
+        except Exception:
+            # An unreadable source must not block startup; it keeps its original image.
+            resized.append({'sticker_id':sticker['id'],'from':asset['id'],'skipped':True})
+            continue
+        replacement=save_asset(db,tx,data,asset.get('owner'),'template',organization_id=asset.get('organization_id'))
+        replacement['scope']=asset.get('scope','public')
+        tx.put('assets',replacement)
+        sticker.update(image={'id':replacement['id'],'url':replacement['url']},revision=sticker['revision']+1)
+        tx.put('stickers',sticker);snapshot(tx,'stickers',sticker)
+        resized.append({'sticker_id':sticker['id'],'from':asset['id'],'to':replacement['id']})
+    tx.put('migrations',{'id':'template-1024-v1','resized':resized})

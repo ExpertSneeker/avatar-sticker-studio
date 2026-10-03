@@ -19,12 +19,17 @@ class CutoutDeferred(Exception):
     """Admission was denied before any cutout HTTP request was sent."""
 
 
+# Site settings defaults: simultaneous FAL submissions (image uploads) and their body-upload timeout in seconds.
+DEFAULT_MAX_UPLOADS = 3
+DEFAULT_UPLOAD_TIMEOUT = 300
+
+
 class FalProvider:
     queue_endpoint = 'https://queue.fal.run/openai/gpt-image-2.5'
     endpoint = queue_endpoint + '/flare/edit'
 
-    def __init__(self, key):
-        self.key = key
+    def __init__(self, key, upload_timeout=DEFAULT_UPLOAD_TIMEOUT):
+        self.key, self.upload_timeout = key, upload_timeout
 
     @staticmethod
     def queue_url(url):
@@ -40,8 +45,15 @@ class FalProvider:
     async def request(self, method, url, payload=None):
         self.queue_url(url)
         try:
-            async with httpx.AsyncClient(timeout=60, follow_redirects=False) as client:
+            # The whole JSON body is one write, so the write timeout bounds the image upload.
+            timeout = httpx.Timeout(60, write=self.upload_timeout) if method == 'POST' else 60
+            async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
                 response = await client.request(method, url, headers={'Authorization': 'Key ' + self.key}, **({'json': payload} if payload is not None else {}))
+        except (httpx.ConnectError, httpx.ConnectTimeout, httpx.WriteError, httpx.WriteTimeout) as exc:
+            # No connection or an incomplete body: FAL cannot have accepted the request.
+            if method == 'POST':
+                raise ProviderFailure('连接或上传到FAL失败，请求未送达，可重试', 'failed') from exc
+            raise ProviderFailure('FAL连接中断，保留请求等待恢复', 'retry') from exc
         except httpx.TransportError as exc:
             raise ProviderFailure('FAL连接中断，保留请求等待恢复', 'unknown' if method == 'POST' else 'retry') from exc
         if response.status_code == 429:

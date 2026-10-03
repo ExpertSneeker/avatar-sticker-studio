@@ -12,7 +12,7 @@ from .db import uid
 from .agiso_service import order_allowed
 from . import credits
 from .processing import PRINT_LAYOUT_STYLE, decode, encode, overview, pack_set
-from .providers import CutoutDeferred, FalProvider, ProviderFailure, YeziProvider
+from .providers import DEFAULT_MAX_UPLOADS, DEFAULT_UPLOAD_TIMEOUT, CutoutDeferred, FalProvider, ProviderFailure, YeziProvider
 from .schemas import PrintSettings
 from .storage import asset_bytes, save_asset
 
@@ -81,7 +81,11 @@ class Worker:
             generation_inflight = sum(bool(i.get('remote_reserved')) for i in items)
             owner_inflight = Counter(i['owner'] for i in items if i.get('remote_reserved'))
             processing_inflight = sum(i['status'] == 'running' and i.get('processing_stage') == 'postprocess' for i in items)
-            generation_admitted = configured and generation_inflight < config['max_inflight'] and now >= config.get('fal_retry_at', 0)
+            # Items still submitting (no request ID yet) are uploading images to FAL; the site setting caps them.
+            # Providers without a separate submit step (test doubles) have no upload phase to cap.
+            uploading = sum(i['status'] == 'running' and i.get('processing_stage') != 'postprocess' and not i.get('fal_request_id') for i in items)
+            upload_admitted = not (self.provider is None or hasattr(self.provider, 'submit')) or uploading < config.get('max_uploads', DEFAULT_MAX_UPLOADS)
+            generation_admitted = configured and upload_admitted and generation_inflight < config['max_inflight'] and now >= config.get('fal_retry_at', 0)
             orders = LazyRecords(tx, 'orders')
             active_users = {u['id']: u for u in tx.all('users') if u['active']}
             candidates = [i for i in items if i['status'] == 'queued' and not i.get('cutout_inflight') and i.get('next_at', 0) <= now]
@@ -139,7 +143,7 @@ class Worker:
                 response_received = True
                 image = decode(data, require_transparency=False)
             else:
-                provider = self.provider or FalProvider(os.environ.get('FAL_KEY') or config.get('fal_api_key', ''))
+                provider = self.provider or FalProvider(os.environ.get('FAL_KEY') or config.get('fal_api_key', ''), config.get('fal_upload_timeout', DEFAULT_UPLOAD_TIMEOUT))
                 if hasattr(provider, 'submit'):
                     if not item.get('fal_request_id'):
                         job = await provider.submit(template=template, avatar=avatar, prompt=order['prompt'])

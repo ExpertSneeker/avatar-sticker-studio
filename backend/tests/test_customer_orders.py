@@ -584,3 +584,73 @@ def test_draft_rejects_foreign_uploads_and_drops_retired_library_items(context):
     current=c.get('/api/customer-orders/'+o['id']).json()
     assert action(c,current,'cancel').status_code==200
     assert c.put('/api/customer-orders/'+o['id']+'/draft',json={'avatars':[]}).status_code==409
+
+
+def guest_action(guest, name, **kw):
+    order=guest.get('/api/guest/order').json()
+    return guest.post('/api/guest/order/'+name,json={'client_token':name+str(order['version']),'expected_version':order['version'],**kw})
+
+
+def test_guest_sees_failure_and_retries_definite_first_failures_up_to_limit(context):
+    from backend.app.providers import ProviderFailure
+    app,c,_,provider=context
+    # Two duplicate slots share one first generation; a retry replaces it for both and counts once for each.
+    o=generate(c,opened(c,rerun_limit=0),sticker(c,'ONE')['id'])
+    guest=TestClient(app); guest.post('/api/guest/login',json={'order_number':o['order_number']})
+    provider.error=ProviderFailure('连接或上传到FAL失败，请求未送达，可重试','failed')
+    for attempt in range(3):
+        run(app)
+        slot=guest.get('/api/guest/order').json()['slots'][0]
+        assert slot['status']=='failed' and slot['can_retry']
+        assert slot['error']==f'连接生成服务失败，可点击“重试生成”（还可重试 {3-attempt} 次）'
+        retried=guest_action(guest,'slots/'+slot['id']+'/retry'); assert retried.status_code==200,retried.text
+        assert {s['status'] for s in retried.json()['slots']}=={'queued'}
+    run(app)
+    g=guest.get('/api/guest/order').json(); slot=g['slots'][0]
+    assert not slot['can_retry'] and '重试次数已用完' in slot['error'] and 'FAL' not in slot['error']
+    assert guest_action(guest,'slots/'+slot['id']+'/retry').status_code==409
+    # Staff retries stay unlimited and never use the order's rerun budget (zero here).
+    staff=c.get('/api/customer-orders/'+o['id']).json()
+    assert staff['slots'][0]['can_retry'] and staff['slots'][0]['error'].startswith('连接或上传到FAL失败')
+    provider.error=None
+    assert action(c,staff,'slots/'+staff['slots'][0]['id']+'/retry').status_code==200
+    run(app)
+    g=guest.get('/api/guest/order').json()
+    assert {s['status'] for s in g['slots']}=={'completed'} and not any(s['can_retry'] for s in g['slots'])
+    assert all(s['reruns_used']==0 for s in g['slots'])
+
+
+def test_guest_cannot_retry_unknown_or_use_staff_recovery(context):
+    from backend.app.providers import ProviderFailure
+    app,c,_,provider=context
+    o=generate(c,opened(c),sticker(c,'ONE')['id'])
+    guest=TestClient(app); guest.post('/api/guest/login',json={'order_number':o['order_number']})
+    provider.error=ProviderFailure('FAL连接中断，保留请求等待恢复','unknown'); run(app)
+    slot=guest.get('/api/guest/order').json()['slots'][0]
+    assert slot['status']=='unknown' and not slot['can_retry'] and slot['error']=='生成结果待确认，请联系工作人员处理'
+    assert guest_action(guest,'slots/'+slot['id']+'/retry').status_code==409
+    for name in ('resolve','reprocess'):
+        assert guest.post('/api/guest/order/slots/'+slot['id']+'/'+name,json={'client_token':'x','expected_version':1}).status_code in (404,405)
+
+
+def test_templates_are_1024_and_large_avatars_shrink_to_1024_short_edge(context):
+    from PIL import Image
+    app,c,_,_=context
+    def stored(asset_id):
+        db=app.state.db
+        with db.transaction() as tx: asset=tx.get('assets',asset_id)
+        return Image.open(db.root/'assets'/asset['file']).size
+    small=sticker(c,'SMALL')
+    assert stored(small['image']['id'])==(1024,1024)
+    wide=c.post('/api/stickers',data={'category':'general'},files=[('files',('WIDE.png',png(size=(2000,1000)),'image/png'))])
+    assert wide.status_code==200 and stored(wide.json()[0]['image']['id'])==(1024,512)
+    o=opened(c); guest=TestClient(app); guest.post('/api/guest/login',json={'order_number':o['order_number']})
+    data=png(size=(1500,3000)); init={'filename':'big.png','size':len(data),'sha256':hashlib.sha256(data).hexdigest()}
+    u=guest.post('/api/guest/uploads/init',json=init).json()
+    guest.put('/api/guest/uploads/'+u['id'],content=data,headers={'Upload-Offset':'0'})
+    assert guest.post('/api/guest/uploads/'+u['id']+'/complete').status_code==200
+    with app.state.db.transaction() as tx: asset_id=tx.get('uploads',u['id'])['asset_id']
+    assert stored(asset_id)==(1024,2048)
+    small_avatar=guest_upload(guest)['id']
+    with app.state.db.transaction() as tx: asset_id=tx.get('uploads',small_avatar)['asset_id']
+    assert stored(asset_id)==(32,32)

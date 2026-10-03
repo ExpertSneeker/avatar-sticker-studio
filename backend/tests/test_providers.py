@@ -64,6 +64,33 @@ def test_submission_timeout_is_unknown(monkeypatch):
     assert e.value.status=='unknown' and 'secret' not in str(e.value)
 
 
+@pytest.mark.parametrize('error', [httpx.ConnectError, httpx.ConnectTimeout, httpx.WriteError, httpx.WriteTimeout])
+def test_unsent_submission_is_a_definite_failure(monkeypatch, error):
+    # No connection or an incomplete body: FAL cannot have accepted it, so it is safe to retry.
+    def fail(r): raise error('secret', request=r)
+    install(monkeypatch, fail)
+    with pytest.raises(ProviderFailure) as e: asyncio.run(providers.FalProvider('secret').submit(b'a', b'b', 'p'))
+    assert e.value.status == 'failed' and '未送达' in str(e.value) and 'secret' not in str(e.value)
+    with pytest.raises(ProviderFailure) as e: asyncio.run(providers.FalProvider('secret').poll({'fal_status_url': 'https://queue.fal.run/x/requests/job/status'}))
+    assert e.value.status == 'retry'
+
+
+def test_upload_timeout_applies_only_to_submission_writes(monkeypatch):
+    seen = []
+    real = httpx.AsyncClient
+    def client(**kw):
+        seen.append(kw['timeout'])
+        return real(transport=httpx.MockTransport(lambda r: httpx.Response(200, json={'request_id': 'job-1', 'status': 'IN_QUEUE'})), **kw)
+    monkeypatch.setattr(httpx, 'AsyncClient', client)
+    async def run():
+        p = providers.FalProvider('k', upload_timeout=420)
+        job = await p.submit(b'a', b'b', 'p')
+        await p.poll(job)
+    asyncio.run(run())
+    assert seen[0] == httpx.Timeout(60, write=420) and seen[1] == 60
+    assert providers.FalProvider('k').upload_timeout == providers.DEFAULT_UPLOAD_TIMEOUT == 300
+
+
 def test_malformed_submission_with_id_retains_canonical_lookup(monkeypatch):
     install(monkeypatch,lambda r:httpx.Response(200,json={'request_id':'job-1','status_url':'https://evil.test','response_url':'https://evil.test'}))
     job=asyncio.run(providers.FalProvider('k').submit(b'a',b'b','p'))

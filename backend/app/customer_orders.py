@@ -20,6 +20,8 @@ from .schemas import Model, PrintSettings, UploadInit, safe_name
 from .storage import asset_bytes, normalize_image, save_asset
 
 COOKIE = 'studio_guest'
+# Free first-generation retries a guest may start per slot; staff retries are not limited.
+GUEST_RETRY_LIMIT = 3
 
 
 def digest(value):
@@ -156,6 +158,31 @@ def reconcile(tx, order):
     return order
 
 
+def retryable(item, slot):
+    """A first generation that definitely failed before producing an image; retrying is free of the rerun budget."""
+    return bool(item and item['status'] == 'failed' and not item.get('remote_reserved') and not item.get('cutout_inflight')
+                and not item.get('raw_result_id') and item['id'] == slot['initial_item_id'])
+
+
+def guest_error(item, slot):
+    """Guest-safe outcome text; internal provider details stay with staff."""
+    error = item.get('error') or ''
+    if item['status'] == 'unknown' or item.get('cutout_inflight') or item.get('remote_reserved') and item['status'] == 'failed':
+        return '生成结果待确认，请联系工作人员处理'
+    if item['status'] != 'failed':
+        return '生成服务繁忙，正在自动重试'
+    reason = ('生成服务未接受这张图片，可能触发了内容限制' if 'HTTP 422' in error or '内容限制' in error
+              else '连接生成服务失败' if '未送达' in error else '生成失败')
+    if retryable(item, slot):
+        left = GUEST_RETRY_LIMIT - slot.get('guest_retries', 0)
+        return f'{reason}，可点击“重试生成”（还可重试 {left} 次）' if left > 0 else f'{reason}，重试次数已用完，请联系工作人员处理'
+    if item.get('raw_result_id'):
+        return '图片处理未完成，请联系工作人员处理'
+    if item['id'] != slot['initial_item_id']:
+        return f'{reason}，本次重跑未占用重试次数'
+    return '生成未完成，请联系工作人员处理'
+
+
 def draft_avatars(order):
     return (order.get('draft') or {}).get('avatars', []) if order['state'] == 'draft' else []
 
@@ -194,7 +221,8 @@ def dto(tx, order, guest=False, summary=False):
             row['status'] = item['status'] if item else 'queued'
             row['versions'] = [{'id': v['id'], 'preview_url': media_url(order, v['asset_id'], guest)} for v in slot['versions']]
             if item and item.get('error'):
-                row['error'] = '生成未完成，请联系工作人员处理' if guest else item['error']
+                row['error'] = guest_error(item, slot) if guest else item['error']
+            row['can_retry'] = retryable(item, slot) and (not guest or slot.get('guest_retries', 0) < GUEST_RETRY_LIMIT)
             if not guest:
                 row['raw_available'] = bool(item and item.get('raw_result_id'))
                 row['needs_resolution'] = bool(item and (item['status'] == 'unknown' or item.get('cutout_inflight') or item.get('remote_reserved') and item['status'] == 'failed'))
@@ -540,8 +568,10 @@ def register_customer_orders(app, db, user):
                     raise HTTPException(404, '贴纸位置不存在')
                 item = tx.get('items', slot['active_item_id'])
                 if action in {'retry', 'resolve', 'reprocess'}:
-                    if guest:
+                    if guest and action != 'retry':
                         raise HTTPException(403, '需要工作人员处理')
+                    if guest and slot.get('guest_retries', 0) >= GUEST_RETRY_LIMIT:
+                        raise HTTPException(409, '这张图片的重试次数已用完，请联系工作人员处理')
                     if action == 'resolve':
                         if item['status'] not in {'unknown', 'failed'}:
                             raise HTTPException(409, '该任务不需要人工核对')
@@ -568,6 +598,8 @@ def register_customer_orders(app, db, user):
                         for linked in order['slots']:
                             if linked['initial_item_id'] == item['id'] and linked['active_item_id'] == item['id']:
                                 linked.update(initial_item_id=replacement['id'], active_item_id=replacement['id'])
+                                if guest:
+                                    linked['guest_retries'] = linked.get('guest_retries', 0) + 1
                 elif action == 'rerun':
                     if item['status'] not in {'completed', 'failed'} or item.get('remote_reserved') or item.get('cutout_inflight') or slot['pending_version_id']:
                         raise HTTPException(409, '请等待生成并选择待确认结果')
@@ -667,6 +699,8 @@ def register_customer_orders(app, db, user):
     def resolve(id: str, slot_id: str, data: Resolve, request: Request):
         return mutate(request, data, 'resolve', id, slot_id=slot_id)
 
+    def guest_retry(slot_id: str, data: Mutation, request: Request): return mutate(request, data, 'retry', None, True, slot_id)
+    app.add_api_route('/api/guest/order/slots/{slot_id}/retry', guest_retry, methods=['POST'])
     for recovery in ('retry', 'reprocess'):
         def recovery_endpoint(action):
             def endpoint(id: str, slot_id: str, data: Mutation, request: Request):
@@ -787,7 +821,7 @@ def register_customer_orders(app, db, user):
                     value['offset'] = 0
                     tx.put('uploads', value)
                     return JSONResponse({'detail': '文件校验失败，请重新上传'}, status_code=400)
-                asset = save_asset(db, tx, normalize_image(data), order['owner'], 'avatar', order_id=order['id'])
+                asset = save_asset(db, tx, normalize_image(data, 'avatar'), order['owner'], 'avatar', order_id=order['id'])
                 value.update(complete=True, asset_id=asset['id'])
                 tx.put('uploads', value)
             return upload_dto(order, value)

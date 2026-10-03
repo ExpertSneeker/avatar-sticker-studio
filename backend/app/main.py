@@ -22,6 +22,7 @@ from .auth import same_organization, require_superadmin, managed_user, hash_pass
 from .db import Database, uid
 from .schemas import AccountPatch, ActivePatch, Credentials, CleanupConfirm, CleanupPreview, OrderCreate, PasswordChange, PrintSettings, Repack, ResolveUnknown, SettingsPatch, Signup, UploadInit, safe_name
 from .storage import asset_bytes, normalize_image, save_asset
+from .providers import DEFAULT_MAX_UPLOADS, DEFAULT_UPLOAD_TIMEOUT
 from .maintenance import account_deletion_plan, cleanup_plan, drain_cleanup, stage_cleanup, storage_stats
 from .statistics import summarize
 from .previews import PreviewCache
@@ -229,7 +230,7 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
             return {'ok': True}
 
     def public_settings(config):
-        return {**{k: config[k] for k in ('max_inflight', 'prompt', 'prompt_version')}, 'fal_configured': bool(os.environ.get('FAL_KEY') or config.get('fal_api_key')), 'cutout_configured': bool(os.environ.get('YEZI_API_KEY') or config.get('cutout_api_key')),
+        return {**{k: config[k] for k in ('max_inflight', 'prompt', 'prompt_version')}, 'max_uploads': config.get('max_uploads', DEFAULT_MAX_UPLOADS), 'fal_upload_timeout': config.get('fal_upload_timeout', DEFAULT_UPLOAD_TIMEOUT), 'fal_configured': bool(os.environ.get('FAL_KEY') or config.get('fal_api_key')), 'cutout_configured': bool(os.environ.get('YEZI_API_KEY') or config.get('cutout_api_key')),
                 'fal_balance_configured': bool(os.environ.get('FAL_ADMIN_KEY') or config.get('fal_admin_key')),
                 'fal_balance_key_source': 'environment' if os.environ.get('FAL_ADMIN_KEY') else 'settings' if config.get('fal_admin_key') else None}
 
@@ -515,7 +516,7 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
                     value['offset'] = 0
                     tx.put('uploads', value)
                     return JSONResponse({'detail': 'SHA256校验失败，上传进度已重置，请重新上传源文件'}, status_code=400)
-                asset = save_asset(db, tx, normalize_image(data), value['owner'], 'avatar')
+                asset = save_asset(db, tx, normalize_image(data, 'avatar'), value['owner'], 'avatar')
                 value.update(complete=True, asset_id=asset['id'], url=asset['url'])
                 tx.put('uploads', value)
             return {k: value[k] for k in ('id', 'filename', 'url')}

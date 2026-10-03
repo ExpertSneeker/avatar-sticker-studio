@@ -8,6 +8,8 @@ export interface CustomerSlot {
   id:string; avatar_id:string; sticker_code:string; status:string
   reruns_used:number; reruns_reserved:number; selected_version_id:string|null
   pending_version_id:string|null; versions:CustomerVersion[]; error?:string|null; raw_available?:boolean; needs_resolution?:boolean
+  // A definitely failed first generation that may be retried (guests: within their per-slot limit).
+  can_retry?:boolean
 }
 export interface CustomerAvatar {id:string; name:string; preview_url:string}
 export interface AvatarChoice {upload_id:string;template_ids:string[];sticker_ids:string[]}

@@ -12,6 +12,6 @@ export interface Artifact {id:string;path:string;url:string;sha256:string;size:n
 export interface Manifest {order_id:string;name:string;version:number;complete:boolean;files:Artifact[]}
 export interface ExportEntry {item_id:string;sticker_id:string;code:string;revision:number;source_type:"template"|"sticker";source_id:string;position:number;copy_index:number}
 export interface Order {generation_count?:number;export_count?:number;export_entries?:ExportEntry[];client_token?:string;preview_url?:string|null;download_ready?:boolean;id:string;name:string;status:string;created_at:string;total:number;completed:number;failed:number;unknown:number;paused:boolean;avatar_url:string;template_codes:string[];print_settings:PrintSettings;artifact_version:number;items?:Item[];artifacts?:Artifact[];archived?:boolean;processing_error?:string|null}
-export interface Settings {max_inflight:number;prompt:string;prompt_version:number;fal_configured:boolean;cutout_configured:boolean;fal_balance_configured:boolean;fal_balance_key_source:'environment'|'settings'|null}
+export interface Settings {max_inflight:number;max_uploads:number;fal_upload_timeout:number;prompt:string;prompt_version:number;fal_configured:boolean;cutout_configured:boolean;fal_balance_configured:boolean;fal_balance_key_source:'environment'|'settings'|null}
 export interface FalBalance {account:string;current_balance:number;currency:string;queried_at:number}
 export interface UploadResult {id:string;offset:number;complete:boolean;filename?:string;url?:string}
