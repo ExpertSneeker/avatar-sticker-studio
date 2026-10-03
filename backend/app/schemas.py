@@ -93,7 +93,18 @@ class SettingsPatch(Model):
     max_inflight: int | None = Field(None, ge=1, le=40)
     prompt: str | None = Field(None, min_length=20, max_length=10000)
     fal_api_key: str | None = Field(None, max_length=500)
+    fal_admin_key: str | None = Field(None, max_length=500)
     cutout_api_key: str | None = Field(None, max_length=500)
+
+    @field_validator('fal_admin_key')
+    @classmethod
+    def clean_fal_admin_key(cls, value):
+        if value is None:
+            return value
+        value = value.strip()
+        if value and (not value.isascii() or any(c.isspace() or ord(c) < 33 or ord(c) == 127 for c in value)):
+            raise ValueError('FAL ADMIN Key 格式不正确，请粘贴完整密钥')
+        return value
 
 
 class ActivePatch(Model):

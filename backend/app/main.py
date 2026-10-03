@@ -223,7 +223,9 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
             return {'ok': True}
 
     def public_settings(config):
-        return {**{k: config[k] for k in ('max_inflight', 'prompt', 'prompt_version')}, 'fal_configured': bool(os.environ.get('FAL_KEY') or config.get('fal_api_key')), 'cutout_configured': bool(os.environ.get('YEZI_API_KEY') or config.get('cutout_api_key'))}
+        return {**{k: config[k] for k in ('max_inflight', 'prompt', 'prompt_version')}, 'fal_configured': bool(os.environ.get('FAL_KEY') or config.get('fal_api_key')), 'cutout_configured': bool(os.environ.get('YEZI_API_KEY') or config.get('cutout_api_key')),
+                'fal_balance_configured': bool(os.environ.get('FAL_ADMIN_KEY') or config.get('fal_admin_key')),
+                'fal_balance_key_source': 'environment' if os.environ.get('FAL_ADMIN_KEY') else 'settings' if config.get('fal_admin_key') else None}
 
     @app.get('/api/admin/settings')
     def get_settings(request: Request):
@@ -241,6 +243,24 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
             config.update(data.model_dump(exclude_none=True))
             tx.put('config', config)
             return public_settings(config)
+
+    @app.get('/api/admin/fal/balance')
+    def fal_balance(request: Request, response: Response):
+        def credential(tx):
+            superadmin(tx, request)
+            return os.environ.get('FAL_ADMIN_KEY') or tx.get('config', 'settings').get('fal_admin_key')
+        key = db.read(credential)
+        if not key:
+            raise HTTPException(409, '请先保存 FAL ADMIN Key，再查询余额')
+        from .fal_billing import fetch_balance
+        # Network I/O must not hold a database transaction/write lock.
+        result = fetch_balance(key)
+        current_key = db.read(credential)  # Revalidate session/role after I/O.
+        if current_key != key:
+            raise HTTPException(409, '余额查询密钥已变化，请重新查询')
+        response.headers['Cache-Control'] = 'private, no-store'
+        response.headers['Vary'] = 'Cookie, X-Studio-User'
+        return {**result, 'queried_at': now()}
 
     @app.get('/api/statistics')
     def personal_statistics(request: Request, days: Literal["0", "1", "3", "7", "30"] = "30", offset: int = Query(480, ge=-720, le=840)):

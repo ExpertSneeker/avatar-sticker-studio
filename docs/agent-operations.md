@@ -45,6 +45,7 @@
 | 配置名 | 作用与边界 |
 | --- | --- |
 | `STUDIO_DATA_DIR` | [main.py](../backend/app/main.py) 的私有数据库/文件根目录；未指定时 `.data`。测试使用独立临时目录，部署保留正式数据目录。 |
+| `FAL_ADMIN_KEY` | 可选的独立 FAL ADMIN scope 余额密钥，优先于后台保存的 `fal_admin_key`；生图仍使用 `FAL_KEY` / `fal_api_key`。仅超级管理员在“管理设置”手动查询，不能将余额接口的 403 当作生成密钥失效。真实联调需要有效 ADMIN Key；密钥只在后台密码框或服务器私密环境中输入，不写日志/报告。 |
 | `STUDIO_PORT` | 仅本地启动器读取，默认 8000，校验 1024–65535；直接 Uvicorn 和 systemd 的端口由命令行决定。 |
 | `STUDIO_API_PROXY` | [vite.config.ts](../frontend/vite.config.ts) 的 `/api` 代理目标，默认 `http://127.0.0.1:8000`；误指正式服务会让页面操作落到真实数据。 |
 | `STUDIO_ALLOWED_HOSTS` | 默认 `localhost,127.0.0.1,::1,testserver`；逗号分隔。不要用放开全部主机来掩盖代理错误。 |

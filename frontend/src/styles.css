@@ -1206,6 +1206,37 @@ small {
   margin-bottom: 0;
 }
 
+.fal-balance-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin: 16px 0;
+}
+
+.fal-balance-result {
+  padding: 20px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+}
+
+.fal-balance-result>strong {
+  font-size: 28px;
+  overflow-wrap: anywhere;
+}
+
+.fal-balance-result dl {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px 16px;
+  margin: 16px 0;
+  font-size: 13px;
+}
+
+.fal-balance-result dt { color: var(--faint); }
+.fal-balance-result dd { margin: 0; overflow-wrap: anywhere; }
+
 .settings-layout aside .settings-section {
   padding: 22px;
   border: 1px solid var(--line);

@@ -17,6 +17,7 @@ The command above starts real generation and Agiso workers; it is not a simulati
 
 - `STUDIO_DATA_DIR`: private data directory, default `.data` in the working directory. Keep on a local filesystem, not a network share. Contains SQLite WAL database, original upload chunks and immutable PNG assets. Directory mode 0700, DB/assets mode 0600.
 - `FAL_KEY`: preferred FAL credential. Alternatively the authenticated administrator can set it in Settings; stored only in the private database and never returned by an API. No Codex credentials are read.
+- `FAL_ADMIN_KEY`: optional separate Admin-scope credential for balance queries. Takes precedence over the site superadmin's private `fal_admin_key` setting. It is never used for generation or returned to clients. Use the same FAL account as the generation key.
 - `YEZI_API_KEY`: optional separate Yezi cutout credential, with the same private admin setting alternative. A paid FAL result is retained before cutout processing.
 - `STUDIO_ALLOWED_HOSTS`: comma-separated accepted hostnames; defaults `localhost,127.0.0.1,::1,testserver`.
 - `STUDIO_ALLOWED_ORIGINS`: explicit unsafe-request origins; defaults localhost/127.0.0.1 on ports 5173 and 8000. The request's own trusted origin is also accepted.
@@ -59,6 +60,8 @@ Library categories are editable organization-scoped identities, initially seeded
 Authenticated browser API calls should send `X-Studio-User` containing the account ID captured by that tab. If shared cookies switch to another account, a mismatch returns401 (`登录账号已变化，请重新登录`) before mutation. Logout is guarded too when the header is present. Ordinary `<img>` asset requests may omit it and still require owner/admin session authorization.
 
 ## FAL contract and settings
+
+Only `superadmin` may configure `fal_admin_key` through `PATCH /api/admin/settings` or call `GET /api/admin/fal/balance`. Omit the key to preserve it; an empty value removes the stored balance key. Settings expose only `fal_balance_configured` and `fal_balance_key_source` (`environment`, `settings`, or null). The balance endpoint calls the official account billing endpoint with `expand=credits`, a 10-second HTTP timeout, no redirects and no automatic retries. It returns only account, current balance, currency and query time (`queried_at`, Unix seconds), with `private, no-store`. Network calls occur outside DB transactions; session, role and credential are rechecked after the call. Upstream auth errors become safe Chinese 502 responses, never website 401/logout; timeout is 504, missing/changed key is 409. The UI queries only on click and does not persist balances or keys in browser storage. This is account credit, not an organization's budget. Real integration requires a valid Admin-scope key; synthetic tests do not prove live access.
 
 `PATCH /api/admin/settings` accepts `fal_api_key`, `max_inflight`, `prompt` and optional `cutout_api_key`; public settings expose only `fal_configured` and `cutout_configured` flags, never keys. `rpm` and `openai_api_key` are rejected. Environment `FAL_KEY` takes precedence over the database value. Migrating an existing database retains accounts, templates, orders, images, prompt versions, print parameters and the chosen concurrency limit.
 

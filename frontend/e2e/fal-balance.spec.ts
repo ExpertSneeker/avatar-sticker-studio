@@ -1,0 +1,42 @@
+import { expect, test } from '@playwright/test'
+import { staffLogin } from './customer-fixtures'
+
+test('超管保存独立余额密钥，手动查询并处理失败，支持手机', async ({ page }) => {
+  await staffLogin(page.request)
+  await page.request.patch('/api/admin/settings', { data: { fal_admin_key: '' } })
+  const errors: string[] = []
+  page.on('pageerror', error => errors.push(error.message))
+  await page.goto('/')
+  await page.getByRole('button', { name: '管理设置', exact: true }).click()
+  const section = page.getByRole('region', { name: 'FAL 账户余额', exact: true })
+  await expect(section).toBeVisible()
+  await expect(section.getByRole('button', { name: '查询余额', exact: true })).toBeDisabled()
+  const key = section.getByLabel('FAL ADMIN Key', { exact: true })
+  await expect(key).toHaveAttribute('type', 'password')
+  await key.fill('synthetic-admin-key')
+  await section.getByRole('button', { name: '保存余额查询密钥', exact: true }).click()
+  await expect(key).toHaveValue('')
+  await expect(section.getByText('已配置余额密钥', { exact: true })).toBeVisible()
+  const settings = await (await page.request.get('/api/admin/settings')).json()
+  expect(settings.fal_balance_configured).toBe(true)
+  expect(JSON.stringify(settings)).not.toContain('synthetic-admin-key')
+  let fail = false
+  await page.route('**/api/admin/fal/balance', route => route.fulfill({ status: fail ? 502 : 200, json: fail ? { detail: '此 FAL 密钥没有余额查询权限，请使用 ADMIN scope 的密钥' } : { account: 'qa-account', current_balance: 6.92, currency: 'USD', queried_at: 1791000000 } }))
+  await section.getByRole('button', { name: '查询余额', exact: true }).click()
+  await expect(section.getByText('6.92 USD', { exact: true })).toBeVisible()
+  await expect(section.getByText('qa-account', { exact: true })).toBeVisible()
+  await page.screenshot({ path: '/tmp/avatar-studio-fal-qa/balance-desktop.png' })
+  await page.setViewportSize({ width: 390, height: 844 })
+  await expect.poll(() => page.locator('.sidebar').evaluate(element => element.getBoundingClientRect().right)).toBeLessThanOrEqual(0)
+  await section.scrollIntoViewIfNeeded()
+  await expect(section.getByRole('button', { name: '查询余额', exact: true })).toBeVisible()
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+  await page.screenshot({ path: '/tmp/avatar-studio-fal-qa/balance-mobile.png' })
+  fail = true
+  await section.getByRole('button', { name: '查询余额', exact: true }).click()
+  await expect(section.getByRole('alert')).toContainText('ADMIN scope')
+  await expect(section.getByText('6.92 USD', { exact: true })).toHaveCount(0)
+  await section.getByRole('button', { name: '移除余额查询密钥', exact: true }).click()
+  await expect(section.getByRole('button', { name: '查询余额', exact: true })).toBeDisabled()
+  expect(errors).toEqual([])
+})
