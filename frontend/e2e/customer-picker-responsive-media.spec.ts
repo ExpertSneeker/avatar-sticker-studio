@@ -16,8 +16,15 @@ async function pickerImages(browser:Browser,baseURL:string,orderNumber:string,su
   await page.goto('/guest')
   await page.getByLabel('订单号',{exact:true}).fill(orderNumber);await page.getByRole('button',{name:'进入订单'}).click()
   await page.getByLabel('上传头像').setInputFiles({name:'avatar.png',mimeType:'image/png',buffer:pixel})
+  // The picker opens on single stickers; drop that first batch so template thumbnails are measured first.
+  let holdMedia=true
+  await page.route('**/api/guest/media/**',route=>holdMedia?route.abort():route.continue())
   await page.getByRole('button',{name:'选择模板和贴纸'}).first().click()
   const picker=page.getByRole('dialog',{name:'选择模板和贴纸'})
+  await expect(picker.locator('.customer-catalog-image img').first()).toBeAttached()
+  await expect.poll(()=>picker.locator('.customer-catalog-image img').evaluateAll(images=>(images as HTMLImageElement[]).filter(image=>image.getBoundingClientRect().top<innerHeight).every(image=>image.complete))).toBe(true)
+  holdMedia=false
+  await picker.getByRole('button',{name:'模板套装',exact:true}).click()
   await picker.getByLabel('搜索模板或贴纸').fill(suffix)
   const loaded=async(locator:ReturnType<typeof picker.locator>)=>{
     await expect.poll(()=>locator.evaluate((image:HTMLImageElement)=>image.complete&&image.naturalWidth>0)).toBe(true)

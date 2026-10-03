@@ -31,6 +31,7 @@ for(const mode of ['staff','guest'] as const){
       await picker.getByRole('button',{name:'应用选择'}).click()
       await screen.getByRole('button',{name:'选择模板和贴纸'}).nth(1).click()
       picker=screen.getByRole('dialog',{name:'选择模板和贴纸'})
+      await picker.getByRole('button',{name:'模板套装',exact:true}).click()
       await picker.getByLabel('搜索模板或贴纸').fill(templateCode)
       await picker.getByLabel(templateCode+' 份数',{exact:true}).fill('3')
       await expect(picker.getByLabel(templateCode+' 份数',{exact:true})).toHaveValue('2')

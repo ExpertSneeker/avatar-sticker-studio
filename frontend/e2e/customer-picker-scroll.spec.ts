@@ -3,7 +3,7 @@ import {randomUUID} from 'node:crypto'
 import {uploadStickers} from './library-fixtures'
 import {createCustomer,pixel,staffLogin} from './customer-fixtures'
 
-test('mobile picker scroll reaches apply and preflight shows final allowance',async({page})=>{
+test('mobile picker opens on single stickers and keeps filters and apply pinned while scrolling',async({page})=>{
   await page.setViewportSize({width:390,height:700})
   await staffLogin(page.request)
   const suffix=randomUUID().slice(0,8)
@@ -16,14 +16,20 @@ test('mobile picker scroll reaches apply and preflight shows final allowance',as
   await page.getByLabel('上传头像').setInputFiles({name:'avatar.png',mimeType:'image/png',buffer:pixel})
   await page.getByRole('button',{name:'选择模板和贴纸'}).click()
   const picker=page.getByRole('dialog',{name:'选择模板和贴纸'})
-  await picker.getByRole('button',{name:'单张贴纸',exact:true}).click()
+  await expect(picker.getByRole('button',{name:'单张贴纸',exact:true})).toHaveClass(/active/)
   await picker.getByLabel('搜索模板或贴纸').fill(suffix)
   await expect(picker.locator('.customer-catalog article')).toHaveCount(12)
   await picker.getByLabel(stickers[0].code+' 份数',{exact:true}).fill('18')
   expect(await picker.locator('.customer-catalog').evaluate(el=>getComputedStyle(el).overflowY)).toBe('visible')
   await picker.locator('.customer-catalog article').first().hover()
+  // Mid-list: tabs, search, category and the apply bar all stay usable without scrolling back.
+  await page.mouse.wheel(0,400)
+  await expect.poll(()=>picker.evaluate(el=>el.scrollTop)).toBeGreaterThan(200)
+  for(const control of [picker.getByLabel('搜索模板或贴纸'),picker.getByLabel('贴纸分类'),picker.getByRole('button',{name:'模板套装',exact:true}),picker.getByRole('button',{name:'应用选择'}),picker.getByText('订单共 18 / 18 张')])await expect(control).toBeInViewport({ratio:1})
+  await page.screenshot({path:'test-results/customer-picker-sticky-mobile.png'})
   await page.mouse.wheel(0,10000)
   await expect(picker.getByRole('button',{name:'应用选择'})).toBeInViewport()
+  await expect(picker.getByLabel('搜索模板或贴纸')).toBeInViewport({ratio:1})
   await page.screenshot({path:'/tmp/customer-picker-scroll-mobile.png'})
   await picker.getByRole('button',{name:'应用选择'}).click()
   await page.getByRole('button',{name:'核对并开始生成'}).click()

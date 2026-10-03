@@ -248,6 +248,39 @@
   min-width: 0;
 }
 
+/* The picker dialog scrolls; its toolbar and apply bar stick to the dialog edges. */
+.customer-picker-modal {
+  --picker-pad: 28px;
+}
+
+.customer-picker-toolbar {
+  position: sticky;
+  top: calc(-1 * var(--picker-pad));
+  z-index: 4;
+  margin: 0 calc(-1 * var(--picker-pad));
+  padding: 12px var(--picker-pad) 0;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.customer-picker-toolbar .customer-picker-filters {
+  margin: 10px 0 12px;
+}
+
+.customer-picker-toolbar + .customer-catalog,
+.customer-picker-toolbar + .empty {
+  margin-top: 14px;
+}
+
+.customer-picker-footer {
+  position: sticky;
+  bottom: calc(-1 * var(--picker-pad));
+  z-index: 4;
+  margin: 20px calc(-1 * var(--picker-pad)) calc(-1 * var(--picker-pad));
+  padding: 14px var(--picker-pad) var(--picker-pad);
+  background: var(--surface);
+}
+
 .customer-results {
   display: grid;
   grid-template-columns: repeat(4,minmax(0,1fr));
@@ -654,6 +687,21 @@
   .customer-result-body .button {
     padding: 8px;
     font-size: 11px;
+  }
+  .customer-picker-modal {
+    --picker-pad: 20px;
+  }
+  .customer-picker-toolbar {
+    padding-top: 8px;
+  }
+  .customer-picker-toolbar .customer-picker-filters {
+    margin: 8px 0 10px;
+  }
+  .customer-picker-footer {
+    padding-top: 10px;
+    padding-bottom: 14px;
+    margin-bottom: calc(-1 * var(--picker-pad));
+    bottom: calc(-1 * var(--picker-pad));
   }
   .customer-catalog {
     grid-template-columns: repeat(3,minmax(0,1fr));

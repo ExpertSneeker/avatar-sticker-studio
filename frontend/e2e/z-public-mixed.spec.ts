@@ -18,6 +18,7 @@ test('mixed public selections deduplicate generation and retain every exported c
  await page.getByRole('button',{name:'选择模板和贴纸'}).click()
  // The picker opens above the order-detail modal, so address it by name.
  const dialog=page.getByRole('dialog',{name:'选择模板和贴纸'})
+ await dialog.getByRole('button',{name:'模板套装',exact:true}).click()
  await dialog.getByLabel('搜索模板或贴纸').fill('MIX-')
  for(const code of ['MIX-A','MIX-B'])await dialog.getByLabel(code+' 份数').fill('1')
  await dialog.getByRole('button',{name:'单张贴纸',exact:true}).click()

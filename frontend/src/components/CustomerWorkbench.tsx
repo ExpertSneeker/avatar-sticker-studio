@@ -104,7 +104,7 @@ function SelectionSummary({count,max,finalCount}:{count:number;max:number;finalC
 }
 function SelectionPicker({library,avatar,others,max,finalCount,onClose,onSave}:{library:CustomerLibrary;avatar:DraftAvatar;others:AvatarChoice[];max:number;finalCount:number;onClose:()=>void;onSave:(value:AvatarChoice)=>void}){
   const [choice,setChoice]=useState<AvatarChoice>({upload_id:avatar.upload_id,template_ids:avatar.template_ids,sticker_ids:avatar.sticker_ids})
-  const [tab,setTab]=useState('templates'),[search,setSearch]=useState(''),[category,setCategory]=useState('all')
+  const [tab,setTab]=useState('stickers'),[search,setSearch]=useState(''),[category,setCategory]=useState('all')
   const [zoom,setZoom]=useState<{title:string;url:string}|null>(null),[setView,setSetView]=useState<LibraryTemplate|null>(null)
   const source=tab==='templates'?library.templates:library.stickers
   const kind=tab==='templates'?'template_ids':'sticker_ids'
@@ -121,11 +121,12 @@ function SelectionPicker({library,avatar,others,max,finalCount,onClose,onSave}:{
       return {...previous,[kind]:quantityIds(previous[kind],id,value,Math.max(amount,limit))}
     })
   }
-  return <Modal title="选择模板和贴纸" onClose={onClose} wide>
+  return <Modal title="选择模板和贴纸" onClose={onClose} wide className="customer-picker-modal">
     <SelectionSummary count={total} max={max} finalCount={finalCount}/>
     <p className="hint">本头像已选 {counts.selection_count} 张 · 其他头像已选 {otherCount} 张。模板按包含的贴纸张数计算，重复选择同样占用份数。</p>
-    <div className="tabs"><button className={tab==='templates'?'active':''} onClick={()=>setTab('templates')}>模板套装</button><button className={tab==='stickers'?'active':''} onClick={()=>setTab('stickers')}>单张贴纸</button></div>
-    <div className="customer-picker-filters"><input aria-label="搜索模板或贴纸" placeholder="搜索名称或编号" value={search} onChange={e=>setSearch(e.target.value)}/><select aria-label="贴纸分类" value={category} onChange={e=>setCategory(e.target.value)}><option value="all">全部分类（{usable.length}）</option>{categories.map(option=><option key={option.id} value={option.id} disabled={!option.count&&option.id!==category}>{option.name}（{option.count}）</option>)}</select></div>
+    {/* Tabs, search and category stay pinned while long catalogs scroll. */}
+    <div className="customer-picker-toolbar"><div className="tabs"><button className={tab==='stickers'?'active':''} onClick={()=>setTab('stickers')}>单张贴纸</button><button className={tab==='templates'?'active':''} onClick={()=>setTab('templates')}>模板套装</button></div>
+    <div className="customer-picker-filters"><input aria-label="搜索模板或贴纸" placeholder="搜索名称或编号" value={search} onChange={e=>setSearch(e.target.value)}/><select aria-label="贴纸分类" value={category} onChange={e=>setCategory(e.target.value)}><option value="all">全部分类（{usable.length}）</option>{categories.map(option=><option key={option.id} value={option.id} disabled={!option.count&&option.id!==category}>{option.name}（{option.count}）</option>)}</select></div></div>
     {filtered.length?<div className="customer-catalog">{filtered.map(entry=>{
       const amount=choice[kind].filter(id=>id===entry.id).length
       const limit=selectionQuantityLimit([...others,choice],library,choice.upload_id,kind,entry.id,max,total)
@@ -134,7 +135,7 @@ function SelectionPicker({library,avatar,others,max,finalCount,onClose,onSave}:{
     })}</div>:<Empty title="没有匹配的模板或贴纸"/>}
     {setView&&<Modal title={`${setView.name} · 共 ${setView.images.length} 张`} onClose={()=>setSetView(null)} wide><p className="hint">模板包含以下贴纸，点击可放大查看。</p><div className="customer-set-preview">{setView.images.map((image,index)=>{const label=image.code||`第 ${index+1} 张`;return <button type="button" key={index} aria-label={`放大查看 ${label}`} onClick={()=>setZoom({title:`${setView.name} · ${label}`,url:image.preview_url})}><img src={image.preview_url} srcSet={mediaSrcSet(image.preview_url)} sizes={pickerImageSizes.setContents} alt="" loading="lazy"/><span>{label}</span></button>})}</div></Modal>}
     {zoom&&<Modal title={zoom.title} onClose={()=>setZoom(null)} className="modal-media"><div className="media-frame customer-zoom-image"><img src={zoomUrl(zoom.url)} alt={zoom.title}/></div></Modal>}
-    <div className="modal-footer"><span>本头像 {counts.selection_count} 张 · 订单共 {total} / {max} 张</span><button className="button primary" disabled={!canApplySelection(otherCount+selectionCounts([avatar],library).selection_count,total,max)} onClick={()=>onSave(choice)}>应用选择</button></div>
+    <div className="modal-footer customer-picker-footer"><span>本头像 {counts.selection_count} 张 · 订单共 {total} / {max} 张</span><button className="button primary" disabled={!canApplySelection(otherCount+selectionCounts([avatar],library).selection_count,total,max)} onClick={()=>onSave(choice)}>应用选择</button></div>
   </Modal>
 }
 function VersionComparison({slot,limit,used,busy,onClose,onRerun,onSelect,mode,onRecovery,pending,onRetry,error}:{error:string;pending:boolean;onRetry:()=>void;mode:'staff'|'guest';onRecovery:(action:string)=>void;slot:CustomerSlot;limit:number;used:number;busy:boolean;onClose:()=>void;onRerun:()=>void;onSelect:(id:string)=>void}){

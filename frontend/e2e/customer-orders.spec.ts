@@ -31,7 +31,7 @@ test('staff opens order; guest uploads two avatars, repeats choices, compares re
     await expect(guest.locator('.customer-avatar-row')).toHaveCount(2)
     await guest.getByRole('button',{name:'选择模板和贴纸'}).first().click()
     let picker=guest.getByRole('dialog',{name:'选择模板和贴纸'})
-    await picker.getByLabel('搜索模板或贴纸').fill('GUEST-SET');await picker.getByLabel('GUEST-SET 份数').fill('1');await picker.getByRole('button',{name:'应用选择'}).click()
+    await picker.getByRole('button',{name:'模板套装',exact:true}).click();await picker.getByLabel('搜索模板或贴纸').fill('GUEST-SET');await picker.getByLabel('GUEST-SET 份数').fill('1');await picker.getByRole('button',{name:'应用选择'}).click()
     await guest.getByRole('button',{name:'选择模板和贴纸'}).nth(1).click();picker=guest.getByRole('dialog',{name:'选择模板和贴纸'})
     await picker.getByRole('button',{name:'单张贴纸',exact:true}).click();await picker.getByLabel('搜索模板或贴纸').fill('GUEST-A');await picker.getByLabel('GUEST-A 份数').fill('2');await picker.getByRole('button',{name:'应用选择'}).click()
     await expect(guest.locator('.customer-submit-bar')).toContainText('已选 4 张')
