@@ -110,15 +110,15 @@ describe('picker categories and zoom',()=>{
     const options=categoryOptions([{id:'boy',name:'男孩'},{id:'general',name:'通用'}],[{category:'general'},{category:'general'},{category:'legacy'}])
     expect(options).toEqual([{id:'boy',name:'男孩',count:0},{id:'general',name:'通用',count:2},{id:'legacy',name:'legacy',count:1}])
   })
-  it('requests a larger watermarked derivative only for versioned media URLs',async()=>{
+  it('requests a larger watermarked derivative only for customer media routes',async()=>{
     const {zoomUrl}=await import('../src/lib/customer-orders')
-    expect(zoomUrl('/api/guest/media/o/a?v=3')).toBe('/api/guest/media/o/a?v=3&size=1024')
-    expect(zoomUrl('/api/guest/media/o/a?v=3&size=160')).toBe('/api/guest/media/o/a?v=3&size=1024')
+    expect(zoomUrl('/api/guest/media/o/a?m=1f2e3d4c')).toBe('/api/guest/media/o/a?m=1f2e3d4c&size=1024')
+    expect(zoomUrl('/api/customer-orders/o/media/a?size=160')).toBe('/api/customer-orders/o/media/a?size=1024')
     expect(zoomUrl('/api/assets/'+'a'.repeat(32))).toBe('/api/assets/'+'a'.repeat(32))
   })
-  it('offers fixed thumbnail tiers only for versioned media URLs',async()=>{
+  it('offers fixed thumbnail tiers only for customer media routes',async()=>{
     const {mediaSrcSet}=await import('../src/lib/customer-orders')
-    expect(mediaSrcSet('/api/guest/media/o/a?v=3&size=1024')).toBe('/api/guest/media/o/a?v=3&size=160 160w, /api/guest/media/o/a?v=3&size=320 320w, /api/guest/media/o/a?v=3&size=640 640w')
+    expect(mediaSrcSet('/api/guest/media/o/a')).toBe('/api/guest/media/o/a?size=160 160w, /api/guest/media/o/a?size=320 320w, /api/guest/media/o/a?size=640 640w')
     expect(mediaSrcSet('/api/assets/'+'a'.repeat(32))).toBeUndefined()
   })
 })

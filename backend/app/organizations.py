@@ -2,9 +2,9 @@
 import secrets
 import time
 from fastapi import HTTPException, Request
-from .auth import public_user, require_superadmin
+from .auth import public_user, require_admin, require_superadmin
 from .db import uid
-from .schemas import OrganizationCreate, OrganizationPatch
+from .schemas import OrganizationCreate, OrganizationPatch, OrganizationSettingsPatch
 
 
 def create_organization(tx, name, initial=False):
@@ -83,3 +83,28 @@ def register_organizations(app, db, user, register_user):
                 if member.get('organization_id')==id:
                     member['organization_name']=org['name'];tx.put('users',member)
             return org
+
+    def own_organization(tx, request):
+        actor = user(tx, request)
+        require_admin(actor)
+        org = tx.get('organizations', actor.get('organization_id') or '')
+        if not org:
+            raise HTTPException(404, '当前账号不属于组织')
+        return org
+
+    def settings_view(org):
+        from .media_cache import DEFAULT_RETENTION_DAYS, retention_days
+        return {'media_cache_days': retention_days(org), 'default_media_cache_days': DEFAULT_RETENTION_DAYS}
+
+    @app.get('/api/organization/settings')
+    def organization_settings(request: Request):
+        with db.transaction() as tx:
+            return settings_view(own_organization(tx, request))
+
+    @app.patch('/api/organization/settings')
+    def update_organization_settings(data: OrganizationSettingsPatch, request: Request):
+        with db.transaction() as tx:
+            org = own_organization(tx, request)
+            org['media_cache_days'] = data.media_cache_days
+            tx.put('organizations', org)
+            return settings_view(org)

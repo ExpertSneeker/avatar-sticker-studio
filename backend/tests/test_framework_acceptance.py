@@ -53,7 +53,7 @@ def test_duplicate_parallel_rerun_allocates_one_task_and_one_reservation(context
         assert len([i for i in tx.all('items') if i['order_id'] == order['id']]) == 2
 
 
-def test_watermark_batch_changes_no_originals_and_revokes_old_preview_links(context):
+def test_watermark_batch_changes_no_originals_and_rerenders_preview_links(context):
     app, staff, _, provider = context
     order = generate(staff, opened(staff, 'WATERMARK'), sticker(staff, 'MARK')['id'])
     run(app)
@@ -70,9 +70,11 @@ def test_watermark_batch_changes_no_originals_and_revokes_old_preview_links(cont
     assert preview['orders'][0]['watermark'] == 'TEST STORE NEW WATERMARK'
     result = staff.post('/api/customer-orders/watermarks', json={'ids':[order['id']], 'preview_token':preview['preview_token'], 'client_token':'apply-watermark'})
     assert result.status_code == 200, result.text
-    assert guest.get(link).status_code == 404
     after = guest.get('/api/guest/order').json()
-    pixels_after = guest.get(after['slots'][0]['versions'][0]['preview_url']).content
+    updated = after['slots'][0]['versions'][0]['preview_url']
+    assert updated != link and updated.split('?')[0] == link.split('?')[0]
+    pixels_after = guest.get(updated).content
+    assert guest.get(link).content == pixels_after
     assert hashlib.sha256(pixels_before).digest() != hashlib.sha256(pixels_after).digest()
     assert len(provider.calls) == calls
     with app.state.db.transaction() as tx:
@@ -94,10 +96,8 @@ def test_submitted_guest_cannot_reopen_single_image_by_guessing_new_revision(con
     locked = guest.get('/api/guest/order').json()
     assert not {'slots', 'avatars', 'notes', 'watermark', 'print_settings'} & locked.keys()
     assert guest.get(link).status_code == 404
-    with app.state.db.transaction() as tx:
-        current = tx.get('orders', order['id'])
-    guessed = link.split('?')[0] + '?v=' + str(current['media_version'])
-    assert guest.get(guessed).status_code == 404
+    # Links carry no version: the live submitted state alone hides the individual results.
+    assert 'v=' not in link and guest.get(link + '&size=320').status_code == 404
     assert guest.get(locked['preview_url']).status_code == 200
 
 

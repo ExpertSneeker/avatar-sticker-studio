@@ -115,7 +115,10 @@ def guest_order(tx, request, now):
 
 def media_url(order, asset_id, guest=True):
     prefix = f"/api/guest/media/{order['id']}" if guest else f"/api/customer-orders/{order['id']}/media"
-    return f"{prefix}/{asset_id}?v={order['media_version']}" if asset_id else None
+    # No order version: every request re-checks live order state. `m` fingerprints the watermark text
+    # only so open pages swap to new images after a watermark change; the server ignores it.
+    from .media_cache import mark_digest
+    return f"{prefix}/{asset_id}?m={mark_digest(order['watermark'])[:8]}" if asset_id else None
 
 
 def reconcile(tx, order):
@@ -279,7 +282,7 @@ def create_customer_order(tx, actor, data, at):
     order = {'id': uid(), **data.model_dump(exclude={'client_token'}), 'workflow_version': 3,
              'owner': actor['id'], 'organization_id': actor['organization_id'], 'state': 'draft', 'version': 1,
              'name': data.order_number, 'watermark': actor.get('watermark', '').strip() or actor['display_name'],
-             'watermark_version': 1, 'media_version': 1, 'print_settings': actor['print_defaults'],
+             'watermark_version': 1, 'print_settings': actor['print_defaults'],
              'avatars': [], 'slots': [], 'created_at': datetime.fromtimestamp(at, timezone.utc).isoformat(),
              'prompt': config['prompt'], 'prompt_version': config.get('prompt_version', 1), 'paused': False,
              'content_version': 1, 'artifact_version': 0, 'delivery_version': 0, 'delivery_ready': False,
@@ -383,7 +386,7 @@ def register_customer_orders(app, db, user):
                 raise HTTPException(409, '水印设置或订单已变化，请重新预览')
             for order, row in zip(orders, rows):
                 order.update(watermark=row['watermark'], watermark_version=order['watermark_version']+1,
-                             media_version=order['media_version']+1, version=order['version']+1, content_version=order['content_version']+1,
+                             version=order['version']+1, content_version=order['content_version']+1,
                              overview_ready=False, processing_error=None)
                 tx.put('orders', order)
                 audit(tx, order, 'watermark', actor['id'], now())
@@ -543,20 +546,20 @@ def register_customer_orders(app, db, user):
                         raise HTTPException(422, '所选位置没有可用结果')
                     frozen.append({'slot_id': sid, **deepcopy(version)})
                 order.update(state='submitted', final_entries=frozen, delivery_ready=False, delivery_version=order['delivery_version']+1,
-                             overview_ready=False, media_version=order['media_version']+1, processing_error=None)
+                             overview_ready=False, processing_error=None)
             elif action == 'cancel':
                 if state == 'cancelled':
                     raise HTTPException(409, '订单已取消')
-                order.update(prior_state=state, state='cancelled', paused=True, media_version=order['media_version']+1)
+                order.update(prior_state=state, state='cancelled', paused=True)
             elif action == 'restore':
                 if state != 'cancelled':
                     raise HTTPException(409, '订单未取消')
-                order.update(state=order['prior_state'], paused=False, media_version=order['media_version']+1, processing_error=None)
+                order.update(state=order['prior_state'], paused=False, processing_error=None)
             elif action == 'unlock':
                 if state != 'submitted':
                     raise HTTPException(409, '仅已提交订单可解锁')
                 order.update(state='review', delivery_ready=False, overview_ready=False, artifacts=[], overview_id=None,
-                             media_version=order['media_version']+1, final_entries=[], publish_signatures={})
+                             final_entries=[], publish_signatures={})
             elif action == 'repack':
                 if state != 'submitted':
                     raise HTTPException(409, '仅已提交订单可重新排版')

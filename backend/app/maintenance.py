@@ -6,6 +6,7 @@ import shutil
 from datetime import datetime
 from fastapi import HTTPException
 from .previews import CACHE_LIMIT, cache_lock, cached_files, remove_asset_cache
+from .media_cache import MediaCache
 
 OUTPUT_KINDS = {'raw_result', 'result', 'print', 'overview'}
 
@@ -63,13 +64,14 @@ def cleanup_plan(db, tx, before):
     for path in paths:
         try: sizes.append((db.root/path).lstat().st_size)
         except FileNotFoundError: sizes.append(0)
-    previews = cached_files(db, asset_ids)
+    # Staff thumbnails and watermarked customer media of removed assets are both reclaimed.
+    previews = cached_files(db, asset_ids) + MediaCache(db).files_for(asset_ids)
     preview_bytes = 0
     for path in previews:
         try: preview_bytes += path.stat().st_size
         except FileNotFoundError: pass
     # Directory tombstones remove every variant, including ones created after preview.
-    paths += ['preview-cache/' + id for id in asset_ids]
+    paths += ['preview-cache/' + id for id in asset_ids] + ['media-cache/' + id for id in asset_ids]
     fingerprint = json.dumps([before.isoformat(), chosen, selected_items, removable, uploads], sort_keys=True)
     public = {'before': before.isoformat(), 'preview_token': hashlib.sha256(fingerprint.encode()).hexdigest(), 'order_count': len(chosen), 'item_count': len(selected_items), 'file_count': len(sizes) + len(previews), 'file_bytes': sum(sizes) + preview_bytes, 'preview_cache_files': len(previews), 'preview_cache_bytes': preview_bytes, 'blocked_count': sum(o['id'] in blocked for o in older), 'legacy_unassigned_files': len(unassigned), 'orders': [{'id':o['id'],'name':o['name'],'created_at':o['created_at']} for o in chosen[:50]]}
     reruns = [r for r in tx.all('rerun_operations') if r['order_id'] in ids]
@@ -121,7 +123,7 @@ def account_deletion_plan(tx, account_id):
     blocked.update(g['item_id'] for g in generations if g['status'] == 'review')
     paths = ['assets/' + a['file'] for a in assets]
     paths += [u['id'] + '.upload' for u in records['uploads']]
-    paths += ['preview-cache/' + asset_id for asset_id in asset_ids]
+    paths += ['preview-cache/' + asset_id for asset_id in asset_ids] + ['media-cache/' + asset_id for asset_id in asset_ids]
     # A login does not change the destructive scope. Revoke every session at commit time.
     fingerprint = json.dumps({k:v for k,v in records.items() if k != 'sessions'}, sort_keys=True)
     public = {'preview_token':hashlib.sha256(fingerprint.encode()).hexdigest(), 'order_count':len(selected_orders),
@@ -146,6 +148,14 @@ def drain_cleanup(db):
             with db.transaction() as tx:
                 tx.delete('cleanup_files', value['id'])
             continue
+        if re.fullmatch(r'media-cache/[0-9a-f]{32}', path):
+            try:
+                MediaCache(db).remove_asset(path.split('/')[1])
+            except OSError:
+                continue
+            with db.transaction() as tx:
+                tx.delete('cleanup_files', value['id'])
+            continue
         if not re.fullmatch(r'(?:assets/[0-9a-f]{32}\.png|[0-9a-f]{32}\.upload)', path):
             continue
         if path.startswith('assets/') and (db.root/'assets').is_symlink():
@@ -160,7 +170,7 @@ def drain_cleanup(db):
         return len(tx.all('cleanup_files'))
 
 
-def storage_stats(db):
+def storage_stats(db, warmer=None):
     disk = shutil.disk_usage(db.root)
     app_bytes = 0
     for path in db.root.rglob('*'):
@@ -173,4 +183,7 @@ def storage_stats(db):
     for path in cached_files(db):
         try: preview_bytes += path.stat().st_size
         except FileNotFoundError: pass
-    return {'preview_cache_bytes':preview_bytes, 'preview_cache_limit_bytes':CACHE_LIMIT, 'total_bytes':disk.total, 'used_bytes':disk.used, 'free_bytes':disk.free, 'app_bytes':app_bytes, 'pending_files':pending}
+    media = MediaCache(db)
+    status = dict(warmer.status) if warmer else None
+    return {'preview_cache_bytes':preview_bytes, 'preview_cache_limit_bytes':CACHE_LIMIT, 'total_bytes':disk.total, 'used_bytes':disk.used, 'free_bytes':disk.free, 'app_bytes':app_bytes, 'pending_files':pending,
+            'media_cache':{**media.stats(), 'separate_from_data':not media.root.resolve().is_relative_to(db.root.resolve()), 'pregeneration':status}}

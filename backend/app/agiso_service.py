@@ -65,8 +65,8 @@ def update_aftersales(tx,link,now):
         changed=order.get('integration_holds',{})!=holds
         order['integration_holds']=holds
         if full and order['state']!='cancelled':
-            order.update(prior_state=order['state'],state='cancelled',paused=True,media_version=order['media_version']+1)
-            # Existing guest media gate checks state/media version. Invalidate login sessions too.
+            order.update(prior_state=order['state'],state='cancelled',paused=True)
+            # Guest media re-checks the cancelled state on every request. Invalidate login sessions too.
             for session in tx.where('guest_sessions','order_id',order['id']):
                 if session['order_id']==order['id']: tx.delete('guest_sessions',session['id'])
             changed=True

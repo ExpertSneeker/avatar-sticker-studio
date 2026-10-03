@@ -1,4 +1,5 @@
 """Private browser caching must never bypass live customer-media authorization."""
+import shutil
 import pytest
 from fastapi.testclient import TestClient
 from backend.tests.test_worker import context
@@ -31,8 +32,9 @@ def test_browser_cache_revalidates_without_reading_or_rendering_images(context, 
     assert first.headers['vary'] == 'Cookie'
     etag = first.headers['etag']
     assert etag.startswith('W/"')
-    # Even after the server derivative cache is lost, 304 requires no image IO.
-    guest_media._cache.clear()
+    # Even after the server derivative caches are lost, 304 requires no image IO.
+    app.state.media_memory.clear()
+    shutil.rmtree(app.state.media_cache.root)
     def unexpected(*args):
         pytest.fail('Conditional cache hit read or rendered an image')
     monkeypatch.setattr(guest_media, 'render', unexpected)
@@ -89,17 +91,21 @@ def test_conditional_requests_reject_disabled_access(context, mode):
     assert client.get(link, headers=headers).status_code == 401
 
 
-def test_watermark_update_invalidates_old_url_and_validator(context):
+def test_watermark_update_keeps_the_link_but_changes_content_and_validator(context):
     _, staff, guest, order, link = preview(context)
-    headers = {'If-None-Match': guest.get(link).headers['etag']}
+    first = guest.get(link)
+    headers = {'If-None-Match': first.headers['etag']}
     assert staff.patch('/api/account', json={'watermark': 'NEW CACHE WATERMARK'}).status_code == 200
     proposal = staff.post('/api/customer-orders/watermarks/preview', json={'ids': [order['id']]}).json()
     result = staff.post('/api/customer-orders/watermarks', json={'ids': [order['id']], 'preview_token': proposal['preview_token'], 'client_token': 'cache-watermark'})
     assert result.status_code == 200
-    assert guest.get(link, headers=headers).status_code == 404
+    # Only the watermark fingerprint in the link changes; the content key changes the validator.
     updated = guest.get('/api/guest/order').json()['slots'][0]['versions'][0]['preview_url']
-    response = guest.get(updated, headers=headers)
-    assert response.status_code == 200 and response.headers['etag'] != headers['If-None-Match']
+    assert updated != link and updated.split('?')[0] == link.split('?')[0]
+    for url in (link, updated):
+        response = guest.get(url, headers=headers)
+        assert response.status_code == 200 and response.headers['etag'] != headers['If-None-Match']
+        assert response.content != first.content
 
 
 def test_cross_organization_staff_cannot_revalidate_customer_media(context):
@@ -132,13 +138,14 @@ def test_requested_sizes_snap_to_fixed_tiers_and_share_one_render(context, monke
     import io
     from PIL import Image
     from backend.app import guest_media
-    _, _, client, _, link = preview(context)
+    app, _, client, _, link = preview(context)
     default = client.get(link)
     assert client.get(link + '&size=640').headers['etag'] == default.headers['etag']
     renders = []
     original = guest_media.render
     monkeypatch.setattr(guest_media, 'render', lambda *args: renders.append(args[2]) or original(*args))
-    guest_media._cache.clear()
+    app.state.media_memory.clear()
+    shutil.rmtree(app.state.media_cache.root)
     for requested, expected in ((1, 160), (161, 320), (300, 320), (320, 320), (321, 640), (700, 1024), (5000, 1024)):
         response = client.get(link + f'&size={requested}')
         assert response.status_code == 200

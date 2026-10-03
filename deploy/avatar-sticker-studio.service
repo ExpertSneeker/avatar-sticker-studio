@@ -13,6 +13,7 @@ WorkingDirectory=/opt/avatar-sticker-studio/current
 EnvironmentFile=/etc/avatar-sticker-studio.env
 Environment=PYTHONDONTWRITEBYTECODE=1
 Environment=PYTHONUNBUFFERED=1
+Environment=STUDIO_MEDIA_CACHE_DIR=/var/cache/avatar-sticker-studio/media
 ExecStart=/opt/avatar-sticker-studio/venv/bin/uvicorn backend.app.main:app_factory --factory --host 127.0.0.1 --port 8000 --workers 1 --proxy-headers --forwarded-allow-ips=127.0.0.1 --timeout-graceful-shutdown 30 --no-access-log
 Restart=on-failure
 RestartSec=5
@@ -23,6 +24,8 @@ PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
 ReadWritePaths=/var/lib/avatar-sticker-studio
+CacheDirectory=avatar-sticker-studio
+CacheDirectoryMode=0700
 MemoryHigh=1200M
 MemoryMax=1400M
 

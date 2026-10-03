@@ -114,7 +114,8 @@ def test_guest_privacy_cancel_restore_submitted_and_media(context):
     o=c.get('/api/customer-orders/'+o['id']).json(); cancelled=action(c,o,'cancel').json()
     assert guest.get(link).status_code==404
     assert set(guest.get('/api/guest/order').json())=={'id','order_number','state'}
-    o=action(c,cancelled,'restore').json(); assert guest.get(link).status_code==404
+    # Restoring re-allows the same link: authorization follows the live order state.
+    o=action(c,cancelled,'restore').json(); assert guest.get(link).status_code==200
     o=action(c,o,'submit',slot_ids=[s['id'] for s in o['slots']]).json(); app.state.worker.publish(o['id'])
     g=guest.get('/api/guest/order').json(); assert 'slots' not in g and 'avatars' not in g
     assert guest.get(g['preview_url']).status_code==200
@@ -180,7 +181,9 @@ def test_watermark_rotation_and_optimistic_idempotency(context):
     body={'ids':[o['id']],'preview_token':preview['preview_token'],'client_token':'marks'}
     response=c.post('/api/customer-orders/watermarks',json=body); assert response.status_code==200,response.text
     assert c.post('/api/customer-orders/watermarks',json=body).json()=={'updated':1}
-    assert c.get(old).status_code==404 and len(provider.calls)==before
+    new=c.get('/api/customer-orders/'+o['id']).json()['slots'][0]['versions'][0]['preview_url']
+    assert new!=old and new.split('?')[0]==old.split('?')[0]
+    assert c.get(old).status_code==200 and len(provider.calls)==before
     o=c.get('/api/customer-orders/'+o['id']).json()
     mutation={'client_token':'cancel-once','expected_version':o['version']}
     path='/api/customer-orders/'+o['id']+'/cancel'

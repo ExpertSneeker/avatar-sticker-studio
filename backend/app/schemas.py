@@ -224,6 +224,10 @@ class OrganizationCreate(Model):
     _name = field_validator('name', 'admin_display_name')(safe_name)
 
 
+class OrganizationSettingsPatch(Model):
+    media_cache_days: int = Field(ge=1, le=365)
+
+
 class OrganizationPatch(Model):
     name: str | None = Field(None, min_length=1, max_length=100)
     active: bool | None = None

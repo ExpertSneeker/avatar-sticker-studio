@@ -1,4 +1,5 @@
 """Private local Avatar Sticker Studio HTTP API."""
+import asyncio
 import hashlib
 import io
 import json
@@ -24,6 +25,7 @@ from .storage import asset_bytes, normalize_image, save_asset
 from .maintenance import account_deletion_plan, cleanup_plan, drain_cleanup, stage_cleanup, storage_stats
 from .statistics import summarize
 from .previews import PreviewCache
+from .media_cache import MediaCache, MediaWarmer
 from . import credits
 from .auth import can_read_asset, can_use_template, can_edit_template, generation_limit, DEFAULT_GENERATION_CONCURRENCY
 from .schemas import AccountConcurrencyPatch, AccountDeleteConfirm, AdminCreateUser, CreditAdjustment, CreditSettlement, RerunRequest
@@ -41,14 +43,18 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
         if start_worker:
             await app.state.worker.start()
             await app.state.agiso_worker.start()
+            app.state.media_warmer.start()
         yield
         if start_worker:
+            await asyncio.to_thread(app.state.media_warmer.stop)
             await app.state.agiso_worker.stop()
             await app.state.worker.stop()
 
     app = FastAPI(title='Avatar Sticker Studio', lifespan=lifespan)
     app.state.db, app.state.clock = db, now
     app.state.preview_cache = PreviewCache(db)
+    app.state.media_cache = MediaCache(db)
+    app.state.media_warmer = MediaWarmer(db, app.state.media_cache)
     from .agiso_worker import AgisoWorker
     app.state.agiso_worker = AgisoWorker(db, now)
 
@@ -278,7 +284,7 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
     def storage(request: Request):
         with db.transaction() as tx:
             superadmin(tx, request)
-        return storage_stats(db)
+        return storage_stats(db, app.state.media_warmer)
 
     @app.post('/api/admin/cleanup/preview')
     def cleanup_preview(data: CleanupPreview, request: Request):
@@ -296,13 +302,13 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
             credits.cleanup_credits(tx, {o['id'] for o in records['orders']}, now(), superadmin(tx, request)['id'])
             stage_cleanup(tx, records, paths)
         pending = drain_cleanup(db)
-        return {'deleted_orders':plan['order_count'], 'pending_files':pending, 'storage':storage_stats(db)}
+        return {'deleted_orders':plan['order_count'], 'pending_files':pending, 'storage':storage_stats(db, app.state.media_warmer)}
 
     @app.post('/api/admin/cleanup/retry')
     def cleanup_retry(request: Request):
         with db.transaction() as tx:
             superadmin(tx, request)
-        return {'pending_files':drain_cleanup(db), 'storage':storage_stats(db)}
+        return {'pending_files':drain_cleanup(db), 'storage':storage_stats(db, app.state.media_warmer)}
 
     @app.post('/api/admin/invites')
     def invite(request: Request):

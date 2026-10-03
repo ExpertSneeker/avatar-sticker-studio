@@ -156,7 +156,9 @@ test('active guest draft refreshes protected avatar and catalog URLs after batch
     await guest.getByRole('dialog').getByRole('button',{name:'关闭',exact:true}).click()
     await expect(avatar).not.toHaveAttribute('src',before!,{timeout:10000})
     await expect.poll(()=>avatar.evaluate((img:HTMLImageElement)=>img.complete&&img.naturalWidth>0)).toBe(true)
-    expect((await guest.request.get(before!)).status()).toBeGreaterThanOrEqual(400)
+    // Links carry no order version: the old link stays authorized and already serves the new watermark.
+    const [old,current]=await Promise.all([guest.request.get(before!),guest.request.get((await avatar.getAttribute('src'))!)])
+    expect(old.status()).toBe(200);expect(old.headers()['etag']).toBe(current.headers()['etag'])
   }finally{await context.close()}
 })
 

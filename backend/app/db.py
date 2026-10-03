@@ -75,6 +75,8 @@ class Database:
             tx.conn.executescript('CREATE TABLE IF NOT EXISTS records (kind TEXT NOT NULL,id TEXT NOT NULL,doc TEXT NOT NULL,PRIMARY KEY(kind,id)); CREATE TABLE IF NOT EXISTS starts (family TEXT NOT NULL,at REAL NOT NULL); CREATE INDEX IF NOT EXISTS starts_time ON starts(family,at);')
             for field in INDEXED_FIELDS:
                 tx.conn.execute(f"CREATE INDEX IF NOT EXISTS records_{field} ON records(kind, json_extract(doc,'$.{field}'))")
+            # Customer media authorization looks up the sticker owning an image (media_cache.library_owner).
+            tx.conn.execute("CREATE INDEX IF NOT EXISTS records_image_id ON records(kind, json_extract(doc,'$.image.id'))")
             if not tx.get('config', 'settings'):
                 tx.put('config', {'id': 'settings', 'max_inflight': 2, 'prompt': DEFAULT_PROMPT, 'prompt_version': 1})
             config = tx.get('config', 'settings')
