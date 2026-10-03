@@ -94,8 +94,11 @@ administrator. Existing usernames cannot be overwritten by this command.
 ## Guest media and operator delivery
 
 Guest sessions cannot authorize backend original or manifest endpoints. Guest
-images are flattened and watermarked on the server; guest responses use
-`Cache-Control: no-store`. Never add a CDN rule that caches guest API responses
+images are flattened and watermarked on the server. Watermarked media allows
+private browser storage with `Cache-Control: private, no-cache`, `Vary: Cookie`
+and versioned ETags. Every reuse revalidates authorization, including 304
+responses; matching validators skip image IO and encoding. Other guest API
+responses retain `Cache-Control: no-store`. Never add a CDN rule that caches guest API responses
 publicly. Cancellation and watermark revision changes invalidate guest media
 links. Do not expose the private assets/cache directories through Nginx or the
 Cloudflare tunnel.

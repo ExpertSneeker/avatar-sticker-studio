@@ -83,6 +83,7 @@ def register_guest_media(app, db, user):
 
     def media(order_id, asset_id, request, v, size, is_guest):
         size = max(160, min(1024, size))
+        candidates = [tag.strip().removeprefix('W/') for tag in request.headers.get('if-none-match', '').split(',')]
 
         def prepare(tx):
             order, asset = authorized(tx, request, order_id, asset_id, v, is_guest)
@@ -96,10 +97,15 @@ def register_guest_media(app, db, user):
                 rendered = _cache.get(key)
                 if rendered is not None:
                     _cache.move_to_end(key)
-            # Read the original only when this derivative must be rendered.
-            return key, mark, already_watermarked, rendered, asset_bytes(db, asset) if rendered is None else None
+            # A browser cache hit needs live authorization, but no image IO/encoding.
+            not_modified = '*' in candidates or f'"{key}"' in candidates
+            return key, mark, already_watermarked, rendered, asset_bytes(db, asset) if rendered is None and not not_modified else None
 
         key, mark, already_watermarked, rendered, data = db.read(prepare)
+        headers = {'Cache-Control': 'private, no-cache', 'Vary': 'Cookie', 'ETag': f'W/"{key}"'}
+        if '*' in candidates or f'"{key}"' in candidates:
+            db.read(lambda tx: authorized(tx, request, order_id, asset_id, v, is_guest))
+            return Response(status_code=304, headers=headers)
         if rendered is None:
             try:
                 rendered = render(data, mark, size, already_watermarked)
@@ -111,7 +117,7 @@ def register_guest_media(app, db, user):
                     _cache.popitem(last=False)
         # Cancellation/watermark replacement during rendering must invalidate this response.
         db.read(lambda tx: authorized(tx, request, order_id, asset_id, v, is_guest))
-        return Response(rendered, media_type='image/webp', headers={'Cache-Control': 'no-store', 'Content-Disposition': 'inline'})
+        return Response(rendered, media_type='image/webp', headers={**headers, 'Content-Disposition': 'inline'})
 
     @app.get('/api/guest/media/{order_id}/{asset_id}')
     def guest_image(order_id: str, asset_id: str, request: Request, v: int, size: int = 640):

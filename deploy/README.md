@@ -67,6 +67,18 @@ The storage panel reports cache use and the limit; cached bytes are already
 included in the application's total. Cached derivatives are disposable and do
 not replace manual retention management of original orders.
 
+## Customer watermarked media browser cache
+
+Customer and staff order media use `Cache-Control: private, no-cache`,
+`Vary: Cookie` and a weak ETag covering the asset hash, watermark/media
+versions, size and rendering pipeline. Browsers may persist the WebP bytes,
+but must revalidate before reuse. Authorized unchanged requests return an
+empty 304 without reading originals or rendering, even after server cache
+eviction. Logout, expired sessions, disabled access, cancellation and obsolete
+media versions are checked before 304. Other guest APIs remain `no-store`.
+Never force these private endpoints into a shared CDN cache. Browser storage
+is best-effort; previously displayed/saved images cannot be remotely erased.
+
 ## Historical release: personal templates and production credits
 
 The one-time `personal-credits-v1` database migration preserves existing template

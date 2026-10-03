@@ -108,7 +108,7 @@ def test_guest_privacy_cancel_restore_submitted_and_media(context):
     g=guest.get('/api/guest/order').json()
     assert not {'notes','owner','watermark','organization_id','print_settings'} & g.keys()
     link=g['slots'][0]['versions'][0]['preview_url']
-    media=guest.get(link); assert media.status_code==200 and media.headers['cache-control']=='no-store'
+    media=guest.get(link); assert media.status_code==200 and media.headers['cache-control']=='private, no-cache'
     assert Image_mode(media.content)=='RGB'
     assert guest.get('/api/assets/'+link.split('/')[-1].split('?')[0]).status_code in (401,404)
     o=c.get('/api/customer-orders/'+o['id']).json(); cancelled=action(c,o,'cancel').json()
@@ -501,7 +501,9 @@ def test_submitted_overview_has_only_one_watermark(context):
     guest=TestClient(app)
     guest.post('/api/guest/login',json={'order_number':o['order_number']})
     response=guest.get(guest.get('/api/guest/order').json()['preview_url'])
-    assert response.status_code==200 and response.headers['cache-control']=='no-store'
+    assert response.status_code==200 and response.headers['cache-control']=='private, no-cache'
+    unchanged=guest.get(guest.get('/api/guest/order').json()['preview_url'],headers={'If-None-Match':response.headers['etag']})
+    assert unchanged.status_code==304 and unchanged.content==b''
     with app.state.db.transaction() as tx:
         order=tx.get('orders',o['id'])
         data=asset_bytes(app.state.db,tx.get('assets',order['overview_id']))

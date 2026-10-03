@@ -239,7 +239,7 @@ studio_safe .venv/bin/python -B deploy/audit_framework.py \
 - 核对候选 revision、release 内容/构建哈希、`current` 指向和实际进程工作目录/版本证据；不能只看本地 Git 或链接已经切换。
 - 核对本机 `/api/ready` 及公网入口；[main.py](../backend/app/main.py) 中 `/api/health` 仅返回常量，不能代表数据库或 worker 正常。ready 检查配置、当前生成 worker 的 loop/lease task 和租约，**不验证 FAL 凭证、Agiso worker/消息或 CDN 行为**。
 - 在已授权的受控会话验证后台账号及组织隔离，未登录/访客不能读取后台说明、原图、manifest；账号停用/会话过期后仍要拒绝。不要用隐藏菜单代替接口拒绝测试。
-- 核对访客媒体水印、旧媒体链接失效及 `no-store`，后台说明 `private, no-store`；不要把私有资产目录暴露为静态目录或将认证资源放入共享 CDN 缓存。预览的 304 也必须先鉴权，见 [previews.py](../backend/app/previews.py) 与 [预览测试](../backend/tests/test_previews.py)。
+- 核对访客媒体水印、旧媒体链接失效及 `private, no-cache` / `Vary: Cookie` / ETag，条件请求未变化返回空体 304；退出、取消、停用和跨组织条件请求仍拒绝。其他访客 API 保持 `no-store`，后台说明 `private, no-store`；不要把私有资产目录暴露为静态目录或将认证资源放入共享 CDN 缓存。预览的 304 也必须先鉴权，见 [previews.py](../backend/app/previews.py) 与 [预览测试](../backend/tests/test_previews.py)。
 - 抽查被授权访问的历史原图哈希与审计基线、既有记录完整性、服务错误和资源约束。公网 UI、原图一致性、第三方送达是不同证据，逐项写结果和未验证项。
 
 下面的 HTTP 示例仅对已经启动的本地合成测试服务，不访问公网、不带订单号或 Cookie：

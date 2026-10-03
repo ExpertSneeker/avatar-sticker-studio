@@ -2,6 +2,13 @@
 
 Read [AGENTS.md](../AGENTS.md) first. The current organization/guest workflow is documented in [architecture and contracts](../docs/architecture-and-contracts.md); safe local and production operations are in [the operations guide](../docs/agent-operations.md). Legacy order APIs remain for compatibility and do not define the current customer UI.
 
+Customer watermarked media (guest and staff order routes) permits private browser
+storage with `private, no-cache`, `Vary: Cookie` and versioned weak ETags. Each
+reuse revalidates current authorization before an empty 304; matching requests
+skip original-image reads and encoding. Watermark/media versions and preview
+size distinguish representations. Other guest APIs remain `no-store`; these
+images must not enter shared CDN caches or application-managed IndexedDB.
+
 Run from repository root:
 
 ```sh
