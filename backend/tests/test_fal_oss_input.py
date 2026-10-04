@@ -411,3 +411,76 @@ def test_sdk_wrapped_missing_key_only_uploads_proven_absence(inner):
     else:
         with pytest.raises(OperationError):oss_delivery.stage_fal_input(store,b'image')
         assert not store.uploads
+
+
+DOWNLOAD_ERROR = {'detail': [{'loc': ['body', 'image_urls'], 'msg': 'Failed to download DO-NOT-LOG', 'type': 'file_download_error'}]}
+
+
+def run_download_error(context, monkeypatch, mode, where, fails):
+    """FAL cannot fetch inputs for requests where fails(body) is true; returns one item and its POST bodies."""
+    app, worker, clock = configure_worker(context, monkeypatch, Store(), mode)
+    bodies = {}
+    def receive(r):
+        if r.method == 'POST':
+            job = f'job-{len(bodies) + 1}'
+            bodies[job] = json.loads(r.content)
+            return httpx.Response(200, json={'request_id': job})
+        if r.url.host != 'queue.fal.run':
+            return httpx.Response(200, content=png(size=(1024, 1024)))
+        job = r.url.path.split('/requests/')[1].split('/')[0]
+        failing = fails(bodies[job])
+        if r.url.path.endswith('/status'):
+            if where == 'poll' and failing:
+                return httpx.Response(200, json={'status': 'COMPLETED', 'error': 'DO-NOT-LOG', 'error_type': 'file_download_error'})
+            return httpx.Response(200, json={'status': 'COMPLETED'})
+        if failing:
+            return httpx.Response(422, json=DOWNLOAD_ERROR)
+        return httpx.Response(200, json={'images': [{'url': 'https://v3.fal.media/result.png'}]})
+    install(monkeypatch, receive)
+    first = worker.claim()
+    item = first
+    for _ in range(40):
+        if not item:
+            break
+        asyncio.run(worker.execute(item)); clock.value += 10
+        item = worker.claim()
+    with app.state.db.transaction(readonly=True) as tx:
+        saved = tx.get('items', first['id'])
+    jobs = [r['request_id'] for r in saved.get('fal_input_retries', [])] + [saved['fal_request_id']]
+    return saved, [bodies[j] for j in jobs]
+
+
+oss_fails = lambda body: body['image_urls'][0].startswith('https://')
+
+
+@pytest.mark.parametrize('where', ['result', 'poll'])
+def test_oss_download_error_resubmits_inline_once(context, monkeypatch, caplog, where):
+    caplog.set_level('INFO', logger='backend.app.worker')
+    saved, posts = run_download_error(context, monkeypatch, 'oss', where, oss_fails)
+    assert len(posts) == 2
+    assert all(x.startswith('https://synthetic.oss.test/') for x in posts[0]['image_urls'])
+    assert all(x.startswith('data:image/png;base64,') for x in posts[1]['image_urls'])
+    assert saved['status'] == 'completed' and saved['attempt'] == 2
+    assert saved['fal_input'] == 'inline' and saved['fal_input_fallback_reason'] == 'fal_download_retry'
+    assert len(saved['fal_input_retries']) == 1 and saved['fal_input_retries'][0]['reason'] == 'file_download_error'
+    retries = [e for e in events(caplog) if e['event'] == 'fal_input_retry' and e['item_id'] == saved['id']]
+    assert [e['previous_request_id'] for e in retries] == [saved['fal_input_retries'][0]['request_id']]
+    assert 'DO-NOT-LOG' not in str(events(caplog)) and 'DO-NOT-LOG' not in str(saved)
+
+
+def test_download_error_after_inline_retry_is_terminal(context, monkeypatch):
+    saved, posts = run_download_error(context, monkeypatch, 'oss', 'result', lambda body: True)
+    assert len(posts) == 2
+    assert saved['status'] == 'failed' and not saved['remote_reserved'] and saved['fal_input'] == 'inline'
+
+
+def test_inline_download_error_is_not_retried(context, monkeypatch):
+    saved, posts = run_download_error(context, monkeypatch, 'inline', 'result', lambda body: True)
+    assert len(posts) == 1
+    assert saved['status'] == 'failed' and not saved.get('fal_input_retries')
+
+
+def test_provider_error_types_ignore_messages():
+    response = httpx.Response(422, json=DOWNLOAD_ERROR)
+    assert providers.error_types(response) == {'file_download_error'}
+    assert providers.error_types(httpx.Response(422, content=b'not json')) == frozenset()

@@ -15,6 +15,23 @@ class ProviderFailure(Exception):
         self.status, self.retry_after = status, retry_after
 
 
+def error_types(response):
+    """Provider error type codes only; never messages, URLs or payload echoes."""
+    try:
+        body = response.json()
+    except (ValueError, TypeError):
+        return frozenset()
+    found = set()
+    if isinstance(body, dict):
+        if isinstance(body.get('error_type'), str):
+            found.add(body['error_type'])
+        detail = body.get('detail')
+        for entry in detail if isinstance(detail, list) else []:
+            if isinstance(entry, dict) and isinstance(entry.get('type'), str):
+                found.add(entry['type'])
+    return frozenset(found)
+
+
 class CutoutDeferred(Exception):
     """Admission was denied before any cutout HTTP request was sent."""
 
@@ -76,7 +93,9 @@ class FalProvider:
             raise ProviderFailure('FAL服务暂不可用', 'unknown' if method == 'POST' else 'retry')
         if response.status_code not in (200, 202):
             label = '鉴权失败，请管理员检查FAL密钥' if response.status_code in (401, 403) else '请求被拒绝，请检查输入或内容限制'
-            raise ProviderFailure(f'{label}（HTTP {response.status_code}）', 'failed' if method == 'POST' or response.status_code == 422 else 'unknown')
+            error = ProviderFailure(f'{label}（HTTP {response.status_code}）', 'failed' if method == 'POST' or response.status_code == 422 else 'unknown')
+            error.error_types = error_types(response)
+            raise error
         try:
             body = response.json()
             if not isinstance(body, dict): raise ValueError()
@@ -124,8 +143,10 @@ class FalProvider:
         if status not in ('IN_QUEUE', 'IN_PROGRESS', 'COMPLETED'):
             raise ProviderFailure('FAL队列状态不可识别，保留原请求', 'unknown')
         position = body.get('queue_position')
+        failed = status == 'COMPLETED' and bool(body.get('error') or body.get('error_type'))
+        error_type = body.get('error_type') if failed and isinstance(body.get('error_type'), str) else None
         return {'fal_status': status, 'queue_position': position if isinstance(position, int) and position >= 0 else None,
-                'fal_error': 'FAL任务失败，请检查输入或内容限制' if status == 'COMPLETED' and (body.get('error') or body.get('error_type')) else None}
+                'fal_error': 'FAL任务失败，请检查输入或内容限制' if failed else None, 'fal_error_type': error_type}
 
     async def result(self, job):
         body = await self.request('GET', job['fal_response_url'])

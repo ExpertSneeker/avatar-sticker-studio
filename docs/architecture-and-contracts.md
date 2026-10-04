@@ -140,4 +140,6 @@ OSS 模式在数据库事务外计算模板和头像 SHA-256，HEAD 检查 `fal-
 
 OSS 暂存/签名失败发生在 FAL POST 前，同一次尝试回退原 inline 请求；item 记录实际 `fal_input=inline` 和脱敏原因。POST 的写入/连接失败、未知响应、429 退避语义沿用原规则。`max_uploads` 仍统计没有 request ID 的 running 提交任务，包含暂存阶段；全站及账号并发继续共同约束。已知请求 ID 的 poll/result/恢复不再暂存或重新提交。inline 请求体保持原有字节编码。
 
+OSS 输入请求若明确以 `file_download_error` 结束（状态接口 `error_type` 或结果接口 422 `detail[].type`），该请求已结束且无输出、FAL 不计费：worker 把原 request ID 记入 item 的 `fal_input_retries`，清除该请求的状态字段并以 `fal_force_inline=True` 重新排队，下一次领取照常经过 `max_inflight`、`max_uploads`、账号并发与 429 退避，提交改用 inline（`fal_input_fallback_reason=fal_download_retry`）。每个 item 最多一次；inline 请求或已自动重试过的请求出现同类错误按普通失败处理。该重提交不改变客户重试次数和整单 `rerun_limit`，`attempt` 记录实际请求数。
+
 结构化计时日志只记录 item ID、时间、模式、对象复用标志、stage_ms/post_ms/request_bytes、队列状态及位置、download_ms、postprocess_ms 和脱敏分类，不记录图片、订单号、密钥或签名链接。日志用于排障，不能把未知状态当作供应商未计费的证明。

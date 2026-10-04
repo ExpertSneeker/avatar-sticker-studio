@@ -174,7 +174,9 @@ class Worker:
                         if progress['fal_status'] != 'COMPLETED':
                             return self.defer(item, 2)
                     if item.get('fal_error'):
-                        raise ProviderFailure(item['fal_error'], 'failed')
+                        error = ProviderFailure(item['fal_error'], 'failed')
+                        error.error_types = frozenset({item['fal_error_type']} if item.get('fal_error_type') else ())
+                        raise error
                     download_started = time.monotonic()
                     downloaded = False
                     try:
@@ -265,11 +267,35 @@ class Worker:
                     latest.update(status='queued', remote_reserved=False, processing_stage='postprocess', next_at=0)
                     tx.put('items', latest)
         except ProviderFailure as exc:
-            self.fail(item, exc)
+            if not self.retry_inline_after_download_error(item, exc):
+                self.fail(item, exc)
         except Exception as exc:
             # Once a request starts, unexpected failures must not trigger another paid request.
             # Exception text may contain a provider's signed URL or payload.
             self.fail(item, ProviderFailure('结果处理失败：' + type(exc).__name__ + '；不会自动重新生图', 'failed' if response_received else 'unknown'))
+
+    def retry_inline_after_download_error(self, item, error):
+        """FAL could not fetch OSS inputs: the request ended without output or charge.
+
+        Requeue once with inline images. Admission still applies when it is claimed
+        again; customer retry counts and the order rerun budget are untouched.
+        """
+        if error.status != 'failed' or 'file_download_error' not in getattr(error, 'error_types', ()):
+            return False
+        with self.db.transaction() as tx:
+            latest = tx.get('items', item['id'])
+            if (not latest or latest['status'] != 'running' or latest.get('worker_id') != self.id or latest.get('run_id') != item.get('run_id')
+                    or latest.get('fal_input') != 'oss' or latest.get('fal_force_inline') or latest.get('raw_result_id') or latest.get('cutout_inflight')):
+                return False
+            history = list(latest.get('fal_input_retries', []))
+            history.append({'request_id': latest.get('fal_request_id'), 'reason': 'file_download_error', 'at': self.clock()})
+            for field in ('fal_request_id', 'fal_status', 'fal_status_url', 'fal_response_url', 'fal_error', 'fal_error_type', 'queue_position'):
+                latest.pop(field, None)
+            latest.update(status='queued', remote_reserved=False, next_at=0, error=None,
+                          fal_force_inline=True, fal_input_retries=history)
+            tx.put('items', latest)
+        self.timing('fal_input_retry', item, reason='file_download_error', previous_request_id=history[-1]['request_id'])
+        return True
 
     def timing(self, event, item, **fields):
         timing_log.info(json.dumps(dict(event=event, item_id=item['id'], at=self.clock(), **fields),
@@ -279,7 +305,10 @@ class Worker:
         """Stage before POST; failures fall back within this same paid attempt."""
         mode, reason, image_urls = 'inline', None, None
         stage_ms, reused = 0, []
-        if config.get('fal_input_mode', 'inline') == 'oss':
+        if item.get('fal_force_inline'):
+            # One automatic resubmission after FAL failed to fetch the OSS inputs.
+            mode, reason = 'fallback', 'fal_download_retry'
+        elif config.get('fal_input_mode', 'inline') == 'oss':
             stage_started = time.monotonic()
             try:
                 store = oss_delivery.create_store()
