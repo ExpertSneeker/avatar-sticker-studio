@@ -85,6 +85,7 @@ class Database:
             config = tx.get('config', 'settings')
             config.pop('rpm', None)
             config.pop('openai_api_key', None)
+            config.setdefault('fal_input_mode', 'inline')
             tx.put('config', config)
             if not tx.get('migrations', 'personal-credits-v1'):
                 for kind in ('templates', 'template_revisions'):

@@ -227,7 +227,10 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
             return {'ok': True}
 
     def public_settings(config):
+        oss_available = bool(os.environ.get('STUDIO_OSS_BUCKET', '').strip())
         return {**{k: config[k] for k in ('max_inflight', 'prompt', 'prompt_version')}, 'max_uploads': config.get('max_uploads', DEFAULT_MAX_UPLOADS), 'fal_upload_timeout': config.get('fal_upload_timeout', DEFAULT_UPLOAD_TIMEOUT), 'fal_configured': bool(os.environ.get('FAL_KEY') or config.get('fal_api_key')), 'cutout_configured': bool(os.environ.get('YEZI_API_KEY') or config.get('cutout_api_key')),
+                'fal_input_mode': config.get('fal_input_mode', 'inline') if oss_available else 'inline',
+                'fal_input_oss_available': oss_available,
                 'fal_balance_configured': bool(os.environ.get('FAL_ADMIN_KEY') or config.get('fal_admin_key')),
                 'fal_balance_key_source': 'environment' if os.environ.get('FAL_ADMIN_KEY') else 'settings' if config.get('fal_admin_key') else None}
 
@@ -241,6 +244,8 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
     def settings(data: SettingsPatch, request: Request):
         with db.transaction() as tx:
             superadmin(tx, request)
+            if data.fal_input_mode == 'oss' and not os.environ.get('STUDIO_OSS_BUCKET', '').strip():
+                raise HTTPException(422, '服务器尚未配置 OSS，无法使用 OSS 图片链接')
             config = tx.get('config', 'settings')
             if data.prompt is not None and data.prompt != config['prompt']:
                 config['prompt_version'] += 1

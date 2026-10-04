@@ -351,7 +351,10 @@ def test_sdk_role_bridge_refreshes_and_signs_public_endpoint_with_bounded_timeou
         query = parse_qs(first.query)
         assert query['response-content-disposition'] == ['attachment']
         assert 299 <= int(query['x-oss-expires'][0]) <= 300  # SDK truncates subsecond expiration.
-        assert len(credential_calls) == 2
+        input_query = parse_qs(urlparse(store.sign_input('fal-inputs/synthetic.png', 7200)).query)
+        assert 'response-content-disposition' not in input_query
+        assert 7199 <= int(input_query['x-oss-expires'][0]) <= 7200
+        assert len(credential_calls) == 3
         assert all(0 < c.connect_timeout <= 5 and 0 < c.readwrite_timeout <= 30 and c.retry_max_attempts == 3 for c in configurations)
         assert all(not c.disable_upload_crc64_check and not c.disable_download_crc64_check for c in configurations)
     finally:

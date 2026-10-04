@@ -19,7 +19,7 @@ class CutoutDeferred(Exception):
     """Admission was denied before any cutout HTTP request was sent."""
 
 
-# Site settings defaults: simultaneous FAL submissions (image uploads) and their body-upload timeout in seconds.
+# Site settings defaults: simultaneous FAL submissions and POST write timeout in seconds.
 DEFAULT_MAX_UPLOADS = 3
 DEFAULT_UPLOAD_TIMEOUT = 300
 
@@ -42,13 +42,18 @@ class FalProvider:
             raise ProviderFailure('FAL队列地址无效，保留请求待确认', 'unknown')
         return url
 
-    async def request(self, method, url, payload=None):
+    async def request(self, method, url, payload=None, *, content=None):
         self.queue_url(url)
         try:
             # The whole JSON body is one write, so the write timeout bounds the image upload.
             timeout = httpx.Timeout(60, write=self.upload_timeout) if method == 'POST' else 60
             async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
-                response = await client.request(method, url, headers={'Authorization': 'Key ' + self.key}, **({'json': payload} if payload is not None else {}))
+                headers = {'Authorization': 'Key ' + self.key}
+                options = {'json': payload} if payload is not None else {}
+                if content is not None:
+                    headers['Content-Type'] = 'application/json'
+                    options = {'content': content}
+                response = await client.request(method, url, headers=headers, **options)
         except (httpx.ConnectError, httpx.ConnectTimeout, httpx.WriteError, httpx.WriteTimeout) as exc:
             # No connection or an incomplete body: FAL cannot have accepted the request.
             if method == 'POST':
@@ -79,11 +84,28 @@ class FalProvider:
         except (ValueError, TypeError) as exc:
             raise ProviderFailure('FAL响应不可读取，保留请求待恢复', 'unknown' if method == 'POST' else 'retry') from exc
 
-    async def submit(self, template, avatar, prompt):
-        body = await self.request('POST', self.endpoint, dict(prompt=prompt, image_urls=['data:image/png;base64,' + base64.b64encode(x).decode() for x in (template, avatar)], image_size={'width': 1024, 'height': 1024}, quality='low', num_images=1, background='transparent', output_format='png', sync_mode=False))
+    async def submit(self, template, avatar, prompt, image_urls=None):
+        payload = dict(prompt=prompt, image_urls=image_urls if image_urls is not None else [
+            'data:image/png;base64,' + base64.b64encode(x).decode() for x in (template, avatar)],
+            image_size={'width': 1024, 'height': 1024}, quality='low', num_images=1,
+            background='transparent', output_format='png', sync_mode=False)
+        # Use HTTPX's own encoder once; metrics count precisely the bytes sent,
+        # including UTF-8 prompt text, while preserving the old inline wire body.
+        content = httpx.Request('POST', self.endpoint, json=payload).content
+        metrics = {'request_bytes': len(content)}
+        started = time.monotonic()
+        try:
+            body = await self.request('POST', self.endpoint, content=content)
+        except BaseException as exc:
+            metrics['post_ms'] = round((time.monotonic() - started) * 1000, 3)
+            exc.submit_metrics = metrics
+            raise
+        metrics['post_ms'] = round((time.monotonic() - started) * 1000, 3)
         request_id = body.get('request_id')
         if not isinstance(request_id, str) or not request_id or len(request_id) > 200 or any(c not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_' for c in request_id):
-            raise ProviderFailure('FAL未返回有效请求编号，结果待确认', 'unknown')
+            error = ProviderFailure('FAL未返回有效请求编号，结果待确认', 'unknown')
+            error.submit_metrics = metrics
+            raise error
         # Derive canonical recovery URLs if a response contains invalid URLs; the ID must survive.
         # Queue lookups use owner/model, excluding the /flare/edit subpath.
         base = self.queue_endpoint + '/requests/' + request_id
@@ -93,6 +115,7 @@ class FalProvider:
                 job[field] = self.queue_url(body.get(source))
             except ProviderFailure:
                 pass
+        job.update(fal_input='oss' if image_urls is not None else 'inline', fal_submit_metrics=metrics)
         return job
 
     async def poll(self, job):

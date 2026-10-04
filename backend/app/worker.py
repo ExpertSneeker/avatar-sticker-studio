@@ -1,5 +1,6 @@
 """Durable queue with cross-process admission and conservative uncertain outcomes."""
 import asyncio
+import json
 import logging
 import os
 import threading
@@ -14,6 +15,14 @@ from .providers import DEFAULT_MAX_UPLOADS, DEFAULT_UPLOAD_TIMEOUT, CutoutDeferr
 from .storage import asset_bytes, save_asset
 
 log = logging.getLogger(__name__)
+# Uvicorn's default config does not install a root handler for application INFO.
+# Give only these safe records a dedicated stderr sink (captured by systemd),
+# with propagation disabled to avoid duplicates or enabling HTTPX/SDK URL logs.
+timing_log = logging.getLogger(__name__ + '.timing')
+timing_log.setLevel(logging.INFO)
+timing_log.propagate = False
+if not timing_log.handlers:
+    timing_log.addHandler(logging.StreamHandler())
 # Production runs one Uvicorn process. Serialize both HTTP and background
 # publishers before loading their snapshots and allocating large image packs.
 _publish_lock = threading.Lock()
@@ -81,7 +90,7 @@ class Worker:
             generation_inflight = sum(bool(i.get('remote_reserved')) for i in items)
             owner_inflight = Counter(i['owner'] for i in items if i.get('remote_reserved'))
             processing_inflight = sum(i['status'] == 'running' and i.get('processing_stage') == 'postprocess' for i in items)
-            # Items still submitting (no request ID yet) are uploading images to FAL; the site setting caps them.
+            # No request ID yet: admission covers OSS staging plus the FAL POST.
             # Providers without a separate submit step (test doubles) have no upload phase to cap.
             uploading = sum(i['status'] == 'running' and i.get('processing_stage') != 'postprocess' and not i.get('fal_request_id') for i in items)
             upload_admitted = not (self.provider is None or hasattr(self.provider, 'submit')) or uploading < config.get('max_uploads', DEFAULT_MAX_UPLOADS)
@@ -119,6 +128,9 @@ class Worker:
         if not item:
             return
         response_received = False
+        # Per execution, not shared by overlapping tasks. A cancelled OSS thread
+        # can finish staging, but cannot call FAL after this coroutine is gone.
+        phase = {'submit_entered': False}
         try:
             with self.db.transaction() as tx:
                 current = tx.get('items', item['id'])
@@ -141,26 +153,41 @@ class Worker:
                         raise ProviderFailure('没有可恢复的原始生成结果')
                     data = asset_bytes(self.db, raw_asset)
                 response_received = True
+                processing_started = time.monotonic()
                 image = decode(data, require_transparency=False)
             else:
                 provider = self.provider or FalProvider(os.environ.get('FAL_KEY') or config.get('fal_api_key', ''), config.get('fal_upload_timeout', DEFAULT_UPLOAD_TIMEOUT))
                 if hasattr(provider, 'submit'):
                     if not item.get('fal_request_id'):
-                        job = await provider.submit(template=template, avatar=avatar, prompt=order['prompt'])
+                        job = await self.submit(provider, item, config, template, avatar, order['prompt'], phase)
+                        if job is None:
+                            return
                         self.checkpoint(item, **job)
                         return self.defer(item, 2)
                     if item.get('fal_status') != 'COMPLETED':
                         progress = await provider.poll(item)
+                        if progress['fal_status'] != item.get('fal_status') or progress.get('queue_position') != item.get('queue_position'):
+                            self.timing('fal_poll', item, status=progress['fal_status'], previous_status=item.get('fal_status'),
+                                        queue_position=progress.get('queue_position'))
                         self.checkpoint(item, **progress)
                         item.update(progress)
                         if progress['fal_status'] != 'COMPLETED':
                             return self.defer(item, 2)
                     if item.get('fal_error'):
                         raise ProviderFailure(item['fal_error'], 'failed')
-                    data = await provider.result(item)
+                    download_started = time.monotonic()
+                    downloaded = False
+                    try:
+                        data = await provider.result(item)
+                        downloaded = True
+                    finally:
+                        self.timing('fal_result', item, outcome='success' if downloaded else 'error',
+                                    download_ms=round((time.monotonic() - download_started) * 1000, 3))
                 else:
+                    phase['submit_entered'] = True
                     data = await provider.generate(template=template, avatar=avatar, prompt=order['prompt'])
                 response_received = True
+                processing_started = time.monotonic()
                 image = decode(data, require_transparency=False)
                 if image.size != (1024, 1024):
                     raise ProviderFailure('API图片尺寸不是约定的1024×1024，已拒绝发布')
@@ -216,12 +243,17 @@ class Worker:
                 tx.put('orders', order)
                 from .customer_orders import reconcile
                 reconcile(tx, order)
+            self.timing('fal_postprocess_complete', item,
+                        postprocess_ms=round((time.monotonic() - processing_started) * 1000, 3))
             await asyncio.to_thread(self.publish, item['order_id'])
         except asyncio.CancelledError:
             # Read the durable stage: execute's original claim may predate raw save.
             with self.db.transaction() as tx:
                 latest = tx.get('items', item['id'])
-            self.fail(item, ProviderFailure('请求执行时服务停止，保留原请求', 'retry' if latest.get('fal_request_id') or latest.get('raw_result_id') else 'unknown'))
+            if not phase['submit_entered'] and latest and not latest.get('fal_request_id') and not latest.get('raw_result_id'):
+                self.release_unsent(item)
+            else:
+                self.fail(item, ProviderFailure('请求执行时服务停止，保留原请求', 'retry' if latest.get('fal_request_id') or latest.get('raw_result_id') else 'unknown'))
             raise
         except CutoutDeferred:
             # The provider proves no request was sent, so the durable hold can safely become queued processing.
@@ -236,7 +268,62 @@ class Worker:
             self.fail(item, exc)
         except Exception as exc:
             # Once a request starts, unexpected failures must not trigger another paid request.
-            self.fail(item, ProviderFailure('结果处理失败：' + (str(exc)[:180] if isinstance(exc, ValueError) else type(exc).__name__) + '；不会自动重新生图', 'failed' if response_received else 'unknown'))
+            # Exception text may contain a provider's signed URL or payload.
+            self.fail(item, ProviderFailure('结果处理失败：' + type(exc).__name__ + '；不会自动重新生图', 'failed' if response_received else 'unknown'))
+
+    def timing(self, event, item, **fields):
+        timing_log.info(json.dumps(dict(event=event, item_id=item['id'], at=self.clock(), **fields),
+                            ensure_ascii=False, separators=(',', ':')))
+
+    async def submit(self, provider, item, config, template, avatar, prompt, phase):
+        """Stage before POST; failures fall back within this same paid attempt."""
+        mode, reason, image_urls = 'inline', None, None
+        stage_ms, reused = 0, []
+        if config.get('fal_input_mode', 'inline') == 'oss':
+            stage_started = time.monotonic()
+            try:
+                store = oss_delivery.create_store()
+                if store is None:
+                    reason = 'oss_not_configured'
+                else:
+                    ttl = int(os.environ.get('STUDIO_FAL_INPUT_URL_TTL', '7200'))
+                    if ttl <= 0:
+                        raise ValueError('Invalid input TTL')
+                    urls = []
+                    for data in (template, avatar):
+                        stats = {}
+                        key = await asyncio.to_thread(oss_delivery.stage_fal_input, store, data, stats=stats)
+                        reused.append(stats['reused'])
+                        urls.append(await asyncio.to_thread(store.sign_input, key, ttl))
+                    image_urls, mode = urls, 'oss'
+            except Exception:
+                # Do not stringify SDK exceptions: they can contain credentials.
+                reason = 'oss_stage_failed'
+            finally:
+                stage_ms = round((time.monotonic() - stage_started) * 1000, 3)
+            if reason:
+                mode = 'fallback'
+        actual = 'oss' if image_urls is not None else 'inline'
+        # All awaitable preparation has finished. Recheck the live claim and
+        # policy transactionally, then enter submit without another await gap.
+        if not self.admit_submission(item, fal_input=actual, fal_input_fallback_reason=reason):
+            return None
+        started, metrics, outcome = time.monotonic(), {}, 'success'
+        try:
+            kwargs = {'image_urls': image_urls} if image_urls is not None else {}
+            phase['submit_entered'] = True
+            job = await provider.submit(template=template, avatar=avatar, prompt=prompt, **kwargs)
+            metrics = job.get('fal_submit_metrics', {})
+            job['fal_input'] = actual
+            return job
+        except BaseException as exc:
+            metrics = getattr(exc, 'submit_metrics', {})
+            outcome = exc.status if isinstance(exc, ProviderFailure) else 'error'
+            raise
+        finally:
+            self.timing('fal_submit', item, mode=mode, fallback_reason=reason, objects_reused=reused,
+                        stage_ms=stage_ms, post_ms=metrics.get('post_ms', round((time.monotonic() - started) * 1000, 3)),
+                        request_bytes=metrics.get('request_bytes'), outcome=outcome)
 
     def unpublished(self):
         with self.db.transaction(readonly=True) as tx:
@@ -256,6 +343,31 @@ class Worker:
                 latest.update(fields)
                 request_tracking.progress(tx, latest)
                 tx.put('items', latest)
+                return True
+            return False
+
+    def release_unsent(self, item):
+        return self.checkpoint(item, status='queued', remote_reserved=False, next_at=0)
+
+    def admit_submission(self, item, **fields):
+        """No network IO here; stale executions must not overwrite a new owner."""
+        with self.db.transaction() as tx:
+            latest = tx.get('items', item['id'])
+            if not latest or latest['status'] != 'running' or latest.get('run_id') != item.get('run_id') or latest.get('worker_id') != self.id:
+                return False
+            if latest.get('fal_request_id') or latest.get('raw_result_id'):
+                return False
+            order = tx.get('orders', latest['order_id'])
+            owner = tx.get('users', latest['owner'])
+            org = tx.get('organizations', order['organization_id']) if order else None
+            allowed = bool(order_allowed(tx, order) and not order.get('paused') and owner and owner.get('active')
+                           and owner.get('organization_id') == order.get('organization_id') and org and org.get('active'))
+            latest.update(fields)
+            if not allowed:
+                latest.update(status='queued', remote_reserved=False, next_at=0)
+            request_tracking.progress(tx, latest)
+            tx.put('items', latest)
+            return allowed
 
     def defer(self, item, delay):
         self.checkpoint(item, status='queued', next_at=self.clock() + delay)

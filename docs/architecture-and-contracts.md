@@ -81,7 +81,7 @@
 
 - 当前 provider 源码使用 FAL `openai/gpt-image-2.5/flare/edit`；凭证是 `FAL_KEY` 或后台私有设置，环境变量优先。这描述仓库实现，不保证第三方服务未来仍可用。变更 provider 前核对其当时官方契约。
 - 点数功能及其接口已下线；实际生图记录、原图、旧请求 ID 和占用继续保留。全站 `max_inflight` 默认 2（1–40）和账号并发同时约束；访客任务计入开户账号。没有旧 RPM 门槛。
-- 提交阶段（尚无 request ID、正在上传模板和头像）另受全站 `max_uploads`（默认 3，1–40）约束，已拿到 ID 在 FAL 排队的任务不占用；提交 POST 的写超时为全站 `fal_upload_timeout`（默认 300 秒，30–1800），其他 FAL 请求仍为 60 秒。整个 JSON 请求体是一次写入，写超时即上传上限。
+- 提交阶段（尚无 request ID，包含 OSS 暂存及发送 FAL 请求）另受全站 `max_uploads`（默认 3，1–40）约束，已拿到 ID 在 FAL 排队的任务不占用；提交 POST 的写超时为全站 `fal_upload_timeout`（默认 300 秒，30–1800），其他 FAL 请求仍为 60 秒。整个 JSON 请求体是一次写入，写超时即上传上限。
 - 请求 ID 和队列 URL 持久化；超时或下载失败优先查原请求，不重新提交。提交时连接失败（ConnectError/ConnectTimeout）或请求体未写完（WriteError/WriteTimeout）FAL 不可能接单，记为 `failed` 并释放占用；其余无 ID 的未知提交（如请求体已发出后读响应中断）仍保留占用，人工核对后再确认结束。不要通过清空队列、改状态或重置租约绕过重复计费保护。
 - 客户订单的首次生成明确失败（`failed`、无占用、无原图、仍是该位置的首次任务）时，DTO 给出 `can_retry`；访客可调用 `POST /api/guest/order/slots/{slot}/retry`，每个位置最多 3 次（`slot.guest_retries`，同一首次任务的重复位置一起计数），后台重试不限且都不占 `rerun_limit`。访客的 `error` 是按状态生成的安全文案，不含供应商原始错误。
 - 贴纸（模板）图片按长边缩放到 1024 像素后入库，头像短边超过 1024 像素时缩小（`storage.normalize_image` 的 `fit`）；启动迁移 `template-1024-v1` 为既有非 1024 像素贴纸生成新资产和新修订，旧资产/修订保留给历史订单。
@@ -130,3 +130,14 @@ ZIP 不上传 OSS：短事务取得授权文件快照后在事务外读取并用
 已有客户订单历史仍阻止账号永久删除；只能停用。常规订单清理不删除客户订单历史。统计继续按现有客户订单和任务汇总，旧流程的 template_codes 统计来源随旧流程删除；未添加客户订单模板来源追溯。
 
 迁移审计必须显式使用 `--allow-single-order-migration`，只容许上述删除和合法打印 OSS 标记变化，其余受保护记录、生成请求与资产哈希保持严格比对。阶段 B 回退必须恢复发布前配对数据与旧 release，不能只切回代码；接收新业务后仅向前修复。
+
+
+## FAL 从 OSS 取生图输入
+
+全站 `config/settings.fal_input_mode` 的迁移默认值为 `inline`，有效值只有 `inline` / `oss`。仅超级管理员可读取、修改全站设置；响应中的 `fal_input_oss_available` 只读派生于服务器 OSS 配置。配置不可用时有效模式为 inline，拒绝设置 oss，不泄露凭证。设置即时作用于后续新提交，不改变已有请求的恢复路径。
+
+OSS 模式在数据库事务外计算模板和头像 SHA-256，HEAD 检查 `fal-inputs/<YYYYMMDD UTC>/<sha256>.png`；只有确定 NoSuchKey 才上传，设置 image/png。同日同内容复用，签名由公网 SDK 客户端产生，不带下载附件头。`STUDIO_FAL_INPUT_URL_TTL` 默认 7200 秒；签名只存在提交内存，请求正文不进入数据库、日志或前端。Bucket 的 `fal-inputs-expire-2d` 规则仅清理 `fal-inputs/`，满 2 天后按 OSS 日调度及异步执行，不保证严格 72 小时内完成；打印、备份和本地原图不在此规则内。
+
+OSS 暂存/签名失败发生在 FAL POST 前，同一次尝试回退原 inline 请求；item 记录实际 `fal_input=inline` 和脱敏原因。POST 的写入/连接失败、未知响应、429 退避语义沿用原规则。`max_uploads` 仍统计没有 request ID 的 running 提交任务，包含暂存阶段；全站及账号并发继续共同约束。已知请求 ID 的 poll/result/恢复不再暂存或重新提交。inline 请求体保持原有字节编码。
+
+结构化计时日志只记录 item ID、时间、模式、对象复用标志、stage_ms/post_ms/request_bytes、队列状态及位置、download_ms、postprocess_ms 和脱敏分类，不记录图片、订单号、密钥或签名链接。日志用于排障，不能把未知状态当作供应商未计费的证明。

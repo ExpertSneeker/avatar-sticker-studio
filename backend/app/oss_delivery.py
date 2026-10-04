@@ -11,7 +11,7 @@ import time
 import weakref
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from .storage import asset_bytes
 
@@ -20,6 +20,10 @@ log = logging.getLogger(__name__)
 # also covers a replacement Worker while its predecessor's IO is completing.
 _sync_lock = threading.Lock()
 _cleanup_times = weakref.WeakKeyDictionary()
+# Only active keys are retained. A small registry lock protects reference counts;
+# remote IO uses a separate lock per key, never the print synchronization lock.
+_input_locks_guard = threading.Lock()
+_input_locks = {}
 
 
 @dataclass(frozen=True)
@@ -77,6 +81,56 @@ class OSSStore:
         import alibabacloud_oss_v2 as oss
         return self.public.presign(oss.GetObjectRequest(bucket=self.bucket, key=key,
             response_content_disposition='attachment'), expires=timedelta(seconds=self.ttl)).url
+
+    def sign_input(self, key, ttl):
+        import alibabacloud_oss_v2 as oss
+        return self.public.presign(oss.GetObjectRequest(bucket=self.bucket, key=key),
+            expires=timedelta(seconds=ttl)).url
+
+
+@contextmanager
+def _input_lock(store, key):
+    identity = (store.bucket, key)
+    with _input_locks_guard:
+        entry = _input_locks.setdefault(identity, [threading.Lock(), 0])
+        entry[1] += 1
+    try:
+        with entry[0]:
+            yield
+    finally:
+        with _input_locks_guard:
+            entry[1] -= 1
+            if not entry[1]:
+                del _input_locks[identity]
+
+
+def stage_fal_input(store, data, *, stats=None):
+    """Content-addressed daily input; only a proven absent object permits PUT.
+
+    IO runs outside database transactions. Same-key concurrent submissions share
+    a HEAD/PUT lock; distinct images proceed independently. No URL is retained.
+    """
+    from alibabacloud_oss_v2.exceptions import OperationError, ServiceError
+    key = f"fal-inputs/{datetime.now(timezone.utc):%Y%m%d}/{hashlib.sha256(data).hexdigest()}.png"
+    with _input_lock(store, key):
+        reused = True
+        try:
+            store.head(key)
+        except (OperationError, ServiceError) as exc:
+            # SDK calls wrap service failures in OperationError. Unwrap only
+            # that documented type, never exception text or arbitrary causes.
+            failure = exc
+            for _ in range(8):
+                if not isinstance(failure, OperationError):
+                    break
+                failure = failure.unwrap()
+            if not isinstance(failure, ServiceError) or failure.status_code != 404 or failure.code != 'NoSuchKey':
+                raise
+            store.upload(key, data, content_type='image/png')
+            reused = False
+        if stats is not None:
+            stats['reused'] = reused
+    return key
 
 
 @lru_cache(maxsize=4)

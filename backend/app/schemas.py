@@ -83,10 +83,18 @@ class SettingsPatch(Model):
     max_inflight: int | None = Field(None, ge=1, le=40)
     max_uploads: int | None = Field(None, ge=1, le=40)
     fal_upload_timeout: int | None = Field(None, ge=30, le=1800)
+    fal_input_mode: Literal['inline', 'oss'] | None = None
     prompt: str | None = Field(None, min_length=20, max_length=10000)
     fal_api_key: str | None = Field(None, max_length=500)
     fal_admin_key: str | None = Field(None, max_length=500)
     cutout_api_key: str | None = Field(None, max_length=500)
+
+    @field_validator('fal_input_mode')
+    @classmethod
+    def require_fal_input_mode(cls, value):
+        if value is None:
+            raise ValueError('请选择生图图片传输方式')
+        return value
 
     @field_validator('fal_admin_key')
     @classmethod

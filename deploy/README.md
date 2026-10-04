@@ -272,3 +272,13 @@ RESTORE
 使用 Python 3.13 的 `tarfile` 数据过滤器安全解包至新建目录（`extractall(..., filter='data')`），拒绝越界路径；根据归档根目录检查 `data/studio.sqlite3`、文件哈希清单与配对审计。保持原权限及服务属主，完整恢复数据目录及必要环境配置，原子选择配对旧 release 后启动并验收。SQLite 数据和 release 必须配对，不能只切链接或只恢复主数据库文件。存在新业务时采用向前修复。
 
 OSS 启用后发布审计显式使用 `deploy/audit_framework.py --allow-oss-delivery` 生成基线并执行比对（`--baseline <同模式基线>`）；该模式只忽略打印 artifact 中与组织、订单及 SHA-256 完全匹配的 oss_key 标记，其他业务字段和原图仍严格比对，错误 key 直接失败。基线与结果的比较模式必须相同，不能用旧模式基线冒充同模式检查。
+
+
+## FAL OSS 输入配置与回退
+
+- 复用 ECS 实例 RAM 角色和同地域内网 OSS 客户端。在当前 `sticker-oss-access` 策略对象资源中追加 `acs:oss:*:*:coreages-sticker/fal-inputs/*`，保留 print/backups/selftest；HEAD 使用 GetObject 权限，无需开放该前缀列举。
+- 更新生命周期前先读取并保留现有规则；PUT 会替换整份配置。只增加 ID `fal-inputs-expire-2d`、Prefix `fal-inputs/`、Enabled、Expiration Days=2。读取回验前缀与天数，勿扩展为全桶。OSS 按天扫描和异步执行，2 天过期不等于 48/72 小时必然删除。参见 [阿里云生命周期执行说明](https://help.aliyun.com/zh/oss/user-guide/lifecycle-rules-based-on-the-last-modified-time/)。
+- `STUDIO_FAL_INPUT_URL_TTL=7200` 独立于打印链接 TTL；FAL 输入签名不带 attachment。CORS 不变，不启用传输加速、CDN 或自定义域名。
+- 发布默认 `fal_input_mode=inline`。在“管理设置 → 全站并发”切换输入方式无需重启；服务器未配置 OSS 时界面不可用，后端拒绝设置 oss。真实联调与正式开启分开记录。出现问题先切回 inline，已知 request ID 继续原请求恢复；不清除占用或重发未知请求。
+- 日常检查脱敏 `fal_submit`（mode、objects_reused、stage_ms、post_ms、request_bytes、outcome）、`fal_poll`（状态变化、queue_position）、`fal_result`（download_ms）及 `fal_postprocess_complete`（postprocess_ms）结构化记录；不要开启会打印 URL/Authorization 的 HTTP 调试日志。fallback 表示本次暂存/签名失败后实际用 inline，并非已经向 FAL 发送两次。
+- 带宽验证：`/proc/net/dev` 的网卡发送量包含 OSS 内网流量，不能单独当作公网出口；结合云监控 `VPC_PublicIP_InternetOutRate` 或按公网目的地址过滤的包头计数。恢复旧 release 前排空提交并保留最新数据；此功能新增可忽略设置字段，无须为切回 inline 恢复旧数据库。
