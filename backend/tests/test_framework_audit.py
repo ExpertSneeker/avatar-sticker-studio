@@ -193,3 +193,155 @@ def test_oss_rehearsal_uses_explicit_mode_and_leaves_source_unmodified(tmp_path)
     assert report['comparison_mode'] == report['source']['comparison_mode'] == report['migrated']['comparison_mode'] == 'oss-delivery'
     assert report['idempotent'] and report['failures'] == []
     assert (tmp_path / 'studio.sqlite3').read_bytes() == before
+
+
+def single_order_seed(root):
+    docs = seed(root)
+    replace(root, 'users', docs['users'][0] | {'credits': {'available': 4}})
+    replace(root, 'orders', docs['orders'][0] | {'workflow_version': 3, 'state': 'review', 'delivery_version': 2})
+    rows = {
+        'items': {'id': 'i', 'order_id': 'o', 'workflow_version': 3, 'credit_exempt': True,
+                  'billing_legacy': True, 'status': 'unknown', 'remote_reserved': True,
+                  'fal_request_id': 'provider-request', 'raw_result_id': 'asset'},
+        'generations': {'id': 'g', 'item_id': 'i', 'order_id': 'o', 'status': 'review',
+                        'request_id': 'provider-request', 'settled_at': 'original-time'},
+        'credit_ledger': {'id': 'ledger', 'amount': 1},
+        'credit_operations': {'id': 'operation', 'fingerprint': 'original'},
+    }
+    with sqlite3.connect(root / 'studio.sqlite3') as conn:
+        for kind, doc in rows.items():
+            conn.execute('INSERT INTO records VALUES(?,?,?)', (kind, doc['id'], json.dumps(doc)))
+        conn.execute("CREATE INDEX records_workflow_version ON records(kind, json_extract(doc,'$.workflow_version'))")
+
+
+def simulate_single_order_migration(root):
+    # Independently describe the authorized data transform to test the audit,
+    # without depending on the migration implementation being audited.
+    fields = {'orders': ('workflow_version',), 'items': ('workflow_version', 'credit_exempt', 'billing_legacy'),
+              'users': ('credits',)}
+    with sqlite3.connect(root / 'studio.sqlite3') as conn:
+        for kind, keys in fields.items():
+            for identifier, raw in conn.execute('SELECT id,doc FROM records WHERE kind=?', (kind,)).fetchall():
+                doc = json.loads(raw)
+                for key in keys:
+                    doc.pop(key, None)
+                conn.execute('UPDATE records SET doc=? WHERE kind=? AND id=?', (json.dumps(doc), kind, identifier))
+        conn.execute("DELETE FROM records WHERE kind IN ('credit_ledger','credit_operations')")
+        conn.execute('DROP INDEX records_workflow_version')
+        for marker in ('drop-workflow-version-v1', 'drop-credits-v1'):
+            conn.execute('INSERT INTO records VALUES(?,?,?)', ('migrations', marker, json.dumps({'id': marker})))
+
+
+def test_single_order_audit_allows_only_authorized_deletions(tmp_path):
+    single_order_seed(tmp_path)
+    before = audit_framework.audit(tmp_path, allow_single_order_migration=True)
+    simulate_single_order_migration(tmp_path)
+    after = audit_framework.audit(tmp_path, allow_single_order_migration=True)
+    assert before['failures'] == after['failures'] == []
+    assert before['comparison_mode'] == after['comparison_mode'] == 'single-order-migration'
+    assert audit_framework.compare(before, after) == []
+    assert before['historical_hashes']['generations'] == after['historical_hashes']['generations']
+    assert audit_framework.compare(audit_framework.audit(tmp_path), after) == ['comparison mode mismatch']
+
+
+@pytest.mark.parametrize('kind,identifier,field,value', [
+    ('generations', 'g', 'status', 'exempt'),
+    ('generations', 'g', 'request_id', 'different'),
+    ('items', 'i', 'remote_reserved', False),
+    ('items', 'i', 'raw_result_id', None),
+    ('orders', 'o', 'state', 'cancelled'),
+    ('orders', 'o', 'delivery_version', 3),
+    ('users', 'u', 'organization_id', 'foreign'),
+])
+def test_single_order_audit_rejects_request_and_business_rewrites(tmp_path, kind, identifier, field, value):
+    single_order_seed(tmp_path)
+    before = audit_framework.audit(tmp_path, allow_single_order_migration=True)
+    simulate_single_order_migration(tmp_path)
+    with sqlite3.connect(tmp_path / 'studio.sqlite3') as conn:
+        doc = json.loads(conn.execute('SELECT doc FROM records WHERE kind=? AND id=?', (kind, identifier)).fetchone()[0])
+    replace(tmp_path, kind, doc | {field: value})
+    assert f'changed or missing historical {kind}: {identifier}' in audit_framework.compare(
+        before, audit_framework.audit(tmp_path, allow_single_order_migration=True))
+
+
+@pytest.mark.parametrize('value', [None, 2, '3', 3.0])
+def test_single_order_audit_rejects_unmigratable_baseline_versions(tmp_path, value):
+    single_order_seed(tmp_path)
+    with sqlite3.connect(tmp_path / 'studio.sqlite3') as conn:
+        doc = json.loads(conn.execute("SELECT doc FROM records WHERE kind='orders'").fetchone()[0])
+    if value is None:
+        doc.pop('workflow_version')
+    else:
+        doc['workflow_version'] = value
+    replace(tmp_path, 'orders', doc)
+    assert audit_framework.audit(tmp_path, allow_single_order_migration=True)['failures']
+
+
+@pytest.mark.parametrize('leftover', ['marker', 'field', 'ledger', 'index'])
+def test_single_order_audit_rejects_incomplete_migration(tmp_path, leftover):
+    single_order_seed(tmp_path)
+    before = audit_framework.audit(tmp_path, allow_single_order_migration=True)
+    simulate_single_order_migration(tmp_path)
+    with sqlite3.connect(tmp_path / 'studio.sqlite3') as conn:
+        if leftover == 'marker':
+            conn.execute("DELETE FROM records WHERE kind='migrations' AND id='drop-credits-v1'")
+        elif leftover == 'ledger':
+            conn.execute('INSERT INTO records VALUES(?,?,?)', ('credit_ledger', 'leftover', '{"id":"leftover"}'))
+        elif leftover == 'index':
+            conn.execute("CREATE INDEX records_workflow_version ON records(kind, json_extract(doc,'$.workflow_version'))")
+        else:
+            conn.execute("UPDATE records SET doc=json_set(doc,'$.credit_exempt',1) WHERE kind='items'")
+    after = audit_framework.audit(tmp_path, allow_single_order_migration=True)
+    assert audit_framework.compare(before, after)
+
+
+def test_single_order_cli_requires_matching_mode_and_complete_migration(tmp_path):
+    single_order_seed(tmp_path)
+    baseline = tmp_path / 'baseline.json'
+    baseline.write_text(json.dumps(audit_framework.audit(tmp_path, allow_single_order_migration=True)))
+    simulate_single_order_migration(tmp_path)
+    args = [sys.executable, str(Path(audit_framework.__file__)), '--data-dir', str(tmp_path),
+            '--allow-single-order-migration', '--baseline', str(baseline)]
+    result = subprocess.run(args, capture_output=True, text=True)
+    assert result.returncode == 0 and json.loads(result.stdout)['failures'] == []
+    assert 'provider-request' not in result.stdout
+    baseline.write_text(json.dumps(audit_framework.audit(tmp_path)))
+    result = subprocess.run(args, capture_output=True, text=True)
+    assert result.returncode == 1 and 'comparison mode mismatch' in json.loads(result.stdout)['failures']
+
+
+def test_single_order_rehearsal_rejects_unsupported_source_without_writing(tmp_path):
+    single_order_seed(tmp_path)
+    with sqlite3.connect(tmp_path / 'studio.sqlite3') as conn:
+        conn.execute("UPDATE records SET doc=json_set(doc,'$.workflow_version',2) WHERE kind='orders'")
+    before = (tmp_path / 'studio.sqlite3').read_bytes()
+    with pytest.raises(ValueError):
+        audit_framework.rehearse(tmp_path, allow_single_order_migration=True)
+    assert (tmp_path / 'studio.sqlite3').read_bytes() == before
+
+
+@pytest.mark.parametrize('kind', ['customer_operations', 'customer_audit', 'result_versions',
+                                  'agiso_orders', 'agiso_events', 'agiso_shops', 'invites',
+                                  'watermark_previews', 'migrations', 'future_business_history'])
+def test_single_order_compare_preserves_every_unrelated_historical_collection(tmp_path, kind):
+    single_order_seed(tmp_path)
+    with sqlite3.connect(tmp_path / 'studio.sqlite3') as conn:
+        conn.execute('INSERT INTO records VALUES(?,?,?)', (kind, 'protected', '{"id":"protected","value":"original"}'))
+    before = audit_framework.audit(tmp_path, allow_single_order_migration=True)
+    simulate_single_order_migration(tmp_path)
+    with sqlite3.connect(tmp_path / 'studio.sqlite3') as conn:
+        conn.execute('DELETE FROM records WHERE kind=? AND id=?', (kind, 'protected'))
+    after = audit_framework.audit(tmp_path, allow_single_order_migration=True)
+    assert f'changed or missing historical {kind}: protected' in audit_framework.compare(before, after)
+
+
+def test_single_order_compare_allows_only_worker_lease_turnover(tmp_path):
+    single_order_seed(tmp_path)
+    with sqlite3.connect(tmp_path / 'studio.sqlite3') as conn:
+        conn.execute('INSERT INTO records VALUES(?,?,?)', ('workers', 'previous', '{"id":"previous","expires":1}'))
+    before = audit_framework.audit(tmp_path, allow_single_order_migration=True)
+    simulate_single_order_migration(tmp_path)
+    with sqlite3.connect(tmp_path / 'studio.sqlite3') as conn:
+        conn.execute("DELETE FROM records WHERE kind='workers'")
+        conn.execute('INSERT INTO records VALUES(?,?,?)', ('workers', 'current', '{"id":"current","expires":2}'))
+    assert audit_framework.compare(before, audit_framework.audit(tmp_path, allow_single_order_migration=True)) == []

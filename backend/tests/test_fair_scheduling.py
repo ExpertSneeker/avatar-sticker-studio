@@ -2,7 +2,7 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from backend.tests.test_worker import context,Worker
 from backend.tests.test_api import template,order
-from backend.tests.test_credits import member,fund
+from backend.tests.helpers import member
 from backend.tests.test_account_concurrency import change
 
 
@@ -10,7 +10,6 @@ def setup_accounts(context,global_limit=20):
     app,admin,clock,provider=context
     a,au=member(admin,app,'fair_alice');b,bu=member(admin,app,'fair_bob')
     for u in (au,bu):
-        fund(admin,u,48)
         assert change(admin,u,20).status_code==200
     admin.patch('/api/admin/settings',json={'max_inflight':global_limit})
     t=template(admin)

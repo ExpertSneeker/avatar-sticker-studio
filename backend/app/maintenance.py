@@ -22,7 +22,7 @@ def _references(orders, items):
         elif isinstance(value, list):
             for child in value: historical_ids(child)
     for order in orders:
-        if order.get('workflow_version') == 3: historical_ids(order)
+        historical_ids(order)
     result.update(a['id'] for o in orders for a in o.get('artifacts', []))
     result.update(i[k] for i in items for k in ('result_id', 'raw_result_id', 'template_id') if i.get(k))
     return result
@@ -30,10 +30,12 @@ def _references(orders, items):
 
 def cleanup_plan(db, tx, before):
     orders, items, assets = tx.all('orders'), tx.all('items'), tx.all('assets')
+    # All customer orders and their media are protected history, including
+    # cancelled orders. Unassigned old outputs are reported, never guessed safe.
     older = [o for o in orders if datetime.fromisoformat(o['created_at']).timestamp() < before.timestamp()]
-    blocked = {i['order_id'] for i in items if i['status'] in {'running', 'unknown'} or i.get('remote_reserved')}
-    blocked.update(g['order_id'] for g in tx.all('generations') if g['status']=='review')
-    chosen = [o for o in older if o['id'] not in blocked and o.get('workflow_version') != 3]
+    blocked = {i['order_id'] for i in items if i['status'] in {'running', 'unknown'}
+               or i.get('remote_reserved') or i.get('cutout_inflight')}
+    chosen = []
     ids = {o['id'] for o in chosen}
     selected_items = [i for i in items if i['order_id'] in ids]
     remaining_orders = [o for o in orders if o['id'] not in ids]
@@ -95,7 +97,7 @@ def account_deletion_plan(tx, account_id):
         raise HTTPException(403, '不能删除管理员账号')
     orders = tx.all('orders')
     selected_orders = [o for o in orders if o['owner'] == account_id]
-    if any(o.get('workflow_version') == 3 for o in selected_orders):
+    if selected_orders:
         raise HTTPException(409, '该账号有客户订单历史，请停用账号以保留订单与审计记录')
     order_ids = {o['id'] for o in selected_orders}
     items = tx.all('items')
@@ -119,8 +121,8 @@ def account_deletion_plan(tx, account_id):
     records['uploads'] = [u for u in tx.all('uploads') if u.get('owner') == account_id or u.get('asset_id') in asset_ids]
     records['rerun_operations'] = [r for r in tx.all('rerun_operations') if r['order_id'] in order_ids]
     records['sessions'] = [s for s in tx.all('sessions') if s['user_id'] == account_id]
-    blocked = {i['id'] for i in selected_items if i['status'] in {'running', 'unknown'} or i.get('remote_reserved')}
-    blocked.update(g['item_id'] for g in generations if g['status'] == 'review')
+    blocked = {i['id'] for i in selected_items if i['status'] in {'running', 'unknown'}
+               or i.get('remote_reserved') or i.get('cutout_inflight')}
     paths = ['assets/' + a['file'] for a in assets]
     paths += [u['id'] + '.upload' for u in records['uploads']]
     paths += ['preview-cache/' + asset_id for asset_id in asset_ids] + ['media-cache/' + asset_id for asset_id in asset_ids]
@@ -129,7 +131,7 @@ def account_deletion_plan(tx, account_id):
     public = {'preview_token':hashlib.sha256(fingerprint.encode()).hexdigest(), 'order_count':len(selected_orders),
               'template_count':len(records['templates']), 'revision_count':len(records['template_revisions']),
               'asset_count':len(assets), 'upload_count':len(records['uploads']), 'blocked_count':len(blocked),
-              'can_delete':not blocked, 'frozen_credits':target.get('credits', {}).get('frozen', 0)}
+              'can_delete':not blocked}
     return public, records, paths
 
 

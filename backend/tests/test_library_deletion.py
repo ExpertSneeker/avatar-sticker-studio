@@ -3,7 +3,7 @@ from concurrent.futures import ThreadPoolExecutor
 from backend.tests.test_worker import context
 from backend.tests.test_library import stickers
 from backend.tests.test_api import upload
-from backend.tests.test_credits import member
+from backend.tests.helpers import member, create_customer_order, generate_customer_order, customer_action, order_items
 
 
 def create_template(client, code, sid):
@@ -34,11 +34,9 @@ def test_delete_sticker_lists_all_referencing_templates_including_inactive(conte
 
 
 def test_delete_permissions_and_history_survive(context):
-    app,admin,_,provider=context
-    staff,account=member(admin,app)
-    s=stickers(admin,['HISTORY']).json()[0]
-    t=create_template(admin,'HISTORY',s['id']).json()
-    o=admin.post('/api/orders',json={'upload_id':upload(admin)['id'],'name':'history','template_ids':[t['id']],'client_token':'history'}).json()
+    app,admin,_,provider=context;staff,account=member(admin,app)
+    s=stickers(admin,['HISTORY']).json()[0];t=create_template(admin,'HISTORY',s['id']).json()
+    o,_=create_customer_order(admin,'history',1);o=generate_customer_order(admin,o,template_ids=[t['id']])
     assert staff.delete('/api/templates/'+t['id']).status_code==403
     assert staff.delete('/api/stickers/'+s['id']).status_code==403
     admin.patch('/api/admin/users/'+account['id']+'/library-permission',json={'can_edit_library':True})
@@ -47,15 +45,15 @@ def test_delete_permissions_and_history_survive(context):
     assert staff.delete('/api/stickers/'+s['id']).status_code==200
     assert admin.get(s['image']['url']).status_code==200
     asyncio.run(app.state.worker.execute(app.state.worker.claim()))
-    result=admin.get('/api/orders/'+o['id']).json()
-    assert result['status']=='completed' and result['total']==1
-    assert len(provider.calls)==1 and result['items'][0]['template_url']==s['image']['url']
-    with app.state.db.transaction() as tx:
+    result=admin.get('/api/customer-orders/'+o['id']).json()
+    assert result['slots'][0]['status']=='completed' and len(provider.calls)==1
+    assert order_items(app,o)[0]['template_id']==s['image']['id']
+    with app.state.db.transaction(readonly=True) as tx:
         assert tx.get('template_revisions',t['id']+':1')['images'][0]['id']==s['image']['id']
         assert tx.get('sticker_revisions',s['id']+':1')['image']==s['image']
-        assert tx.get('orders',o['id'])['export_entries'][0]['code']=='HISTORY'
-    assert admin.post('/api/orders',json={'upload_id':upload(admin)['id'],'name':'gone','sticker_ids':[s['id']],'client_token':'gone'}).status_code==422
-
+    assert result['slots'][0]['sticker_code']=='HISTORY'
+    empty,_=create_customer_order(admin,'gone',1)
+    assert customer_action(admin,empty,'generate',avatars=[{'upload_id':upload(admin)['id'],'sticker_ids':[s['id']]}]).status_code==422
 
 def test_template_creation_cannot_race_sticker_deletion(context):
     app,admin,_,_=context

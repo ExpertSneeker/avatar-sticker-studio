@@ -1,35 +1,31 @@
 """Private local Avatar Sticker Studio HTTP API."""
 import asyncio
 import hashlib
-import io
 import json
 import os
 import secrets
 import time
-import unicodedata
-import zipfile
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
 from fastapi import FastAPI, HTTPException, Request, Response, Query
 from typing import Literal
 from starlette.datastructures import UploadFile
+from starlette.routing import Match
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse
 from .auth import same_organization, require_superadmin, managed_user, hash_password, owned, public_user, require_admin, require_user, token_hash, verify_password
 from .db import Database, uid
-from .schemas import AccountPatch, ActivePatch, Credentials, CleanupConfirm, CleanupPreview, OrderCreate, PasswordChange, PrintSettings, Repack, ResolveUnknown, SettingsPatch, Signup, UploadInit, safe_name
+from .schemas import AccountPatch, ActivePatch, Credentials, CleanupConfirm, CleanupPreview, PasswordChange, PrintSettings, SettingsPatch, Signup, UploadInit
 from .storage import asset_bytes, normalize_image, save_asset
 from .providers import DEFAULT_MAX_UPLOADS, DEFAULT_UPLOAD_TIMEOUT
 from .maintenance import account_deletion_plan, cleanup_plan, drain_cleanup, stage_cleanup, storage_stats
 from .statistics import summarize
 from .previews import PreviewCache
 from .media_cache import MediaCache, MediaWarmer
-from . import credits
-from .auth import can_read_asset, can_use_template, can_edit_template, generation_limit, DEFAULT_GENERATION_CONCURRENCY
-from .schemas import AccountConcurrencyPatch, AccountDeleteConfirm, AdminCreateUser, CreditAdjustment, CreditSettlement, RerunRequest
+from .auth import can_read_asset, generation_limit, DEFAULT_GENERATION_CONCURRENCY
+from .schemas import AccountConcurrencyPatch, AccountDeleteConfirm, AdminCreateUser
 
 
 def create_app(data_root=None, provider=None, clock=None, start_worker=True):
@@ -108,7 +104,7 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
     def register_user(tx, data, role, organization_id=None):
         if any(u['username'].casefold() == data.username.casefold() for u in tx.all('users')):
             raise HTTPException(409, '用户名已存在')
-        value = {'id': uid(), 'username': data.username, 'password': hash_password(data.password), 'display_name': data.display_name.strip(), 'role': role, 'watermark': '', 'print_defaults': PrintSettings().model_dump(), 'active': True, 'credits':{'available':0,'frozen':0,'spent':0,'version':0}}
+        value = {'id': uid(), 'username': data.username, 'password': hash_password(data.password), 'display_name': data.display_name.strip(), 'role': role, 'watermark': '', 'print_defaults': PrintSettings().model_dump(), 'active': True}
         organization_id = organization_id or tx.get('migrations','organizations-v1')['default_organization_id']
         organization = tx.get('organizations', organization_id)
         if not organization or not organization['active']: raise HTTPException(403, '组织已停用')
@@ -301,7 +297,6 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
             plan, records, paths = cleanup_plan(db, tx, data.before)
             if not secrets.compare_digest(plan['preview_token'], data.preview_token):
                 raise HTTPException(409, '订单状态已变化，请重新预览清理范围')
-            credits.cleanup_credits(tx, {o['id'] for o in records['orders']}, now(), superadmin(tx, request)['id'])
             stage_cleanup(tx, records, paths)
         pending = drain_cleanup(db)
         return {'deleted_orders':plan['order_count'], 'pending_files':pending, 'storage':storage_stats(db, app.state.media_warmer)}
@@ -380,42 +375,8 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
                 raise HTTPException(409, '该账号有正在处理或结果待核对的任务，请处理完成后再删除')
             if not secrets.compare_digest(data.preview_token, plan['preview_token']):
                 raise HTTPException(409, '账号数据已变化，请重新预览删除范围')
-            for generation in records['generations']:
-                credits.settle(tx, generation['id'], 'release', now(), actor['id'])
-            if credits.wallet(tx.get('users', id))['frozen']:
-                raise HTTPException(409, '冻结积分与生图记录不一致，请先核对积分')
-            # Keep only anonymous accounting evidence, never free-form names or remarks.
-            ledger_fields = {'id', 'owner', 'created_at', 'event', 'available_delta', 'frozen_delta',
-                             'available_after', 'frozen_after', 'amount', 'actor', 'generation_id', 'order_id', 'item_id'}
-            for entry in tx.all('credit_ledger'):
-                if entry['owner'] == id:
-                    tx.put('credit_ledger', {k:v for k,v in entry.items() if k in ledger_fields})
             stage_cleanup(tx, records, paths)
         return {'deleted':True, 'pending_files':drain_cleanup(db)}
-
-    @app.get('/api/credits')
-    def own_credits(request: Request, days: int = Query(30, ge=0, le=3650), offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=100)):
-        with db.transaction() as tx:
-            return credits.report(tx, user(tx, request)['id'], now(), days, offset, limit)
-
-    @app.get('/api/admin/users/{id}/credits')
-    def member_credits(id: str, request: Request, days: int = Query(30, ge=0, le=3650), offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=100)):
-        with db.transaction() as tx:
-            managed_user(tx, id, admin(tx, request))
-            return credits.report(tx, id, now(), days, offset, limit)
-
-    @app.post('/api/admin/users/{id}/credits')
-    def adjust_credits(id: str, data: CreditAdjustment, request: Request):
-        with db.transaction() as tx:
-            actor = admin(tx, request)
-            managed_user(tx, id, actor)
-            return credits.adjust(tx, actor, id, data, now())
-
-    @app.post('/api/admin/generations/{id}/settle')
-    def settle_credits(id: str, data: CreditSettlement, request: Request):
-        with db.transaction() as tx:
-            actor = superadmin(tx, request)
-            return credits.manual_settle(tx, actor, id, data, now())
 
     @app.get('/api/admin/users')
     def users(request: Request):
@@ -522,212 +483,6 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
                 tx.put('uploads', value)
             return {k: value[k] for k in ('id', 'filename', 'url')}
 
-    def legacy_order(tx, id, actor):
-        value = owned(tx, 'orders', id, actor)
-        if value.get('workflow_version') == 3:
-            raise HTTPException(404, '记录不存在')
-        return value
-
-    def order_public(tx, value, full=False):
-        items = [i for i in tx.all('items') if i['order_id'] == value['id']]
-        completed = sum(i['status'] == 'completed' for i in items)
-        failed = sum(i['status'] == 'failed' for i in items)
-        unknown = sum(i['status'] == 'unknown' for i in items)
-        status = 'archived' if value.get('archived') else 'paused' if value['paused'] else 'unknown' if unknown else 'failed' if failed or value.get('processing_error') else 'completed' if completed == len(items) and value.get('overview_ready') else 'processing' if any(i['status'] == 'running' for i in items) or completed else 'queued'
-        result = {k: value[k] for k in ('id', 'name', 'created_at', 'paused', 'avatar_url', 'template_codes', 'print_settings', 'artifact_version')}
-        result.update(status=status, total=len(items), completed=completed, failed=failed, unknown=unknown, archived=value.get('archived', False), processing_error=value.get('processing_error'))
-        result.update(client_token=value.get('client_token'), preview_url=next((a['url'] for a in value.get('artifacts', []) if a['kind'] == 'overview'), None), download_ready=completed == len(items) and bool(value.get('overview_ready')))
-        result.update(generation_count=len(items), export_count=len(value.get('export_entries', items)))
-        if full:
-            result['export_entries'] = value.get('export_entries', [])
-            result['items'] = [{k: i.get(k) for k in ('id', 'set_code', 'sticker_id', 'sticker_code', 'position', 'status', 'error', 'result_url', 'template_url', 'attempt', 'fal_request_id', 'fal_status', 'queue_position')} | {'recoverable': bool(i.get('fal_request_id')) and not i.get('cutout_inflight') and i['status'] == 'unknown', 'remote_reserved': bool(i.get('remote_reserved')), 'raw_available': bool(i.get('raw_result_id')), 'processing_stage': i.get('processing_stage', 'generate')} for i in items]
-            result['artifacts'] = value.get('artifacts', [])
-        return result
-
-    @app.get('/api/orders')
-    def orders(request: Request):
-        with db.transaction() as tx:
-            actor = user(tx, request)
-            return [order_public(tx, o) for o in reversed(tx.all('orders')) if o.get('workflow_version') != 3 and same_organization(o, actor)]
-
-    @app.post('/api/orders')
-    def create_order(data: OrderCreate, request: Request):
-        with db.transaction() as tx:
-            actor = user(tx, request)
-            previous = next((o for o in tx.all('orders') if o.get('workflow_version') != 3 and o['owner'] == actor['id'] and o.get('client_token') == data.client_token), None)
-            if previous:
-                return order_public(tx, previous, True)
-            from .selections import expand_selection
-            for kind, ids in (('templates', data.template_ids), ('stickers', data.sticker_ids)):
-                for selected_id in ids:
-                    if not same_organization(tx.get(kind, selected_id), actor):
-                        raise HTTPException(422, '所选资源不存在')
-            sets, generation_items, export_entries = expand_selection(tx, data.template_ids, data.sticker_ids)
-            used_names = {o.get('output_name', o['name']).casefold() for o in tx.all('orders') if o.get('workflow_version') != 3 and o['owner']==actor['id']}
-            output_name, suffix = data.name, 1
-            while output_name.casefold() in used_names:
-                suffix += 1
-                ending = f' ({suffix})'
-                output_name = data.name[:100-len(ending)] + ending
-            avatar = owned(tx, 'uploads', data.upload_id, actor)
-            if not same_organization(avatar, actor) or not avatar['complete']:
-                raise HTTPException(409, '请先完成自己的头像上传')
-            config = tx.get('config', 'settings')
-            value = {'id': uid(), 'owner': actor['id'], 'name': data.name, 'normalized_name': data.name.casefold(), 'output_name': output_name, 'client_token': data.client_token, 'created_at': datetime.fromtimestamp(now(), timezone.utc).isoformat(), 'paused': False, 'archived': False, 'avatar_url': avatar['url'], 'avatar_id': avatar['asset_id'], 'template_codes': [t['code'] for t in sets], 'template_snapshots': sets, 'selection_version': 2, 'export_entries': export_entries, 'sticker_snapshots': [g['sticker'] for g in generation_items], 'prompt': config['prompt'], 'prompt_version': config['prompt_version'], 'print_settings': data.print_settings.model_dump(), 'artifact_version': 0, 'artifacts': [], 'overview_ready': False, 'content_version': 0}
-            tx.put('orders', value)
-            for position, generation in enumerate(generation_items, 1):
-                sticker = generation['sticker']
-                image = sticker['image']
-                item = {'id': generation['id'], 'owner': actor['id'], 'order_id': value['id'], 'set_code': sticker['code'], 'set_index': 0, 'position': position, 'sticker_id': sticker['id'], 'sticker_code': sticker['code'], 'sticker_revision': sticker['revision'], 'template_id': image['id'], 'template_url': image['url'], 'status': 'queued', 'error': None, 'result_url': None, 'result_id': None, 'attempt': 0, 'retry_count': 0, 'next_at': 0}
-                credits.reserve(tx, item, now())
-                tx.put('items', item)
-            return order_public(tx, value, True)
-
-    @app.get('/api/orders/{id}')
-    def get_order(id: str, request: Request):
-        with db.transaction() as tx:
-            return order_public(tx, legacy_order(tx, id, user(tx, request)), True)
-
-    def change_order(id, request, action):
-        with db.transaction() as tx:
-            value = legacy_order(tx, id, user(tx, request))
-            if action == 'archive':
-                value['archived'] = not value.get('archived', False)
-                if value['archived']:
-                    value['paused'] = True
-            else:
-                value['paused'] = action == 'pause'
-                if action == 'resume':
-                    value['archived'] = False
-            tx.put('orders', value)
-            return order_public(tx, value, True)
-
-    @app.post('/api/orders/{id}/pause')
-    def pause(id: str, request: Request):
-        return change_order(id, request, 'pause')
-
-    @app.post('/api/orders/{id}/resume')
-    def resume(id: str, request: Request):
-        return change_order(id, request, 'resume')
-
-    @app.post('/api/orders/{id}/archive')
-    def archive(id: str, request: Request):
-        return change_order(id, request, 'archive')
-
-    @app.post('/api/orders/{id}/items/{item_id}/rerun')
-    def rerun(id: str, item_id: str, data: RerunRequest, request: Request):
-        with db.transaction() as tx:
-            value = legacy_order(tx, id, user(tx, request))
-            item = tx.get('items', item_id)
-            if not item or item['order_id'] != id:
-                raise HTTPException(404, '图片不存在')
-            operation_id = hashlib.sha256((value['owner']+':'+item_id+':'+data.client_token).encode()).hexdigest()
-            if tx.get('rerun_operations', operation_id):
-                return order_public(tx, value, True)
-            if item['status'] in {'running', 'queued'} or item.get('remote_reserved'):
-                raise HTTPException(409, '该图片正在排队或生成')
-            credits.reserve(tx, item, now())
-            item.pop('billing_legacy', None)
-            tx.put('rerun_operations', {'id':operation_id, 'order_id':id, 'generation_id':item['generation_id']})
-            for field in ('fal_request_id', 'fal_status', 'fal_status_url', 'fal_response_url', 'fal_error', 'queue_position', 'raw_result_id', 'cutout_inflight', 'cutout_started_at'):
-                item.pop(field, None)
-            item.update(status='queued', error=None, retry_count=0, next_at=0, processing_stage='generate')
-            tx.put('items', item)
-            value.update(overview_ready=False, content_version=value['content_version'] + 1)
-            tx.put('orders', value)
-            return order_public(tx, value, True)
-
-    @app.post('/api/orders/{id}/items/{item_id}/resolve')
-    def resolve_item(id: str, item_id: str, data: ResolveUnknown, request: Request):
-        with db.transaction() as tx:
-            actor = user(tx, request)
-            value = legacy_order(tx, id, actor)
-            item = tx.get('items', item_id)
-            if not item or item['order_id'] != id:
-                raise HTTPException(404, '图片不存在')
-            if item['status'] != 'unknown':
-                raise HTTPException(409, '仅可确认待确认请求已经结束')
-            item.setdefault('resolution_history', []).append({'resolved_at': now(), 'resolved_by': actor['id'], 'fal_request_id': item.get('fal_request_id'), 'fal_status': item.get('fal_status'), 'error': item.get('error')})
-            item.update(status='failed', remote_reserved=False, error='已人工确认原请求结束；可单独选择重跑')
-            tx.put('items', item)
-            return order_public(tx, value, True)
-
-    @app.post('/api/orders/{id}/items/{item_id}/recover')
-    def recover_item(id: str, item_id: str, request: Request):
-        with db.transaction() as tx:
-            value = legacy_order(tx, id, user(tx, request))
-            item = tx.get('items', item_id)
-            if not item or item['order_id'] != id:
-                raise HTTPException(404, '图片不存在')
-            if item.get('cutout_inflight'):
-                raise HTTPException(409, '抠图结果待确认，请人工选择重新处理原始图片')
-            if item['status'] != 'unknown' or not item.get('fal_request_id'):
-                raise HTTPException(409, '仅可恢复有FAL编号的待确认请求')
-            item.update(status='queued', next_at=0, error=None, remote_reserved=True)
-            tx.put('items', item)
-            return order_public(tx, value, True)
-
-    @app.post('/api/orders/{id}/items/{item_id}/reprocess')
-    def reprocess(id: str, item_id: str, request: Request):
-        with db.transaction() as tx:
-            value = legacy_order(tx, id, user(tx, request))
-            item = tx.get('items', item_id)
-            if not item or item['order_id'] != id:
-                raise HTTPException(404, '图片不存在')
-            if item['status'] in {'running', 'queued'} or item.get('remote_reserved'):
-                raise HTTPException(409, '该图片正在排队或处理')
-            if not item.get('raw_result_id') or not tx.get('assets', item['raw_result_id']):
-                raise HTTPException(409, '没有可恢复的原始生成结果')
-            item.pop('cutout_inflight', None)
-            item.pop('cutout_started_at', None)
-            item.update(status='queued', processing_stage='postprocess', error=None, retry_count=0, next_at=0)
-            tx.put('items', item)
-            value.update(overview_ready=False, processing_error=None, content_version=value['content_version'] + 1)
-            tx.put('orders', value)
-            return order_public(tx, value, True)
-
-    @app.post('/api/orders/{id}/repack')
-    def repack(id: str, data: Repack, request: Request):
-        with db.transaction() as tx:
-            value = legacy_order(tx, id, user(tx, request))
-            value.update(print_settings=data.print_settings.model_dump(), content_version=value['content_version'] + 1, overview_ready=False, processing_error=None)
-            tx.put('orders', value)
-        app.state.worker.publish(id, force=True)
-        with db.transaction() as tx:
-            return order_public(tx, tx.get('orders', id), True)
-
-    @app.post('/api/orders/{id}/watermark')
-    def watermark(id: str, request: Request):
-        with db.transaction() as tx:
-            value = legacy_order(tx, id, user(tx, request))
-            value['content_version'] += 1
-            value.update(overview_ready=False, processing_error=None)
-            tx.put('orders', value)
-        app.state.worker.publish(id, watermark_only=True, force=True)
-        with db.transaction() as tx:
-            return order_public(tx, tx.get('orders', id), True)
-
-    @app.get('/api/orders/{id}/manifest')
-    def manifest(id: str, request: Request):
-        with db.transaction() as tx:
-            value = legacy_order(tx, id, user(tx, request))
-            public = order_public(tx, value)
-            return {'order_id': id, 'name': value.get('output_name', value['name']), 'version': value['artifact_version'], 'complete': public['completed'] == public['total'] and value.get('overview_ready', False), 'files': [a for a in value['artifacts'] if a.get('kind', (tx.get('assets',a['id']) or {}).get('kind'))=='print']}
-
-    @app.get('/api/orders/{id}/download.zip')
-    def download_zip(id: str, request: Request):
-        with db.transaction() as tx:
-            value = legacy_order(tx, id, user(tx, request))
-            if not value['artifacts']:
-                raise HTTPException(409, '暂时没有已完成的打印文件')
-            output = io.BytesIO()
-            with zipfile.ZipFile(output, 'w', zipfile.ZIP_DEFLATED) as archive:
-                for a in value['artifacts']:
-                    if a.get('kind', (tx.get('assets',a['id']) or {}).get('kind')) != 'print': continue
-                    archive.writestr(value.get('output_name', value['name']) + '/' + a['path'], asset_bytes(db, tx.get('assets', a['id'])))
-            output.seek(0)
-            return StreamingResponse(output, media_type='application/zip', headers={'Content-Disposition': "attachment; filename*=UTF-8''" + __import__('urllib.parse', fromlist=['quote']).quote(value.get('output_name', value['name']) + '.zip')})
-
     @app.get('/api/assets/{id}/preview')
     def asset_preview(id: str, request: Request, size: int = 320):
         # Authenticate before cache lookup AND before returning 304.
@@ -754,6 +509,19 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
             if not can_read_asset(value, actor):
                 raise HTTPException(404, '文件不存在')
             return FileResponse(db.root / 'assets' / value['file'], media_type='image/png')
+
+    @app.api_route('/api/{path:path}', methods=['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'], include_in_schema=False)
+    def missing_api(path: str, request: Request):
+        # Unknown APIs must not be mistaken for the SPA's GET route (405).
+        allowed = set()
+        for route in app.routes:
+            if getattr(route, 'endpoint', None) is missing_api or not getattr(route, 'path', '').startswith('/api/'):
+                continue
+            if route.matches(request.scope)[0] == Match.PARTIAL:
+                allowed.update(route.methods or ())
+        if allowed:
+            raise HTTPException(405, 'Method Not Allowed', headers={'Allow': ', '.join(sorted(allowed))})
+        raise HTTPException(404, '接口不存在')
 
     frontend_dist = Path(__file__).resolve().parents[2] / 'frontend' / 'dist'
     if frontend_dist.exists():

@@ -1,6 +1,6 @@
 from backend.tests.test_worker import context
 from backend.tests.test_library import stickers
-from backend.tests.test_credits import member
+from backend.tests.helpers import member
 
 
 def test_editable_categories_preserve_ids_and_protect_references(context):
@@ -77,3 +77,24 @@ def test_category_migration_is_idempotent_and_revocation_is_immediate(context):
     admin.patch('/api/admin/users/'+account['id']+'/library-permission',json={'can_edit_library':False})
     assert staff.patch('/api/library/categories/'+c['id'],json={'name':'bad'}).status_code==403
     assert staff.delete('/api/library/categories/'+c['id']).status_code==403
+
+
+def test_personal_library_migration_preserves_accounts_and_source_snapshots(context):
+    from backend.app.db import Database
+    from backend.tests.helpers import template
+    app,admin,_,_=context
+    t=template(admin);staff,user=member(admin,app)
+    with app.state.db.transaction() as tx:
+        tx.delete('migrations','personal-credits-v1')
+        for kind in ('templates','template_revisions'):
+            for row in tx.all(kind):
+                row.pop('scope',None);row.pop('owner',None);tx.put(kind,row)
+        password=tx.get('users',user['id'])['password']
+        assets=tx.all('assets')
+    Database(app.state.db.root)
+    with app.state.db.transaction(readonly=True) as tx:
+        assert tx.get('users',user['id'])['password']==password
+        assert all(t['scope']=='public' for t in tx.all('templates'))
+        assert tx.get('template_revisions',t['id']+':1')['images']==t['images']
+        assert tx.all('assets')==assets
+        assert all('credits' not in u for u in tx.all('users'))

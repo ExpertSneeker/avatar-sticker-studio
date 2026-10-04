@@ -1,7 +1,7 @@
 """Legacy personal templates are promoted without rewriting historical revisions."""
 from backend.tests.test_worker import context
 from backend.tests.test_api import png
-from backend.tests.test_credits import member
+from backend.tests.helpers import member
 from backend.app.db import Database
 from backend.app.storage import save_asset
 

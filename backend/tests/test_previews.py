@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 from PIL import Image
 
 from backend.tests.test_api import app, client, upload, png, template, order
+from backend.tests.helpers import stored_order
 
 
 def test_preview_dimensions_alpha_etag_and_unchanged_original(client):
@@ -48,29 +49,19 @@ def test_cache_hit_and_conditional_request_still_require_permission(client, app)
     assert client.get(url, headers=headers).status_code == 401
 
 
-def test_order_cleanup_removes_all_cached_variants_preserves_template_cache(client, app):
-    value, _ = order(client)
-    t = client.get('/api/templates').json()[0]['images'][0]
-    for url in [value['avatar_url'], t['url']]:
-        for size in ([320] if url == value['avatar_url'] else [320, 1280]):
-            assert client.get(url+f'/preview?size={size}').status_code == 200
-    root = app.state.db.root/'preview-cache'
-    assert len(list(root.rglob('*.webp'))) == 3
-    request = {'before':'2026-01-01T00:00:00Z'}
-    # Use a future cutoff regardless of the clock in the basic API fixture.
-    request['before'] = '2099-01-01T00:00:00Z'
-    plan = client.post('/api/admin/cleanup/preview', json=request).json()
-    assert plan['preview_cache_files'] == 1
-    assert plan['preview_cache_bytes'] > 0
-    # A cached file can appear after preview; cleanup must still remove it.
-    assert client.get(value['avatar_url']+'/preview?size=1280').status_code == 200
-    result = client.post('/api/admin/cleanup', json={**request, 'preview_token': plan['preview_token'], 'confirmed': True})
-    assert result.status_code == 200 and result.json()['pending_files'] == 0
-    assert not (root/value['avatar_url'].split('/')[-1]).exists()
-    assert len(list((root/t['id']).glob('*.webp'))) == 2
-    assert client.get(value['avatar_url']+'/preview').status_code == 404
-    assert client.get(t['url']+'/preview').status_code == 200
-
+def test_order_cleanup_preserves_customer_and_template_cache(client, app):
+    value,_=order(client);avatar_id=stored_order(app,value)['avatars'][0]['asset_id'];avatar_url='/api/assets/'+avatar_id
+    t=client.get('/api/templates').json()[0]['images'][0]
+    for url in [avatar_url,t['url']]:
+        for size in (320,1280):assert client.get(url+f'/preview?size={size}').status_code==200
+    root=app.state.db.root/'preview-cache';before={p:p.read_bytes() for p in root.rglob('*.webp')}
+    request={'before':'2099-01-01T00:00:00Z'}
+    plan=client.post('/api/admin/cleanup/preview',json=request).json()
+    assert plan['order_count']==plan['preview_cache_files']==0
+    result=client.post('/api/admin/cleanup',json={**request,'preview_token':plan['preview_token'],'confirmed':True})
+    assert result.status_code==200 and result.json()['pending_files']==0
+    assert {p:p.read_bytes() for p in root.rglob('*.webp')}==before
+    assert client.get(avatar_url+'/preview').status_code==200
 
 def test_preview_cache_lru_budget_restart_and_encoding_once(client, app, monkeypatch):
     from backend.app.previews import PreviewCache
@@ -116,23 +107,22 @@ def test_preview_deleted_during_encoding_cannot_recreate_cache(client, app, monk
 
 def test_cache_deletion_failure_is_retryable(client, app, monkeypatch):
     from pathlib import Path
-    value, _ = order(client)
-    assert client.get(value['avatar_url']+'/preview').status_code == 200
-    path = next((app.state.preview_cache.root/value['avatar_url'].split('/')[-1]).glob('*.webp'))
-    native = Path.unlink
-    def blocked(p, *args, **kwargs):
-        if p == path: raise PermissionError('test')
-        return native(p, *args, **kwargs)
-    monkeypatch.setattr(Path, 'unlink', blocked)
-    request = {'before': '2099-01-01T00:00:00Z'}
-    plan = client.post('/api/admin/cleanup/preview', json=request).json()
-    result = client.post('/api/admin/cleanup', json={**request, 'preview_token': plan['preview_token'], 'confirmed': True})
-    assert result.json()['pending_files'] == 1
-    assert client.get(value['avatar_url']+'/preview').status_code == 404
-    monkeypatch.setattr(Path, 'unlink', native)
-    assert client.post('/api/admin/cleanup/retry').json()['pending_files'] == 0
+    from backend.app.maintenance import stage_cleanup
+    value=upload(client);asset_id=value['url'].rsplit('/',1)[-1]
+    assert client.get(value['url']+'/preview').status_code==200
+    path=next((app.state.preview_cache.root/asset_id).glob('*.webp'));native=Path.unlink
+    with app.state.db.transaction() as tx:
+        asset=tx.get('assets',asset_id)
+        stage_cleanup(tx,{'assets':[asset]},['preview-cache/'+asset_id])
+    def blocked(p,*args,**kwargs):
+        if p==path:raise PermissionError('test')
+        return native(p,*args,**kwargs)
+    monkeypatch.setattr(Path,'unlink',blocked)
+    assert client.post('/api/admin/cleanup/retry').json()['pending_files']==1
+    assert client.get(value['url']+'/preview').status_code==404
+    monkeypatch.setattr(Path,'unlink',native)
+    assert client.post('/api/admin/cleanup/retry').json()['pending_files']==0
     assert not path.exists()
-
 
 def test_concurrent_cold_requests_encode_once_and_low_disk_does_not_store(client, app, monkeypatch):
     from collections import namedtuple

@@ -1,6 +1,6 @@
 # 架构与行为契约
 
-核对基线：2026-09-26，功能源码 `e984fdb`。本文解释当前实现，不是新的功能需求，也不代表已验证当前线上服务。统一维护规则见 [AGENTS.md](../AGENTS.md)，命令见[运维指南](agent-operations.md)。
+核对基线：2026-10-05，OSS 交付与单一订单结构。本文解释当前实现，不是新的功能需求，也不代表已验证当前线上服务。统一维护规则见 [AGENTS.md](../AGENTS.md)，命令见[运维指南](agent-operations.md)。
 
 ## 系统与代码地图
 
@@ -12,9 +12,9 @@
 | API 注册、认证、全局设置、健康和就绪检查 | `backend/app/main.py` |
 | 角色、组织、后台会话 | `backend/app/auth.py`、`organizations.py`、`bootstrap.py` |
 | 数据模型与自动迁移 | `backend/app/db.py`、`schemas.py` |
-| 图库、模板和分类 | `backend/app/library.py`、`categories.py`、`selections.py` |
+| 图库、模板和分类 | `backend/app/library.py`、`categories.py`、`customer_orders.py` |
 | 客户订单状态机、配额、访客接口、下载 | `backend/app/customer_orders.py` |
-| 任务租约、公平调度、并发和请求恢复 | `backend/app/worker.py`、`providers.py`、`credits.py` |
+| 任务租约、公平调度、并发和请求恢复 | `backend/app/worker.py`、`providers.py`、`request_tracking.py` |
 | 图片入库、预览、水印、拼版、原子发布 | `backend/app/storage.py`、`previews.py`、`guest_media.py`、`processing.py`、`publication.py` |
 | Agiso 协议、接口、状态转换和消息队列 | `backend/app/agiso_protocol.py`、`agiso_routes.py`、`agiso_service.py`、`agiso_worker.py` |
 | 清理、删除计划和统计 | `backend/app/maintenance.py`、`statistics.py` |
@@ -27,7 +27,7 @@
 
 数据库不是每种业务一张传统关系表：主要记录放在 `records(kind,id,doc)` 的 JSON 文档中，`starts` 用于速率记录。`Database(...)` 会创建目录、修改权限、执行迁移，`transaction()` 使用 `BEGIN IMMEDIATE`，不能作为无副作用只读诊断入口。禁止在真实数据上随意执行初始化代码。
 
-高频查询不要再用 `tx.all(kind)` 全表解析后过滤：`Database` 启动时为 `INDEXED_FIELDS`（`status`、`remote_reserved`、`state`、`workflow_version`、`order_id`、`order_number`、`guest_order_id`、`customer_order_id`）建立 `(kind, json_extract(doc,'$.字段'))` 表达式索引，使用 `tx.where(kind, 字段, 值...)`、`tx.find(kind, (SQL条件, 参数)...)` 和 `tx.count(kind)`。它们按 rowid 返回与 `all()` 相同的顺序；SQL 只做超集预筛，调用处保留原来的 Python 精确判断。索引不改变文档，旧代码会忽略它们。Worker 与 Agiso worker 的调度、访客登录、上传查重、访客媒体授权都依赖这些索引。
+高频查询不要再用 `tx.all(kind)` 全表解析后过滤：`Database` 启动时为 `INDEXED_FIELDS`（`status`、`remote_reserved`、`state`、`order_id`、`order_number`、`guest_order_id`、`customer_order_id`）建立 `(kind, json_extract(doc,'$.字段'))` 表达式索引，使用 `tx.where(kind, 字段, 值...)`、`tx.find(kind, (SQL条件, 参数)...)` 和 `tx.count(kind)`。它们按 rowid 返回与 `all()` 相同的顺序；SQL 只做超集预筛，调用处保留原来的 Python 精确判断。索引不改变文档，旧代码会忽略它们。Worker 与 Agiso worker 的调度、访客登录、上传查重、访客媒体授权都依赖这些索引。
 
 只读请求使用 `db.read(fn)`：先以普通 `BEGIN` 读取快照，不等待写锁；`fn` 一旦调用 `put`/`delete` 就抛出 `NeedsWrite`（写入前），随后在原来的 `BEGIN IMMEDIATE` 事务里整体重跑。`fn` 除数据库外不得有副作用，因为它可能执行两次。订单列表/详情、访客订单/图库/媒体、`auth/me`、`auth/status`、图库和分类的 GET 使用它；`dto()` 的 `reconcile` 需要写入时会自动回退。`Database` 另持有一个空闲连接，使每个事务连接关闭时不再触发 checkpoint 和 WAL 删除，因此运行中数据目录会一直存在 `studio.sqlite3-wal`/`-shm`；备份仍须在停服后复制整个数据目录，不能只拷主库文件。
 
@@ -45,9 +45,9 @@
 - 访客媒体每次请求（含 304）都按会话、订单归属、订单状态和资产范围现场校验：已取消订单全部拒绝，已提交订单的访客只能看总览，图库贴纸用 `records_image_id` 索引查询是否属于本组织在用贴纸（不再每次读取整个图库）。订单已取消“图片版本号”（`media_version`）：媒体链接为 `/api/guest/media/{order}/{asset}?m=<水印文字指纹>`（后台为 `/api/customer-orders/{order}/media/{asset}?m=…`），不随取消、恢复、提交或解锁改变；`m` 只让打开中的页面在换水印后换图，服务端不据此授权。授权跟随订单实时状态，旧数据中残留的该字段不再读取。需要服务端压平水印；水印媒体使用 `private, no-cache`、`Vary: Cookie` 与按内容计算的 ETag（素材哈希、水印文字、尺寸、渲染管线、是否已带水印），允许浏览器保存但每次复用前仍鉴权，未变化返回 304；换水印后 ETag 改变，浏览器重新下载。尺寸只有 160/320/640/1024 四档（其他请求值向上归档）；160/320 由 640 水印图等比缩小并以 WebP q80 编码。客户选图页用 `srcset`/`sizes` 按显示宽度和屏幕密度选档，`sizes` 与选图网格 CSS 同步维护，由 `customer-picker-responsive-media` E2E 检查；304 不读取原图或重新编码，返回前也再次检查授权。其他访客 API 保持 `no-store`；前端 CSS 遮罩不能代替它。提交/取消后的访客 DTO 会省略头像、位置等字段，不得从旧响应回填这些字段。
 - 订单号即访客入口凭据。不要把真实编号、预填链接、OAuth code、原始推送或头像放到日志、截图、Git 和交接记录中。
 
-## 客户订单 v3
+## 客户订单
 
-当前后台工作台和历史订单都使用 `/api/customer-orders`；旧 `/api/orders` 等兼容逻辑仍在后端，不能因为新导航不展示就删除历史数据或兼容处理。
+后台工作台和历史订单统一使用 `/api/customer-orders`。订单只有一种结构，不写入或判断 `workflow_version`，旧 `/api/orders` 接口已移除；框架升级使用明确数据迁移，不保留旧流程兼容层。
 
 | 状态 | 含义和出口 |
 | --- | --- |
@@ -58,7 +58,7 @@
 
 `draft` 订单的工作清单（头像上传记录与各自的模板/贴纸选择）保存在订单的 `draft` 字段，客户与后台通过 `PUT /api/guest/order/draft`、`PUT /api/customer-orders/{id}/draft` 整体覆盖保存，最后一次保存为准。草稿有独立的 `draft.revision`，不增加订单 `version`，不需要 `client_token`，不影响生成/提交的并发检查；完整订单响应（非 `summary`）在 `draft` 状态返回 `draft`。保存时服务端校验：头像数不超过 F、不重复，上传记录已完成且属于本组织；客户只能加入本订单的访客上传，但可保留后台已放入草稿的上传；份数超过 G 时仅允许减少；已下架的模板/贴纸被丢弃。草稿中的头像可通过本订单媒体路由查看；客户生成时可使用后台已放入草稿的头像。开始生成后删除草稿，之后保存返回 409。前端每次添加/移除头像或“应用选择”即保存，网络或服务端错误在下次轮询时自动重试；不在浏览器存储中保存草稿。
 
-工作台仅显示 `draft/review`；历史订单显示全部 v3 订单，并可筛选已提交、已取消等。订单详情在弹窗中打开，两处页面共用逻辑。列表轮询使用 `GET /api/customer-orders?summary=1`，响应省略 `avatars`/`slots`（仍对每单执行 `reconcile`）；弹窗单独请求 `GET /api/customer-orders/{id}` 取得完整订单，列表发现版本更新时再刷新详情。不带 `summary` 的列表接口保持完整数据。列表支持关联店铺及无关联店铺筛选。
+工作台仅显示 `draft/review`；历史订单显示全部客户订单，并可筛选已提交、已取消等。订单详情在弹窗中打开，两处页面共用逻辑。列表轮询使用 `GET /api/customer-orders?summary=1`，响应省略 `avatars`/`slots`（仍对每单执行 `reconcile`）；弹窗单独请求 `GET /api/customer-orders/{id}` 取得完整订单，列表发现版本更新时再刷新详情。不带 `summary` 的列表接口保持完整数据。列表支持关联店铺及无关联店铺筛选。
 
 | 字段 | 必须保持的语义 |
 | --- | --- |
@@ -80,7 +80,7 @@
 ## 图片、队列与打印
 
 - 当前 provider 源码使用 FAL `openai/gpt-image-2.5/flare/edit`；凭证是 `FAL_KEY` 或后台私有设置，环境变量优先。这描述仓库实现，不保证第三方服务未来仍可用。变更 provider 前核对其当时官方契约。
-- 新任务免积分门槛，但历史账本、实际生图记录及旧请求占用保留。全站 `max_inflight` 默认 2（1–40）和账号并发同时约束；访客任务计入开户账号。没有旧 RPM 门槛。
+- 点数功能及其接口已下线；实际生图记录、原图、旧请求 ID 和占用继续保留。全站 `max_inflight` 默认 2（1–40）和账号并发同时约束；访客任务计入开户账号。没有旧 RPM 门槛。
 - 提交阶段（尚无 request ID、正在上传模板和头像）另受全站 `max_uploads`（默认 3，1–40）约束，已拿到 ID 在 FAL 排队的任务不占用；提交 POST 的写超时为全站 `fal_upload_timeout`（默认 300 秒，30–1800），其他 FAL 请求仍为 60 秒。整个 JSON 请求体是一次写入，写超时即上传上限。
 - 请求 ID 和队列 URL 持久化；超时或下载失败优先查原请求，不重新提交。提交时连接失败（ConnectError/ConnectTimeout）或请求体未写完（WriteError/WriteTimeout）FAL 不可能接单，记为 `failed` 并释放占用；其余无 ID 的未知提交（如请求体已发出后读响应中断）仍保留占用，人工核对后再确认结束。不要通过清空队列、改状态或重置租约绕过重复计费保护。
 - 客户订单的首次生成明确失败（`failed`、无占用、无原图、仍是该位置的首次任务）时，DTO 给出 `can_retry`；访客可调用 `POST /api/guest/order/slots/{slot}/retry`，每个位置最多 3 次（`slot.guest_retries`，同一首次任务的重复位置一起计数），后台重试不限且都不占 `rerun_limit`。访客的 `error` 是按状态生成的安全文案，不含供应商原始错误。
@@ -90,7 +90,7 @@
 - 水印媒体三层缓存（`guest_media.py`、`media_cache.py`）：每进程 256MB 内存 LRU → 硬盘缓存（`STUDIO_MEDIA_CACHE_DIR`，生产为 `/var/cache/avatar-sticker-studio/media`，默认 `<数据目录>/media-cache`）→ 现场生成。文件按内容命名，相同贴纸 + 水印文字 + 尺寸在所有订单间共用，生成量与订单数无关。`library/<asset>/` 存在用图库贴纸，在贴纸删除、水印不再被在职账号或未完成订单使用、管线变化时清理；`customer/<org>/<asset>/` 存头像/结果/总览，最后访问满组织设置天数（`organizations.media_cache_days`，默认 15，组织管理员 1–365 天，`/api/organization/settings`）后清理。不设容量上限，磁盘剩余低于 512MB 时只跳过写入。`MediaWarmer` 后台线程（nice 19，每 10 分钟）先清理再预生成：在用水印 × 在用贴纸的 160/320/640 三档（一次水印绘制），以及未完成订单在保留期内的头像/结果和已就绪总览的 640。资产删除通过 `cleanup_files` 的 `media-cache/<asset>` 记录持久重试清理。超管存储面板分别统计图库水印图与客户图片。
 - 水印分单张预览、访客媒体、已生成总览等路径；水印强度和缓存版本改变要分别核对，避免给已经带水印的总览再次叠加。原图与打印文件不能带预览水印。
 - 默认打印 A4、300 DPI、内容长边 85mm、边距/间距 10mm；亮度与色彩预设默认关闭。透明通道、预乘 alpha 缩放和不可变原图需要保留。
-- v3 打印标题为订单号加卖家备注（打印最多 60 字）。卖家备注 `platform_remark` 只来自拼多多、站内不可编辑：开户时取交易推送的 `Remark`；提交（`submit`）时为关联阿奇索的订单置 `remark_sync_pending`，Worker 在排版前经 `before_publish` 钩子调用阿奇索 `Trade/Detail` 读取一次（[remark_sync.py](../backend/app/remark_sync.py)），失败保留原值并记 `remark_sync.status=failed`，不阻塞排版；后台 `POST /api/customer-orders/remarks/sync`（最多 200 单，限本组织）手动读取，备注变化时更新，已提交订单 `delivery_version+1` 并重新排版。买家留言 `buyer_memo` 仍随推送保存，但不再出现在任何 API 响应和界面中。内部备注 `notes` 用于下载目录 `订单号_内部备注`。界面中 `final_count` 统一称“可提交印刷数量”。
+- 打印标题为订单号加卖家备注（打印最多 60 字）。卖家备注 `platform_remark` 只来自拼多多、站内不可编辑：开户时取交易推送的 `Remark`；提交（`submit`）时为关联阿奇索的订单置 `remark_sync_pending`，Worker 在排版前经 `before_publish` 钩子调用阿奇索 `Trade/Detail` 读取一次（[remark_sync.py](../backend/app/remark_sync.py)），失败保留原值并记 `remark_sync.status=failed`，不阻塞排版；后台 `POST /api/customer-orders/remarks/sync`（最多 200 单，限本组织）手动读取，备注变化时更新，已提交订单 `delivery_version+1` 并重新排版。买家留言 `buyer_memo` 仍随推送保存，但不再出现在任何 API 响应和界面中。内部备注 `notes` 用于下载目录 `订单号_内部备注`。界面中 `final_count` 统一称“可提交印刷数量”。
 - 打印文件整批原子发布，失败保留已有有效结果。后台下载清单和 ZIP 只包含最终打印拼图；仅在用户点击后写目录或下载。目录文件通过哈希、清单和归属保护，不能覆盖未经系统管理的同名文件。
 
 ## Agiso 接入边界
@@ -114,8 +114,19 @@
 
 ## OSS 打印文件交付
 
-配置 `STUDIO_OSS_BUCKET` 后，`oss_delivery.py` 使用官方 Python SDK V2 和 ECS 实例 RAM 角色；不保存长期 AccessKey。Worker 每 30 秒在线程中串行同步 submitted 且 delivery_ready 的当前打印 PNG，事务外经同地域内网上传，校验本地 SHA-256 并保留 SDK CRC64 校验；回写前复查订单及资产。对象路径为 `print/<组织内部ID>/<订单内部ID>/<sha256>.png`，不含客户订单号。每 10 分钟对账清理当前有效打印文件之外的对象；删除失效对象后清除对应 oss_key，使取消后恢复的订单能重新上传。没有新增任务表、租约或版本目录。
+配置 `STUDIO_OSS_BUCKET` 后，`oss_delivery.py` 使用官方 Python SDK V2 和 ECS 实例 RAM 角色；不保存长期 AccessKey。Worker 每 30 秒在线程中串行同步 submitted 且 delivery_ready 的当前打印 PNG，事务外经同地域内网上传，校验本地 SHA-256 并保留 SDK CRC64 校验；回写前复查订单及资产。对象路径为 `print/<组织内部ID>/<订单内部ID>/<sha256>.png`，不含客户订单号。每 10 分钟对账清理当前有效打印文件之外的对象；删除失效对象前先清除对应 oss_key，使取消后恢复的订单能重新上传。没有新增任务表、租约或版本目录。
 
 后台 manifest 保留完整会话、组织及 submitted/delivery_ready 检查，返回 `local_url` 和当前可用下载 `url`，响应 `private, no-store`。启用 OSS 下载且文件已同步时签发默认 300 秒 GET 链接；客户端跨域使用 `credentials: omit`，最近清单用于下一文件，远端失败刷新一次再回退 local_url。哈希、目录归属、Web Locks 和 delivery_version 检查仍有效。用户 2026-10-05 明确接受已发链接在有效期内可重复使用且不会随账号或订单状态即时撤销，停止新签发不等于撤销旧链接。
 
 ZIP 不上传 OSS：短事务取得授权文件快照后在事务外读取并用 ZIP_STORED 打包，下载文件名按订单目录名用 RFC 5987 编码。ZIP 和 PNG 回退仍经过 ECS 公网出口。OSS 只存当前文件，本地原图及历史版本语义不变；空 Bucket 配置完全关闭同步，`STUDIO_OSS_DOWNLOAD=0` 只关闭直链、继续上传。
+
+
+## 单一订单与点数下线迁移
+
+`drop-workflow-version-v1` 首次执行前只读核对全部 orders/items：每条记录的 `workflow_version` 必须是整数 3，缺失或其他值立即拒绝，不先修改业务记录。通过后删除该字段及 `records_workflow_version` 索引，并记录迁移标记；重复启动不重复转换。
+
+`drop-credits-v1` 删除 `credit_ledger`、`credit_operations` 记录，及 users.credits、items.credit_exempt/billing_legacy。`generations`、请求 ID、远端占用、未知状态、原图及历史版本保留；`request_tracking.progress` 只同步供应商请求 ID，不再执行点数状态结算。FAL 账户余额查询 `fal_billing.py` 保留。
+
+已有客户订单历史仍阻止账号永久删除；只能停用。常规订单清理不删除客户订单历史。统计继续按现有客户订单和任务汇总，旧流程的 template_codes 统计来源随旧流程删除；未添加客户订单模板来源追溯。
+
+迁移审计必须显式使用 `--allow-single-order-migration`，只容许上述删除和合法打印 OSS 标记变化，其余受保护记录、生成请求与资产哈希保持严格比对。阶段 B 回退必须恢复发布前配对数据与旧 release，不能只切回代码；接收新业务后仅向前修复。

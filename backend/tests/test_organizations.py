@@ -3,6 +3,7 @@ from fastapi.testclient import TestClient
 from backend.app.main import create_app
 from backend.app.db import Database
 from backend.tests.test_api import png, upload, template
+from backend.tests.helpers import create_customer_order, generate_customer_order, customer_action
 
 
 @pytest.fixture
@@ -53,17 +54,16 @@ def test_catalog_upload_cache_and_legacy_order_isolation(orgs):
     assert two.get(avatar['url']).status_code==404
     assert two.get(avatar['url']+'/preview',headers={'If-None-Match':etag}).status_code==404
     assert two.get('/api/uploads/'+avatar['id']).status_code==404
-    payload={'name':'old','upload_id':upload(two)['id'],'template_ids':[first['id']],'client_token':'x'}
-    assert two.post('/api/orders',json=payload).status_code in (404,422)
-    payload.update(template_ids=[second['id']])
-    created=two.post('/api/orders',json=payload)
-    assert created.status_code==200,created.text
-    assert one.get('/api/orders/'+created.json()['id']).status_code==404
-    owner_id=one.get('/api/auth/me').json()['id']
-    with app.state.db.transaction() as tx:
+    created,_=create_customer_order(two,'own',12)
+    avatar_id=upload(two)['id']
+    assert customer_action(two,created,'generate',avatars=[{'upload_id':avatar_id,'template_ids':[first['id']]}]).status_code==422
+    created=generate_customer_order(two,created,template_ids=[second['id']],upload_id=avatar_id)
+    assert one.get('/api/customer-orders/'+created['id']).status_code==404
+    own,_=create_customer_order(one,'other',1)
+    assert [o['id'] for o in one.get('/api/customer-orders').json()]==[own['id']]
+    assert created['id'] not in [o['id'] for o in one.get('/api/customer-orders').json()]
+    with app.state.db.transaction(readonly=True) as tx:
         assert all(g['status']=='exempt' for g in tx.all('generations'))
-        tx.put('orders',{'id':'new','owner':owner_id,'organization_id':first['organization_id'],'workflow_version':3})
-    assert all(o['id']!='new' for o in one.get('/api/orders').json())
 
 
 def test_same_org_staff_shares_uploads_and_categories_are_isolated(orgs):
@@ -81,22 +81,21 @@ def test_same_org_staff_shares_uploads_and_categories_are_isolated(orgs):
         assert staff.get('/api/uploads/'+avatar['id']).status_code==200
 
 
-def test_migration_retains_unknown_credits_and_organization_history(tmp_path):
+def test_organization_migration_preserves_generation_history(tmp_path):
     db=Database(tmp_path)
     with db.transaction() as tx:
         tx.delete('migrations','organizations-v1')
-        tx.put('users',{'id':'u','username':'magnus','role':'admin','credits':{'available':0,'frozen':2,'spent':0,'version':0}})
+        tx.put('users',{'id':'u','username':'magnus','role':'admin'})
         for id,status in (('done','completed'),('unknown','unknown')):
             tx.put('items',{'id':id,'owner':'u','order_id':id,'status':status,'generation_id':id})
-            tx.put('generations',{'id':id,'owner':'u','order_id':id,'item_id':id,'status':'reserved'})
-    db=Database(tmp_path)
-    with db.transaction() as tx:
-        user=tx.get('users','u')
-        assert user['role']=='org_admin' and user['organization_id']
-        assert tx.get('generations','done')['status']=='released'
-        assert tx.get('generations','unknown')['status']=='reserved'
-        assert user['credits']['frozen']==1
-
+            tx.put('generations',{'id':id,'owner':'u','order_id':id,'item_id':id,'status':'reserved','request_id':'request-'+id})
+        before=tx.all('generations')
+    Database(tmp_path)
+    with db.transaction(readonly=True) as tx:
+        user=tx.get('users','u');assert user['role']=='org_admin' and user['organization_id']
+        after=tx.all('generations')
+        # Organization attribution is the old migration's intended nonfinancial change.
+        assert [{k:v for k,v in row.items() if k!='organization_id'} for row in after]==before
 
 def test_cleanup_preserves_customer_history_and_account(orgs):
     from backend.app.maintenance import cleanup_plan, account_deletion_plan
@@ -105,7 +104,7 @@ def test_cleanup_preserves_customer_history_and_account(orgs):
     app,root,one,two,_=orgs
     member=one.post('/api/admin/users',json={'username':'history','display_name':'history'}).json()['user']
     with app.state.db.transaction() as tx:
-        tx.put('orders',{'id':'customer','workflow_version':3,'owner':member['id'],'created_at':'2020-01-01T00:00:00+00:00','state':'cancelled','avatars':[{'id':'a','asset_id':'source'}],'slots':[{'id':'s','versions':[{'id':'v','result_id':'original'}]}]})
+        tx.put('orders',{'id':'customer','owner':member['id'],'created_at':'2020-01-01T00:00:00+00:00','state':'cancelled','avatars':[{'id':'a','asset_id':'source'}],'slots':[{'id':'s','versions':[{'id':'v','result_id':'original'}]}]})
         tx.put('assets',{'id':'original','kind':'result','owner':member['id'],'file':'original.png','order_id':'customer'})
         plan,records,paths=cleanup_plan(app.state.db,tx,datetime.now(timezone.utc))
         assert plan['order_count']==0
@@ -152,51 +151,32 @@ def test_migration_keeps_custom_category_names_and_source_bytes(tmp_path):
         assert (db.root/'assets'/asset['file']).read_bytes()==original
 
 
-def test_migration_keeps_unmatched_legacy_holds_for_audit(tmp_path):
+def test_migration_keeps_unmatched_generation_for_audit(tmp_path):
     db=Database(tmp_path)
     with db.transaction() as tx:
         tx.delete('migrations','organizations-v1')
-        tx.put('users',{'id':'u','username':'staff','role':'staff','credits':{'available':0,'frozen':0,'spent':0,'version':0}})
+        tx.put('users',{'id':'u','username':'staff','role':'staff'})
         tx.put('items',{'id':'finished','owner':'u','order_id':'old','status':'completed'})
         tx.put('generations',{'id':'unmatched','owner':'u','item_id':'finished','order_id':'old','status':'reserved'})
     Database(tmp_path)
-    with db.transaction() as tx:
+    with db.transaction(readonly=True) as tx:
         assert tx.get('generations','unmatched')['status']=='reserved'
-        assert tx.get('users','u')['credits']['frozen']==0
+        assert 'credits' not in tx.get('users','u')
 
-
-@pytest.mark.parametrize('current_generation,current_request', [
-    ('new-generation','new-request'),
-    ('new-generation','old-request'),
-    ('old-unknown','new-request'),
-    ('old-unknown',None),
-])
-def test_migration_keeps_old_unknown_hold_when_item_or_request_was_reused(tmp_path,current_generation,current_request):
+@pytest.mark.parametrize('current_generation,current_request', [('new-generation','new-request'),('new-generation','old-request'),('old-unknown','new-request'),('old-unknown',None),('old-unknown','old-request')])
+def test_migration_preserves_request_tracking_when_item_was_reused(tmp_path,current_generation,current_request):
     db=Database(tmp_path)
     with db.transaction() as tx:
         tx.delete('migrations','organizations-v1')
-        tx.put('users',{'id':'owner','username':'oldstaff','role':'staff','credits':{'available':0,'frozen':1,'spent':1,'version':2}})
+        tx.put('users',{'id':'owner','username':'oldstaff','role':'staff'})
         tx.put('generations',{'id':'old-unknown','owner':'owner','item_id':'reused','order_id':'order','status':'review','request_id':'old-request'})
         tx.put('items',{'id':'reused','owner':'owner','order_id':'order','status':'completed','generation_id':current_generation,'fal_request_id':current_request})
-    Database(tmp_path)
-    with db.transaction() as tx:
+    Database(tmp_path);Database(tmp_path)
+    with db.transaction(readonly=True) as tx:
         assert tx.get('generations','old-unknown')['status']=='review'
-        assert tx.get('users','owner')['credits']=={'available':0,'frozen':1,'spent':1,'version':2}
+        assert tx.get('generations','old-unknown')['request_id']=='old-request'
+        assert tx.get('items','reused')['fal_request_id']==current_request
         assert not tx.all('credit_ledger')
-
-
-def test_migration_releases_matching_current_terminal_request_once(tmp_path):
-    db=Database(tmp_path)
-    with db.transaction() as tx:
-        tx.delete('migrations','organizations-v1')
-        tx.put('users',{'id':'owner','username':'oldstaff','role':'staff','credits':{'available':0,'frozen':1,'spent':0,'version':0}})
-        tx.put('generations',{'id':'known','owner':'owner','item_id':'item','order_id':'order','status':'review','request_id':'matching-request'})
-        tx.put('items',{'id':'item','owner':'owner','order_id':'order','status':'completed','generation_id':'known','fal_request_id':'matching-request'})
-    Database(tmp_path); Database(tmp_path)
-    with db.transaction() as tx:
-        assert tx.get('generations','known')['status']=='released'
-        assert tx.get('users','owner')['credits']=={'available':1,'frozen':0,'spent':0,'version':1}
-        assert [entry['event'] for entry in tx.all('credit_ledger')]==['release']
 
 
 def test_guest_library_lists_only_own_organization_categories(orgs):

@@ -212,7 +212,7 @@ def marks_in_use(tx):
     for member in tx.all('users'):
         if member.get('active') and member.get('organization_id'):
             result.setdefault(member['organization_id'], set()).add(watermark_of(member))
-    for order in tx.where('orders', 'workflow_version', 3):
+    for order in tx.all('orders'):
         if order.get('state') in {'draft', 'review'} and order.get('organization_id'):
             result.setdefault(order['organization_id'], set()).add(order['watermark'])
     return result
@@ -276,7 +276,7 @@ class MediaWarmer:
                     if not all(self.cache.exists(p) for p in paths.values()):
                         jobs.append(('library', sticker['image']['id'], mark, paths, False))
             organizations = {o['id']: o for o in tx.all('organizations')}
-            for order in tx.where('orders', 'workflow_version', 3):
+            for order in tx.all('orders'):
                 organization_id = order.get('organization_id')
                 if not organization_id:
                     continue

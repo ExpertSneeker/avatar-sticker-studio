@@ -12,7 +12,7 @@ from backend.app.main import create_app
 from backend.app.providers import ProviderFailure, YeziProvider
 from backend.app.storage import save_asset
 from backend.app.worker import Worker
-from backend.tests.test_api import order, png
+from backend.tests.helpers import order, png, customer_action, order_items, slot_for, stored_order
 from backend.tests.test_worker import Clock, Provider, context
 
 
@@ -47,15 +47,14 @@ def test_crashed_cutout_requires_manual_reprocess_and_retains_assets(context, mo
     assert value['remote_reserved'] is False
     assert value['result_id'] == 'last-good'
     assert value['raw_result_id']
-    endpoint = f"/api/orders/{o['id']}/items/{item['id']}"
-    info = client.get('/api/orders/' + o['id']).json()['items'][0]
-    assert info['recoverable'] is False
-    assert client.post(endpoint + '/recover').status_code == 409
-    # Resolving the uncertainty does not authorize another cutout by itself.
-    assert client.post(endpoint + '/resolve', json={'confirmed_ended': True}).status_code == 200
-    assert saved(app, item)['cutout_inflight'] is True
-    assert client.post(endpoint + '/reprocess').status_code == 200
-    assert not saved(app, item).get('cutout_inflight')
+    slot=slot_for(app,o,item)
+    endpoint='slots/'+slot['id']
+    assert customer_action(client,o,endpoint+'/retry').status_code==409
+    assert customer_action(client,o,endpoint+'/reprocess').status_code==409
+    assert customer_action(client,o,endpoint+'/resolve',confirmed_ended=True).status_code==200
+    assert not saved(app,item).get('cutout_inflight')
+    assert saved(app,item)['raw_result_id']==value['raw_result_id']
+    assert customer_action(client,o,endpoint+'/reprocess').status_code==200
     calls = []
     async def cutout(self, data):
         calls.append(data)
@@ -162,6 +161,8 @@ def test_publish_serializes_across_worker_instances_without_duplicate_pack(conte
         for item in tx.all('items'):
             item.update(status='completed', result_id=asset['id'])
             tx.put('items', item)
+    current=client.get('/api/customer-orders/'+o['id']).json()
+    assert customer_action(client,o,'submit',slot_ids=[slot['id'] for slot in current['slots']]).status_code==200
     entered, release, second_started, duplicate = (threading.Event() for _ in range(4))
     calls = []
     def pack(*args):
@@ -189,7 +190,7 @@ def test_publish_serializes_across_worker_instances_without_duplicate_pack(conte
         assert first.result(timeout=5) is True
         assert following.result(timeout=5) is False
     assert len(calls) == 1
-    assert client.get('/api/orders/' + o['id']).json()['artifact_version'] == 1
+    assert stored_order(app,o)['artifact_version']==1
 
 
 def test_ready_requires_database_and_live_worker(tmp_path, monkeypatch):

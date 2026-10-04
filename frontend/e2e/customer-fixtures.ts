@@ -24,13 +24,29 @@ export async function mutate(request:APIRequestContext,order:any,path:string,dat
   const response=await request.post(`/api/customer-orders/${order.id}/${path}`,{data:{client_token:randomUUID(),expected_version:order.version,...data}})
   expect(response.ok(),await response.text()).toBeTruthy();return response.json()
 }
+async function currentCustomer(request:APIRequestContext,id:string){
+  const response=await request.get('/api/customer-orders/'+id)
+  expect(response.ok(),await response.text()).toBeTruthy()
+  return response.json()
+}
+export async function generateCustomer(request:APIRequestContext,order:{id:string},avatars:{upload_id:string;template_ids:string[];sticker_ids:string[]}[]){
+  let current=await mutate(request,await currentCustomer(request,order.id),'generate',{avatars})
+  await expect.poll(async()=>{
+    current=await currentCustomer(request,order.id)
+    return current.slots.length>0&&current.slots.every((slot:any)=>!!slot.selected_version_id)
+  },{timeout:60000}).toBe(true)
+  return current
+}
+export async function submitCustomer(request:APIRequestContext,order:{id:string},slotIds?:string[]){
+  let current=await currentCustomer(request,order.id)
+  current=await mutate(request,current,'submit',{slot_ids:slotIds||current.slots.map((slot:any)=>slot.id)})
+  await expect.poll(async()=>{current=await currentCustomer(request,order.id);return current.delivery_ready},{timeout:60000}).toBe(true)
+  return current
+}
 export async function completedCustomer(request:APIRequestContext,stickerId:string,options:Record<string,unknown>={}){
-  let order=await createCustomer(request,options)
-  order=await mutate(request,order,'generate',{avatars:[{upload_id:await uploadAvatar(request),template_ids:[],sticker_ids:[stickerId]}]})
-  await expect.poll(async()=>{order=await(await request.get('/api/customer-orders/'+order.id)).json();return order.slots.every((slot:any)=>!!slot.selected_version_id)},{timeout:60000}).toBe(true)
-  order=await mutate(request,order,'submit',{slot_ids:order.slots.map((slot:any)=>slot.id)})
-  await expect.poll(async()=>{order=await(await request.get('/api/customer-orders/'+order.id)).json();return order.delivery_ready},{timeout:60000}).toBe(true)
-  return order
+  const order=await createCustomer(request,options)
+  const generated=await generateCustomer(request,order,[{upload_id:await uploadAvatar(request),template_ids:[],sticker_ids:[stickerId]}])
+  return submitCustomer(request,generated)
 }
 export async function installDirectoryPicker(page:Page,name='manual-print-output'){
   await page.addInitScript(name=>{

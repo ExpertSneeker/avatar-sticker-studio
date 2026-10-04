@@ -1,14 +1,14 @@
 import {uploadStickers,chooseStickers} from './library-fixtures'
 import {test,expect} from '@playwright/test'
 import {readFileSync} from 'node:fs'
-import {createHash} from 'node:crypto'
+import {createCustomer,generateCustomer,staffLogin,submitCustomer,uploadAvatar} from './customer-fixtures'
 import {tmpdir} from 'node:os'
 import {join} from 'node:path'
 
 const pixel=readFileSync(new URL('./fixtures/portrait.png',import.meta.url))
 test('account creation, organization library permission, generation without credits and password reset',async({page,browser})=>{
   const errors:string[]=[];page.on('pageerror',e=>errors.push(e.message))
-  await page.request.post('/api/auth/login',{data:{username:'testadmin',password:'local-test-password'}})
+  await staffLogin(page.request)
   // Self-contained organization template; this spec must not rely on data left by other specs.
   const publicStickers=await uploadStickers(page.request,Array.from({length:2},(_,i)=>({name:`credit-public-${i}.png`,mimeType:'image/png',buffer:pixel})))
   const publicSet=await page.request.post('/api/templates',{data:{code:'CREDIT-PUBLIC',name:'积分公共模板',category:'general',sticker_ids:publicStickers.map(s=>s.id)}})
@@ -54,18 +54,18 @@ test('account creation, organization library permission, generation without cred
     const personal=sets.find((t:{code:string})=>t.code==='PERSONAL-ANIMAL'),pub=sets.find((t:{code:string;active:boolean})=>t.active&&t.code==='CREDIT-PUBLIC')
     expect(personal.category).toBe('animal');expect(pub).toBeTruthy()
     await member.screenshot({path:join(tmpdir(),'avatar-studio-fal-qa','personal-templates.png'),fullPage:true})
-    const u=await (await member.request.post('/api/uploads/init',{data:{filename:'积分头像.png',size:pixel.length,sha256:createHash('sha256').update(pixel).digest('hex')}})).json()
-    await member.request.put('/api/uploads/'+u.id,{data:pixel,headers:{'Upload-Offset':'0'}})
-    await member.request.post('/api/uploads/'+u.id+'/complete')
-    const response=await member.request.post('/api/orders',{data:{upload_id:u.id,name:'积分联调订单',template_ids:[pub.id,personal.id],print_settings:{long_edge_mm:50},client_token:'credit-browser-order'}})
-    expect(response.ok()).toBeTruthy()
-    const generated=await response.json()
-    await expect.poll(async()=>(await(await member.request.get('/api/orders/'+generated.id)).json()).download_ready,{timeout:60000}).toBe(true)
+    const order=await createCustomer(member.request,{generation_limit:14,final_count:14})
+    const generated=await generateCustomer(member.request,order,[{upload_id:await uploadAvatar(member.request,'成员头像.png'),template_ids:[pub.id,personal.id],sticker_ids:[]}])
+    expect(generated.slots).toHaveLength(14)
+    const submitted=await submitCustomer(member.request,generated)
+    expect(submitted.state).toBe('submitted')
+    expect(submitted.delivery_ready).toBe(true)
     await member.getByRole('navigation').getByRole('button',{name:'统计',exact:true}).click()
     await expect(member.getByText('可用积分',{exact:true})).toHaveCount(0)
     await member.setViewportSize({width:390,height:844})
+    await expect.poll(()=>member.locator('.sidebar').evaluate(element=>element.getBoundingClientRect().right)).toBeLessThanOrEqual(0)
     expect(await member.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true)
-    await member.screenshot({path:join(tmpdir(),'avatar-studio-fal-qa','credits-mobile.png'),fullPage:true})
+    await member.screenshot({path:join(tmpdir(),'avatar-studio-fal-qa','credits-mobile.png'),fullPage:true,animations:'disabled'})
     await row.getByRole('button',{name:'重置密码',exact:true}).click()
     await dialog.getByRole('button',{name:'确认重置',exact:true}).click()
     await expect(dialog.locator('code')).not.toBeEmpty()

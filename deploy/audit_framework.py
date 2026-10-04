@@ -30,8 +30,8 @@ def valid_oss_marker(order, artifact):
             and artifact['oss_key'] == f"print/{order['organization_id']}/{order['id']}/{sha}.png")
 
 
-def historical_content(kind, doc, allow_oss_delivery=False):
-    if allow_oss_delivery:
+def historical_content(kind, doc, allow_oss_delivery=False, allow_single_order_migration=False):
+    if allow_oss_delivery or allow_single_order_migration:
         # Stage A changes no business/tenant/generation field. Its only permitted
         # bookkeeping difference is the exact current content-addressed print key.
         value = deepcopy(doc)
@@ -39,6 +39,11 @@ def historical_content(kind, doc, allow_oss_delivery=False):
             for artifact in value.get('artifacts', []):
                 if 'oss_key' in artifact and valid_oss_marker(doc, artifact):
                     artifact.pop('oss_key')
+        if allow_single_order_migration:
+            fields = {'orders': ('workflow_version',), 'items': ('workflow_version', 'credit_exempt', 'billing_legacy'),
+                      'users': ('credits',)}
+            for field in fields.get(kind, ()):
+                value.pop(field, None)
         return value
     # Tenant metadata is the intended migration. Business snapshots remain exact.
     value = {k: v for k, v in doc.items() if k != 'organization_id'}
@@ -80,7 +85,9 @@ def referenced_assets(records):
     return refs
 
 
-def audit(data_dir, assets_dir=None, *, allow_oss_delivery=False):
+def audit(data_dir, assets_dir=None, *, allow_oss_delivery=False, allow_single_order_migration=False):
+    if allow_oss_delivery and allow_single_order_migration:
+        raise ValueError('choose one explicit comparison mode')
     root = Path(data_dir)
     assets = Path(assets_dir) if assets_dir else root / 'assets'
     conn = sqlite3.connect((root / 'studio.sqlite3').resolve().as_uri() + '?mode=ro', uri=True)
@@ -88,13 +95,33 @@ def audit(data_dir, assets_dir=None, *, allow_oss_delivery=False):
         conn.execute('BEGIN')
         integrity = conn.execute('PRAGMA integrity_check').fetchone()[0]
         rows = conn.execute('SELECT kind,id,doc FROM records ORDER BY kind,id').fetchall()
+        indexes = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='index'")}
     finally:
         conn.close()
     records = {}
     for kind, identifier, raw in rows:
         records.setdefault(kind, {})[identifier] = json.loads(raw)
     failures, files = [], {}
-    if allow_oss_delivery:
+    migration = None
+    if allow_single_order_migration:
+        migration = {
+            'workflow_marker': 'drop-workflow-version-v1' in records.get('migrations', {}),
+            'credits_marker': 'drop-credits-v1' in records.get('migrations', {}),
+            'workflow_fields': sum('workflow_version' in doc for kind in ('orders', 'items') for doc in records.get(kind, {}).values()),
+            'workflow_index': 'records_workflow_version' in indexes,
+            'credit_fields': sum('credits' in doc for doc in records.get('users', {}).values()) + sum(
+                ('credit_exempt' in doc) + ('billing_legacy' in doc) for doc in records.get('items', {}).values()),
+            'credit_records': sum(len(records.get(kind, {})) for kind in ('credit_ledger', 'credit_operations')),
+        }
+        if not migration['workflow_marker']:
+            if any(type(doc.get('workflow_version')) is not int or doc['workflow_version'] != 3
+                   for kind in ('orders', 'items') for doc in records.get(kind, {}).values()):
+                failures.append('single-order migration requires all orders and items at workflow version 3')
+        elif migration['workflow_fields'] or migration['workflow_index']:
+            failures.append('single-order migration left workflow fields or index')
+        if migration['credits_marker'] and (migration['credit_fields'] or migration['credit_records']):
+            failures.append('single-order migration left credit fields or records')
+    if allow_oss_delivery or allow_single_order_migration:
         for order in records.get('orders', {}).values():
             if any('oss_key' in artifact and not valid_oss_marker(order, artifact)
                    for artifact in order.get('artifacts', [])):
@@ -138,14 +165,15 @@ def audit(data_dir, assets_dir=None, *, allow_oss_delivery=False):
                     failures.append('missing organization: ' + kind + ':' + doc['id'])
     items = list(records.get('items', {}).values())
     return {
-        'format_version': 1, 'comparison_mode': 'oss-delivery' if allow_oss_delivery else 'framework', 'integrity': integrity,
+        'format_version': 1, 'comparison_mode': 'single-order-migration' if allow_single_order_migration else 'oss-delivery' if allow_oss_delivery else 'framework', 'integrity': integrity,
         'counts': {kind: len(docs) for kind, docs in records.items()},
         'record_hashes': {kind: {key: digest(doc) for key, doc in docs.items()} for kind, docs in records.items()},
-        'historical_hashes': {kind: {key: digest(historical_content(kind, doc, allow_oss_delivery)) for key, doc in docs.items()} for kind, docs in records.items()},
+        'historical_hashes': {kind: {key: digest(historical_content(kind, doc, allow_oss_delivery, allow_single_order_migration)) for key, doc in docs.items()} for kind, docs in records.items()},
         'asset_hashes': files,
         'inflight': sum(i.get('status') in {'running', 'unknown'} or bool(i.get('remote_reserved')) or bool(i.get('cutout_inflight')) for i in items),
         'queued': sum(i.get('status') == 'queued' for i in items),
         'failures': failures,
+        **({'single_order_migration': migration} if migration is not None else {}),
     }
 
 
@@ -159,10 +187,23 @@ def compare(before, after):
         return ['invalid audit baseline']
     if before.get('failures') or before.get('integrity') != 'ok':
         failures.append('baseline contains audit failures')
-    # Credit generations may settle/release, but ledger rows are append-only.
-    for kind in ('users', 'orders', 'items', 'generations', 'uploads', 'assets',
+    single = before.get('comparison_mode') == 'single-order-migration'
+    if single:
+        migration = after.get('single_order_migration', {})
+        if not migration.get('workflow_marker') or not migration.get('credits_marker'):
+            failures.append('single-order migration markers incomplete')
+        failures.extend(after.get('failures', []))
+        if migration.get('workflow_fields') or migration.get('workflow_index') or migration.get('credit_fields') or migration.get('credit_records'):
+            failures.append('single-order migration deletion incomplete')
+    protected = ('users', 'orders', 'items', 'generations', 'uploads', 'assets',
                  'templates', 'stickers', 'library_categories', 'template_revisions',
-                 'sticker_revisions', 'credit_ledger', 'credit_operations', 'config'):
+                 'sticker_revisions', 'credit_ledger', 'credit_operations', 'config')
+    if single:
+        # A release restarts worker leases; all other preexisting collections,
+        # including future kinds, idempotence and Agiso history, remain protected.
+        # New migration markers are additions, not rewrites of existing markers.
+        protected = sorted(before['historical_hashes'].keys() - {'credit_ledger', 'credit_operations', 'workers'})
+    for kind in protected:
         for identifier, sha in before['historical_hashes'].get(kind, {}).items():
             if after['historical_hashes'].get(kind, {}).get(identifier) != sha:
                 failures.append('changed or missing historical ' + kind + ': ' + identifier)
@@ -172,9 +213,10 @@ def compare(before, after):
     return failures
 
 
-def rehearse(data_dir, *, allow_oss_delivery=False):
+def rehearse(data_dir, *, allow_oss_delivery=False, allow_single_order_migration=False):
     root = Path(data_dir).resolve()
-    before = audit(root, allow_oss_delivery=allow_oss_delivery)
+    options = {'allow_oss_delivery': allow_oss_delivery, 'allow_single_order_migration': allow_single_order_migration}
+    before = audit(root, **options)
     with tempfile.TemporaryDirectory(prefix='sticker-framework-rehearsal-') as tmp:
         source = sqlite3.connect((root / 'studio.sqlite3').as_uri() + '?mode=ro', uri=True)
         target = sqlite3.connect(Path(tmp) / 'studio.sqlite3')
@@ -184,10 +226,12 @@ def rehearse(data_dir, *, allow_oss_delivery=False):
             target.close()
             source.close()
         from backend.app.db import Database
-        Database(tmp)
-        after = audit(tmp, root / 'assets', allow_oss_delivery=allow_oss_delivery)
-        Database(tmp)
-        repeated = audit(tmp, root / 'assets', allow_oss_delivery=allow_oss_delivery)
+        migrated = Database(tmp)
+        migrated.close()
+        after = audit(tmp, root / 'assets', **options)
+        migrated = Database(tmp)
+        migrated.close()
+        repeated = audit(tmp, root / 'assets', **options)
         failures = before['failures'] + after['failures'] + compare(before, after)
         if after['record_hashes'] != repeated['record_hashes']:
             failures.append('migration is not idempotent')
@@ -200,11 +244,15 @@ def main():
     parser.add_argument('--data-dir', required=True, type=Path)
     parser.add_argument('--baseline', type=Path)
     parser.add_argument('--rehearse', action='store_true')
-    parser.add_argument('--allow-oss-delivery', action='store_true',
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument('--allow-oss-delivery', action='store_true',
                         help='Compare all fields strictly except exact print artifact OSS markers; use for both baseline and current audit')
+    mode.add_argument('--allow-single-order-migration', action='store_true',
+                      help='Permit only workflow/credit field and ledger deletion; preserve generations and assets exactly')
     args = parser.parse_args()
     try:
-        report = rehearse(args.data_dir, allow_oss_delivery=args.allow_oss_delivery) if args.rehearse else audit(args.data_dir, allow_oss_delivery=args.allow_oss_delivery)
+        options = {'allow_oss_delivery': args.allow_oss_delivery, 'allow_single_order_migration': args.allow_single_order_migration}
+        report = rehearse(args.data_dir, **options) if args.rehearse else audit(args.data_dir, **options)
         if args.baseline:
             if args.rehearse:
                 parser.error('--baseline and --rehearse are separate operations')

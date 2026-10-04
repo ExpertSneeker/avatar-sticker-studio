@@ -17,9 +17,9 @@ def test_statistics_permissions_periods_and_current_results(context):
     assert response.status_code == 200, response.text
     stats = response.json()
     assert stats['summary'] == dict(orders=1, ready_orders=0, images=12, completed=1, failed=1, unknown=1, running=0, queued=9, attempts=5, extra_attempts=2)
-    assert stats['order_statuses']['unknown'] == 1
+    assert stats['order_statuses']['review'] == 1
     assert sum(d['orders'] for d in stats['daily']) == 1
-    assert stats['templates'][0]['images'] == 12
+    assert stats['templates'] == []
     assert 'members' not in stats and 'accounts' not in stats
     invite = client.post('/api/admin/invites').json()['code']
     client.post('/api/auth/logout')
@@ -27,10 +27,6 @@ def test_statistics_permissions_periods_and_current_results(context):
     client.post('/api/auth/register', json={'username':'member', 'password':'member-password', 'display_name':'成员', 'invite':invite})
     assert client.get('/api/admin/statistics').status_code == 403
     assert client.get('/api/statistics?scope=global').json()['summary']['orders'] == 0
-    from backend.app.credits import record
-    member_id=client.get('/api/auth/me').json()['id']
-    with app.state.db.transaction() as tx:
-        record(tx, member_id, 'adjust', 12, 0, clock(), reason='统计测试初始分配')
     second, _ = order(client, name='成员订单', template_ids=[client.get('/api/templates').json()[0]['id']])
     own = client.get('/api/statistics').json()
     assert own['summary']['orders'] == 1 and own['summary']['completed'] == 0
@@ -60,11 +56,11 @@ def test_statistics_local_dates_archive_cleanup_and_no_generation(context):
             item.update(status='completed', attempt=1)
             tx.put('items', item)
         saved = tx.get('orders', value['id'])
-        saved.update(overview_ready=True, archived=True, paused=True)
+        saved.update(state='submitted',delivery_ready=True,overview_ready=True)
         tx.put('orders', saved)
     stats = client.get('/api/statistics?days=0&offset=480').json()
     assert len(stats['daily']) == 30
-    assert stats['order_statuses']['archived'] == 1
+    assert stats['order_statuses']['submitted'] == 1
     assert stats['summary']['ready_orders'] == 1
     assert next(d for d in stats['daily'] if d['orders'])['date'] == '2026-09-06'
     west = client.get('/api/statistics?offset=-480').json()
@@ -74,7 +70,7 @@ def test_statistics_local_dates_archive_cleanup_and_no_generation(context):
     plan = client.post('/api/admin/cleanup/preview',json={'before':before}).json()
     assert client.post('/api/admin/cleanup',json={'before':before,'preview_token':plan['preview_token'],'confirmed':True}).status_code == 200
     stats = client.get('/api/statistics').json()
-    assert stats['summary']['orders'] == 0 and stats['templates'] == []
+    assert stats['summary']['orders'] == 1 and stats['templates'] == []
     assert provider.calls == []
 
 
@@ -89,7 +85,7 @@ def test_customer_statistics_follow_business_states_and_delivery_availability(co
             ('review','review',False,['completed','failed']),
             ('draft','draft',False,[]),
         ):
-            tx.put('orders',{'id':id,'owner':owner,'workflow_version':3,'state':state,'created_at':datetime.fromtimestamp(clock(),timezone.utc).isoformat(),'delivery_ready':ready,'overview_ready':True})
+            tx.put('orders',{'id':id,'owner':owner,'state':state,'created_at':datetime.fromtimestamp(clock(),timezone.utc).isoformat(),'delivery_ready':ready,'overview_ready':True})
             for n,status in enumerate(statuses):
                 tx.put('items',{'id':id+str(n),'owner':owner,'order_id':id,'status':status,'attempt':1})
     for endpoint in ('/api/statistics','/api/admin/statistics'):

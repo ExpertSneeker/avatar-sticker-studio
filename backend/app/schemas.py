@@ -60,16 +60,6 @@ class UploadInit(Model):
     _filename = field_validator('filename')(safe_name)
 
 
-class OrderCreate(Model):
-    upload_id: str
-    name: str
-    template_ids: list[str] = Field(default_factory=list, max_length=30)
-    sticker_ids: list[str] = Field(default_factory=list, max_length=360)
-    print_settings: PrintSettings = Field(default_factory=PrintSettings)
-    client_token: str = Field(min_length=1, max_length=120)
-    _name = field_validator('name')(safe_name)
-
-
 class AccountPatch(Model):
     display_name: str | None = Field(None, min_length=1, max_length=80)
     watermark: str | None = Field(None, max_length=100)
@@ -124,14 +114,6 @@ class AccountDeleteConfirm(Model):
     confirmed: Literal[True]
 
 
-class Repack(Model):
-    print_settings: PrintSettings
-
-
-class ResolveUnknown(Model):
-    confirmed_ended: Literal[True]
-
-
 class CleanupPreview(Model):
     before: AwareDatetime
 
@@ -149,34 +131,6 @@ class AdminCreateUser(Model):
     def nonblank_name(cls, value):
         if not value.strip(): raise ValueError('显示名不能为空')
         return value.strip()
-
-
-class CreditReason(Model):
-    reason: str = Field(min_length=1, max_length=200)
-
-    @field_validator('reason')
-    @classmethod
-    def nonblank_reason(cls, value):
-        if not value.strip(): raise ValueError('请填写调整或核对原因')
-        return value.strip()
-
-
-class CreditAdjustment(CreditReason):
-    operation: Literal['add','set']
-    amount: int = Field(ge=0, le=1_000_000_000, strict=True)
-    reason: str = Field(min_length=1, max_length=200)
-    client_token: str = Field(min_length=1, max_length=120)
-    expected_version: int = Field(ge=0, strict=True)
-
-
-class CreditSettlement(CreditReason):
-    outcome: Literal['charge','release']
-    reason: str = Field(min_length=1, max_length=200)
-    client_token: str = Field(min_length=1, max_length=120)
-
-
-class RerunRequest(Model):
-    client_token: str = Field(min_length=1, max_length=120)
 
 
 class LibraryPermissionPatch(Model):

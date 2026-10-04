@@ -3,7 +3,7 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from backend.tests.test_worker import context,Worker
 from backend.tests.test_api import order,template
-from backend.tests.test_credits import member,fund
+from backend.tests.helpers import member, customer_action, slot_for, stored_order
 
 
 def change(admin,user,value,expected=2):
@@ -34,7 +34,7 @@ def test_limits_are_admin_only_validated_and_visible_to_owner(context):
 def test_cross_worker_admission_obeys_both_limits_and_skips_capped_owner(context):
     app,admin,clock,provider=context
     alice,a=member(admin,app,'alice');bob,b=member(admin,app,'bobby')
-    fund(admin,a);fund(admin,b);t=template(admin)
+    t=template(admin)
     order(alice,template_ids=[t['id']]);order(bob,template_ids=[t['id']])
     assert change(admin,a,1).status_code==200
     assert change(admin,b,3).status_code==200
@@ -76,6 +76,7 @@ def test_rerun_and_multiple_orders_share_owner_limit(context):
     assert change(admin,own,1).status_code==200
     first,body=order(admin);order(admin,template_ids=body['template_ids'],name='another')
     w=app.state.worker;i=w.claim();asyncio.run(w.execute(i))
-    assert admin.post(f"/api/orders/{first['id']}/items/{i['id']}/rerun",json={'client_token':'limited-rerun'}).status_code==200
-    assert w.claim()['id']==i['id']
+    slot=slot_for(app,first,i)
+    assert customer_action(admin,first,'slots/'+slot['id']+'/rerun').status_code==200
+    claim=w.claim();assert claim and claim['owner']==own['id']
     assert w.claim() is None

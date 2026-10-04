@@ -6,14 +6,7 @@ from fastapi.testclient import TestClient
 from PIL import Image
 
 from backend.app.main import create_app
-
-
-def png(color=(180, 50, 30, 180), size=(32, 32)):
-    image = Image.new('RGBA', size)
-    image.paste(color, (4, 4, size[0] - 4, size[1] - 4))
-    out = io.BytesIO()
-    image.save(out, 'PNG')
-    return out.getvalue()
+from backend.tests.helpers import png, upload, template, order, create_customer_order, generate_customer_order, customer_action, order_items, stored_order, run_all, submit_and_publish
 
 
 @pytest.fixture
@@ -27,30 +20,6 @@ def client(app):
         response = client.post('/api/auth/setup', json={'username': 'admin', 'password': 'safe-password-123', 'display_name': '管理员'})
         assert response.status_code == 200, response.text
         yield client
-
-
-def upload(client, data=None):
-    data = data or png()
-    result = client.post('/api/uploads/init', json={'filename': '头像.png', 'size': len(data), 'sha256': hashlib.sha256(data).hexdigest()}).json()
-    assert client.put('/api/uploads/' + result['id'], content=data, headers={'Upload-Offset': '0'}).status_code == 200
-    response = client.post('/api/uploads/' + result['id'] + '/complete')
-    assert response.status_code == 200, response.text
-    return response.json()
-
-
-def template(client, code='A01'):
-    response = client.post('/api/stickers', data={'category': 'boy'}, files=[('files', (f'{code}-{i+1:02}.png', png((i * 10, 50, 20, 200)), 'image/png')) for i in range(12)])
-    assert response.status_code == 200, response.text
-    response = client.post('/api/templates', json={'code':code, 'name':'测试套装', 'category':'boy', 'sticker_ids':[s['id'] for s in response.json()]})
-    assert response.status_code == 200, response.text
-    return response.json()
-
-
-def order(client, name='小明', template_ids=None):
-    body = {'upload_id': upload(client)['id'], 'name': name, 'template_ids': template_ids or [template(client)['id']], 'print_settings': {}, 'client_token': name + '-token'}
-    response = client.post('/api/orders', json=body)
-    assert response.status_code == 200, response.text
-    return response.json(), body
 
 
 def test_setup_invite_and_asset_ownership(client, app):
@@ -83,18 +52,15 @@ def test_upload_resume_duplicate_chunk_and_bad_hash(client):
 
 
 def test_template_revision_and_order_idempotency(client):
-    t = template(client)
-    o, body = order(client, template_ids=[t['id']])
-    assert len(client.get('/api/orders/' + o['id']).json()['items']) == 12
-    assert client.post('/api/orders', json=body).json()['id'] == o['id']
-    body['client_token'] = 'another'
-    assert client.post('/api/orders', json=body).json()['id'] != o['id']
-    before = client.get('/api/orders/' + o['id']).json()['items'][0]['template_url']
-    response = client.put('/api/templates/' + t['id'], json={'code': 'A01', 'name': '调整', 'category': 'girl', 'sticker_ids': list(reversed(t['sticker_ids']))})
-    assert response.status_code == 200, response.text
-    assert response.json()['revision'] == 2
-    assert client.get('/api/orders/' + o['id']).json()['items'][0]['template_url'] == before
-
+    t=template(client);o,body=order(client,template_ids=[t['id']])
+    assert len(order_items(client.app,o))==12
+    assert client.post('/api/customer-orders',json=body['create']).json()['id']==o['id']
+    other={**body['create'],'order_number':'ANOTHER','client_token':'another'}
+    assert client.post('/api/customer-orders',json=other).json()['id']!=o['id']
+    before=order_items(client.app,o)[0]['template_id']
+    response=client.put('/api/templates/'+t['id'],json={'code':'A01','name':'调整','category':'girl','sticker_ids':list(reversed(t['sticker_ids']))})
+    assert response.status_code==200 and response.json()['revision']==2
+    assert order_items(client.app,o)[0]['template_id']==before
 
 def test_validation_csrf_and_secret_redaction(client):
     assert client.post('/api/uploads/init', json={'filename': '../escape.png', 'size': 1, 'sha256': '0' * 64}).status_code == 422
@@ -164,7 +130,7 @@ def test_expected_account_header_blocks_cross_tab_cookie_switch_before_mutations
         assert init.status_code == 401
         assert init.json()['detail'] == '登录账号已变化，请重新登录'
         assert client.put('/api/uploads/' + pending['id'], headers={**stale, 'Upload-Offset': '0'}, content=raw).status_code == 401
-        assert client.post('/api/orders', headers=stale, json={'upload_id': pending['id'], 'name': '不得创建', 'template_ids': [t['id']], 'print_settings': {}, 'client_token': 'blocked'}).status_code == 401
+        assert client.post('/api/customer-orders', headers=stale, json={'order_number':'不得创建','generation_limit':12,'final_count':12,'rerun_limit':1,'client_token':'blocked'}).status_code == 401
         assert client.patch('/api/admin/settings', headers=stale, json={'max_inflight': 9}).status_code == 401
         assert client.patch('/api/account', headers=stale, json={'display_name': '不得修改'}).status_code == 401
         assert client.post('/api/auth/logout', headers=stale).status_code == 401
@@ -195,32 +161,23 @@ def test_fal_config_migration_preserves_other_data(tmp_path, monkeypatch):
         assert tx.get('orders','retained-order')
 
 
-def test_same_name_orders_remain_independent_with_distinct_output_folders(client):
-    t = template(client)
-    body = {'upload_id':upload(client)['id'], 'name':'小明', 'template_ids':[t['id']], 'print_settings':{}, 'client_token':'same-name-1'}
-    first = client.post('/api/orders',json=body).json()
-    body['client_token']='same-name-2'
-    response=client.post('/api/orders',json=body)
-    assert response.status_code==200, response.text
-    second=response.json()
-    assert first['id']!=second['id'] and first['name']==second['name']=='小明'
-    assert client.post('/api/orders',json=body).json()['id']==second['id']
-    assert client.get('/api/orders/'+first['id']+'/manifest').json()['name']=='小明'
-    assert client.get('/api/orders/'+second['id']+'/manifest').json()['name']=='小明 (2)'
-    body.update(name='小明 (2)',client_token='literal-folder-name')
-    third=client.post('/api/orders',json=body).json()
-    assert client.get('/api/orders/'+third['id']+'/manifest').json()['name']=='小明 (2) (2)'
-    assert len({i['id'] for o in (first,second,third) for i in o['items']})==36
+def test_distinct_customer_orders_have_independent_delivery_folders(client):
+    import zipfile
     from backend.app.storage import save_asset
-    import io, zipfile
+    first,_=create_customer_order(client,'小明',1);second,_=create_customer_order(client,'小明',1)
+    assert first['id']!=second['id']
     db=client.app.state.db
     with db.transaction() as tx:
         for result,color in ((first,(255,0,0,255)),(second,(0,255,0,255))):
             value=tx.get('orders',result['id'])
             asset=save_asset(db,tx,png(color),value['owner'],'print',order_id=value['id'])
-            value['artifacts']=[{'id':asset['id'],'path':'小明_A01_1.png'}]
+            value.update(state='submitted',delivery_ready=True,artifacts=[{k:asset[k] for k in ('id','kind','size','sha256','url')}|{'path':'page-001.png'}])
             tx.put('orders',value)
-    response=client.get('/api/orders/'+second['id']+'/download.zip')
+    a=client.get('/api/customer-orders/'+first['id']+'/manifest').json()
+    b=client.get('/api/customer-orders/'+second['id']+'/manifest').json()
+    assert a['folder_name']!=b['folder_name']
+    response=client.get('/api/customer-orders/'+second['id']+'/download.zip')
+    assert response.status_code==200
     with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
-        assert archive.namelist()==['小明 (2)/小明_A01_1.png']
+        assert archive.namelist()==[b['folder_name']+'/page-001.png']
         assert archive.read(archive.namelist()[0])==png((0,255,0,255))

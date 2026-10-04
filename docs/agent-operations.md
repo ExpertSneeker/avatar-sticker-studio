@@ -68,7 +68,7 @@
 
 ### 必须先理解的副作用
 
-[Database](../backend/app/db.py) 构造时会创建目录、改权限、建立表、写默认配置并执行迁移，包括个人积分、共享重试、公共图库、图库状态和组织迁移。`transaction()` 使用 WAL 和 `BEGIN IMMEDIATE`，不是只读事务。
+[Database](../backend/app/db.py) 构造时会创建目录、改权限、建立表、写默认配置并执行迁移，包括图库、组织、共享重试及单一订单/点数下线迁移。`transaction()` 使用 WAL 和 `BEGIN IMMEDIATE`，不是只读事务。
 
 [create_app](../backend/app/main.py) 立即构造 Database；即使 `start_worker=False`，进入 lifespan 时仍执行 [drain_cleanup](../backend/app/maintenance.py)，可能删除已有清理队列中的文件。默认 lifespan 同时启动生成 Worker 和 AgisoWorker。**不要用启动应用、TestClient 或 `Database(正式路径)` 做只读诊断。**
 
@@ -177,7 +177,7 @@ studio_safe env STUDIO_API_PROXY=http://127.0.0.1:8001 \
 | 认证、组织、账号失效、跨标签页 | [test_api.py](../backend/tests/test_api.py)、[test_organizations.py](../backend/tests/test_organizations.py)、[test_account_deletion.py](../backend/tests/test_account_deletion.py) | [z-modal-accounts](../frontend/e2e/z-modal-accounts.spec.ts)、[z-user-deletion](../frontend/e2e/z-user-deletion.spec.ts)、[customer-orders](../frontend/e2e/customer-orders.spec.ts) |
 | 使用说明/入口/文档授权 | [test_staff_guide.py](../backend/tests/test_staff_guide.py)、说明同步检查 | [staff-guide](../frontend/e2e/staff-guide.spec.ts)；额外检查产物无私有正文 |
 | 访客订单、重试额度、提交/取消/解锁 | [test_customer_orders.py](../backend/tests/test_customer_orders.py)、[test_framework_acceptance.py](../backend/tests/test_framework_acceptance.py) | [customer-orders 单测](../frontend/tests/customer-orders.test.ts)、[customer-orders E2E](../frontend/e2e/customer-orders.spec.ts)、[selection-limit](../frontend/e2e/customer-selection-limit.spec.ts)、[picker-scroll](../frontend/e2e/customer-picker-scroll.spec.ts) |
-| 生图、恢复、模型迁移、并发、公平性 | [test_providers.py](../backend/tests/test_providers.py)、[test_worker.py](../backend/tests/test_worker.py)、[test_deployment.py](../backend/tests/test_deployment.py)、[test_account_concurrency.py](../backend/tests/test_account_concurrency.py)、[test_fair_scheduling.py](../backend/tests/test_fair_scheduling.py)、[test_credits.py](../backend/tests/test_credits.py) | [z-user-concurrency](../frontend/e2e/z-user-concurrency.spec.ts)、客户订单 E2E |
+| 生图、恢复、模型迁移、并发、公平性 | [test_providers.py](../backend/tests/test_providers.py)、[test_worker.py](../backend/tests/test_worker.py)、[test_deployment.py](../backend/tests/test_deployment.py)、[test_account_concurrency.py](../backend/tests/test_account_concurrency.py)、[test_fair_scheduling.py](../backend/tests/test_fair_scheduling.py)、[迁移测试](../backend/tests/test_single_order_migration.py) | [z-user-concurrency](../frontend/e2e/z-user-concurrency.spec.ts)、客户订单 E2E |
 | 图库、模板版本、删除/混合选择 | [test_library.py](../backend/tests/test_library.py)、[test_library_management.py](../backend/tests/test_library_management.py)、[test_library_deletion.py](../backend/tests/test_library_deletion.py)、[test_library_status_retirement.py](../backend/tests/test_library_status_retirement.py)、[test_mixed_stickers.py](../backend/tests/test_mixed_stickers.py)、[test_variable_templates.py](../backend/tests/test_variable_templates.py) | [library](../frontend/tests/library.test.tsx)、[templates](../frontend/tests/templates.test.tsx)、[z-library-management](../frontend/e2e/z-library-management.spec.ts)、[z-public-mixed](../frontend/e2e/z-public-mixed.spec.ts)、[z-variable-templates](../frontend/e2e/z-variable-templates.spec.ts) |
 | 拼版、水印、预览、导出 | [test_processing.py](../backend/tests/test_processing.py)、[test_previews.py](../backend/tests/test_previews.py)、客户订单/框架验收测试 | [preview](../frontend/tests/preview.test.ts)、[image-preview](../frontend/tests/image-preview.test.tsx)、[sync](../frontend/tests/sync.test.ts)、客户订单 E2E；另做中文/透明边缘/桌面与手机视觉核验 |
 | 上传及恢复 | API 测试、客户订单测试 | [image-upload](../frontend/e2e/image-upload.spec.ts)、[orders](../frontend/tests/orders.test.ts) |
@@ -185,7 +185,7 @@ studio_safe env STUDIO_API_PROXY=http://127.0.0.1:8001 \
 | 数据清理、迁移、审计、启动就绪 | [test_cleanup.py](../backend/tests/test_cleanup.py)、[test_library_cleanup.py](../backend/tests/test_library_cleanup.py)、[test_framework_audit.py](../backend/tests/test_framework_audit.py)、[test_library_audit.py](../backend/tests/test_library_audit.py)、[test_import_a1.py](../backend/tests/test_import_a1.py)、[test_deployment.py](../backend/tests/test_deployment.py) | [studio](../frontend/e2e/studio.spec.ts)、[z-user-deletion](../frontend/e2e/z-user-deletion.spec.ts) |
 | 统计 | [test_statistics.py](../backend/tests/test_statistics.py) | [zz-statistics](../frontend/e2e/zz-statistics.spec.ts) |
 
-目录选择器测试使用 OPFS 夹具，不能证明真实目录授权、Safari 或打印机输出可用；相关人工验收需单列。`test_credits.py` 等名称含历史术语，不代表当前功能仍实行积分收费。
+目录选择器测试使用 OPFS 夹具，不能证明真实目录授权、Safari 或打印机输出可用；相关人工验收需单列。点数测试已随功能下线，账号安全、原图恢复与未知请求等覆盖保留在各自专项测试中。
 
 ## 5. 审计脚本怎么用、不能证明什么
 
@@ -227,7 +227,7 @@ studio_safe .venv/bin/python -B deploy/audit_framework.py \
 
 本节适用于包含生产发布的任务。实际命令使用 [framework-release.md](../deploy/framework-release.md)、[deploy/README.md](../deploy/README.md)、[systemd 单元](../deploy/avatar-sticker-studio.service)，避免维护第二份整段发布脚本。
 
-1. **准备可追溯产物。** 记录候选 revision、实际改动、测试/构建结果、迁移及兼容性结论。使用锁定依赖，源码与 `frontend/dist` 成对进入新 release，私有数据和环境配置不进入发布包。仅 `git rev-parse HEAD` 不能证明包含未提交改动的包对应该提交。
+1. **准备可追溯产物。** 安装程序依赖使用 `umask 022` 并以服务账号校验导入、OSS 角色只读访问；私有 env/数据权限仍保持受限。 记录候选 revision、实际改动、测试/构建结果、迁移及兼容性结论。使用锁定依赖，源码与 `frontend/dist` 成对进入新 release，私有数据和环境配置不进入发布包。仅 `git rev-parse HEAD` 不能证明包含未提交改动的包对应该提交。
 2. **确认目标布局及唯一服务。** 文件描述为 `/opt/avatar-sticker-studio/releases/<commit>`、`current` 链接、独立 venv 和 `/var/lib/avatar-sticker-studio`。unit 以 `sticker` 运行，固定 127.0.0.1:8000、`--workers 1`，从 `/etc/avatar-sticker-studio.env` 读取配置，关闭 access log。这些是配置契约，需在授权部署时核对当前主机；不要新增 worker、公共端口或改动共享 Tunnel。
 3. **排空并冻结写入。** 核对 queued/running/unknown、远端预留及不确定抠图，停止接收新请求，按现有流程停止唯一服务，再次检查队列。若窗口内有新任务，返回旧版本排空/核对，不直接迁移。另核对 Agiso pending/claimed/sending/unknown；单停 worker 不等于外部推送停止，不能丢弃或盲目重放通知。
 4. **完整且配对的备份。** 在服务停止后，按发布文档保存完整私有数据目录、审计基线及旧 release，备份目录 0700，文件按私密权限管理；验证数据库完整性、资产引用和原图哈希，不能只看大小。SQLite WAL 不能只拷一个运行中的主 DB 文件。环境中的加密密钥属于恢复依赖，单独安全保留，不能进入 Git/日志。
@@ -236,7 +236,9 @@ studio_safe .venv/bin/python -B deploy/audit_framework.py \
 7. **完成下一节的上线验收。** 不通过真实生图、真实开单或真实发送消息做自动 smoke test。
 8. **归档并执行保留规则。** 使用 `deploy/backup_archive.py --archive <本次配对备份目录> --verify-readback` 上传完整备份；先 `--prune` 查看计划，再 `--prune --apply`。合计最近 3 份、同一快照只算一份、本机保留最新 1 份。验证归档数量、读回哈希、清理结果与剩余空间，保留脱敏证据。
 
-回滚边界：切换 `current` 并重启只回滚代码，不回滚业务数据。迁移到组织框架后，旧代码不理解新角色和客户订单模型，不支持简单回到框架前版本。尚未接收新业务时，按已有文档停服并恢复配对数据/资产备份与旧 release；一旦接收新订单或产生新结果，应保留新数据，选择向前修复或专门审查的数据对账。不得把旧库覆盖到新客户提交之上。
+阶段 B 使用新 release 的 `deploy/audit_framework.py --allow-single-order-migration` 分别生成基线、执行 `--rehearse` 和发布后对比；普通审计模式不会豁免版本/点数删除。确认两次迁移幂等、两个标记存在、目标字段/记录/索引消失，并逐项核对 generations、原图、历史引用和订单状态。不能把实际新增订单数固定为方案编写时的历史数字。
+
+回滚边界：切换 `current` 并重启只回滚代码，不回滚业务数据。阶段 B 删除流程字段后旧 release 看不到当前订单，必须配对恢复数据；发布前明确告知用户，已有新业务时向前修复。迁移到组织框架后，旧代码不理解新角色和客户订单模型，不支持简单回到框架前版本。尚未接收新业务时，按已有文档停服并恢复配对数据/资产备份与旧 release；一旦接收新订单或产生新结果，应保留新数据，选择向前修复或专门审查的数据对账。不得把旧库覆盖到新客户提交之上。
 
 按用户 2026-10-05 要求，完整备份在每次发布验收后手动归档到 OSS，本机与 OSS 合计保留最近 3 份不同快照，本机仅保留最新 1 份；保留范围内的其余本机快照必须先有校验通过的远端归档。归档、prune 及恢复命令见 deploy/README.md；不安装定时任务。不要把 release、缓存或审计报告当作完整备份。
 

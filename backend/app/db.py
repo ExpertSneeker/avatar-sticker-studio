@@ -11,7 +11,7 @@ DEFAULT_PROMPT = '图1是贴纸模板，图2是人物身份参考。将模板中
 
 
 # Expression indexes for hot lookups. Adding them changes no document; older code ignores them.
-INDEXED_FIELDS = ('status', 'remote_reserved', 'state', 'workflow_version', 'order_id', 'order_number', 'guest_order_id', 'customer_order_id')
+INDEXED_FIELDS = ('status', 'remote_reserved', 'state', 'order_id', 'order_number', 'guest_order_id', 'customer_order_id')
 
 
 def uid():
@@ -68,9 +68,12 @@ class Transaction:
 class Database:
     def __init__(self, root):
         self.root = Path(root)
+        self.path = self.root / 'studio.sqlite3'
+        # Refuse unsupported input before config/legacy migrations can mutate
+        # any business document. Do not instantiate a second application.
+        self._preflight_single_order()
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         os.chmod(self.root, 0o700)
-        self.path = self.root / 'studio.sqlite3'
         with self.transaction() as tx:
             tx.conn.executescript('CREATE TABLE IF NOT EXISTS records (kind TEXT NOT NULL,id TEXT NOT NULL,doc TEXT NOT NULL,PRIMARY KEY(kind,id)); CREATE TABLE IF NOT EXISTS starts (family TEXT NOT NULL,at REAL NOT NULL); CREATE INDEX IF NOT EXISTS starts_time ON starts(family,at);')
             for field in INDEXED_FIELDS:
@@ -84,9 +87,6 @@ class Database:
             config.pop('openai_api_key', None)
             tx.put('config', config)
             if not tx.get('migrations', 'personal-credits-v1'):
-                for user in tx.all('users'):
-                    user.setdefault('credits', {'available':0,'frozen':0,'spent':0,'version':0})
-                    tx.put('users', user)
                 for kind in ('templates', 'template_revisions'):
                     for template in tx.all(kind):
                         template.setdefault('scope', 'public')
@@ -96,14 +96,9 @@ class Database:
                     if asset['kind']=='template':
                         asset.setdefault('scope', 'public')
                         tx.put('assets', asset)
-                for item in tx.all('items'):
-                    item['billing_legacy']=True
-                    tx.put('items', item)
                 tx.put('migrations', {'id':'personal-credits-v1'})
             if not tx.get('migrations', 'order-shared-rerun-v1'):
                 for order in tx.all('orders'):
-                    if order.get('workflow_version') != 3:
-                        continue
                     limit = int(order.get('generation_limit') or 0)
                     if order.get('rerun_limit') != limit:
                         order['rerun_limit'] = limit
@@ -120,6 +115,25 @@ class Database:
             migrate_organizations(tx)
             from .library import migrate_template_size
             migrate_template_size(self, tx)
+            if not tx.get('migrations', 'drop-workflow-version-v1'):
+                for kind in ('orders', 'items'):
+                    for value in tx.all(kind):
+                        value.pop('workflow_version', None)
+                        tx.put(kind, value)
+                tx.conn.execute('DROP INDEX IF EXISTS records_workflow_version')
+                tx.put('migrations', {'id': 'drop-workflow-version-v1'})
+            if not tx.get('migrations', 'drop-credits-v1'):
+                for kind in ('credit_ledger', 'credit_operations'):
+                    for value in tx.all(kind):
+                        tx.delete(kind, value['id'])
+                for value in tx.all('users'):
+                    value.pop('credits', None)
+                    tx.put('users', value)
+                for value in tx.all('items'):
+                    value.pop('credit_exempt', None)
+                    value.pop('billing_legacy', None)
+                    tx.put('items', value)
+                tx.put('migrations', {'id': 'drop-credits-v1'})
         os.chmod(self.path, 0o600)
         # An idle connection keeps the WAL open, so closing each per-transaction connection is
         # no longer "last close" (checkpoint, fsync and WAL deletion on every transaction).
@@ -127,6 +141,23 @@ class Database:
         anchor = sqlite3.connect(self.path, timeout=30, check_same_thread=False)
         anchor.execute('SELECT 1 FROM records LIMIT 1').fetchall()
         self._anchor = weakref.finalize(self, anchor.close)
+
+    def _preflight_single_order(self):
+        if not self.path.exists():
+            return
+        conn = sqlite3.connect(self.path.resolve().as_uri() + '?mode=ro', uri=True)
+        try:
+            conn.execute('BEGIN')
+            if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='records'").fetchone():
+                return
+            if conn.execute("SELECT 1 FROM records WHERE kind='migrations' AND id='drop-workflow-version-v1'").fetchone():
+                return
+            for raw, in conn.execute("SELECT doc FROM records WHERE kind IN ('orders','items')"):
+                version = json.loads(raw).get('workflow_version')
+                if type(version) is not int or version != 3:
+                    raise ValueError('单一订单迁移拒绝旧订单或缺失 workflow_version；需先转换数据')
+        finally:
+            conn.close()
 
     def close(self):
         self._anchor()

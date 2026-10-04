@@ -106,7 +106,7 @@ def scoped(value, actor):
 
 def customer(tx, id):
     value = tx.get('orders', id)
-    if not value or value.get('workflow_version') != 3:
+    if not value:
         raise HTTPException(404, '订单不存在')
     return value
 
@@ -336,7 +336,7 @@ def save_draft(tx, order, data, is_guest, now):
 
 def new_item(tx, order, id, avatar_id, sticker, now, position):
     item = {'id': id, 'order_id': order['id'], 'owner': order['owner'], 'organization_id': order['organization_id'],
-            'workflow_version': 3, 'credit_exempt': True, 'avatar_id': avatar_id, 'sticker_id': sticker['id'],
+            'avatar_id': avatar_id, 'sticker_id': sticker['id'],
             'sticker_revision': sticker['revision'], 'template_id': sticker['image']['id'],
             'set_index': 0, 'set_code': 'customer', 'position': position, 'status': 'queued', 'attempt': 0,
             'next_at': 0, 'remote_reserved': False, 'result_id': None, 'error': None}
@@ -362,7 +362,7 @@ def delivery_folder(order):
 def create_customer_order(tx, actor, data, at):
     """Shared creation path snapshots owner defaults for every order source."""
     config = tx.get('config', 'settings')
-    order = {'id': uid(), **data.model_dump(exclude={'client_token'}), 'workflow_version': 3,
+    order = {'id': uid(), **data.model_dump(exclude={'client_token'}),
              'owner': actor['id'], 'organization_id': actor['organization_id'], 'state': 'draft', 'version': 1,
              'name': data.order_number, 'watermark': actor.get('watermark', '').strip() or actor['display_name'],
              'watermark_version': 1, 'print_settings': actor['print_defaults'],
@@ -426,7 +426,7 @@ def register_customer_orders(app, db, user):
                     date_from: str | None = None, date_to: str | None = None, summary: bool = False):
         def read(tx):
             actor = user(tx, request)
-            orders = [o for o in tx.all('orders') if o.get('workflow_version') == 3 and scoped(o, actor)]
+            orders = [o for o in tx.all('orders') if scoped(o, actor)]
             return [dto(tx, o, summary=summary) for o in reversed(orders) if (not state or o['state'] == state) and (not owner or o['owner'] == owner)
                     and (not order_number or order_number in o['order_number']) and (not date_from or o['created_at'][:10] >= date_from)
                     and (not date_to or o['created_at'][:10] <= date_to)]
@@ -485,7 +485,7 @@ def register_customer_orders(app, db, user):
         denied = None
         with db.transaction() as tx:
             number = data.order_number.strip()
-            order = next((o for o in tx.where('orders', 'order_number', number) if o.get('workflow_version') == 3 and o['order_number'] == number), None)
+            order = next((o for o in tx.where('orders', 'order_number', number) if o['order_number'] == number), None)
             organization = tx.get('organizations', order.get('organization_id', '')) if order else None
             if not order or organization and not organization.get('active', True):
                 denied = (401, '订单号无效')
@@ -716,7 +716,7 @@ def register_customer_orders(app, db, user):
         with db.transaction() as tx:
             actor = user(tx, request)
             ids = [o['id'] for o in (tx.get('orders', id) for id in dict.fromkeys(data.ids))
-                   if o and o.get('workflow_version') == 3 and scoped(o, actor)]
+                   if o and scoped(o, actor)]
         return {'results': await sync_orders(db, ids, actor['id'], app.state.agiso_worker.transport, now)}
 
     def delivery(tx, request, id):

@@ -1,4 +1,5 @@
 import { api, sha256 } from './api'
+import { customerManifestPath } from './delivery'
 import { readLocal, writeLocal } from './db'
 import { planSync, safeFilename } from './sync'
 import type { Manifest } from './types'
@@ -30,7 +31,7 @@ export async function syncOrder(userId:string,orderId:string,root:FileSystemDire
   try {
     signal?.throwIfAborted()
     if (!await directoryPermission(root)) throw new Error('保存目录需要重新授权，请点击“选择保存目录”')
-    const manifestPath=options.manifestPath||'/orders/'+encodeURIComponent(orderId)+'/manifest'
+    const manifestPath=options.manifestPath||customerManifestPath(orderId)
     const raw=await api<Manifest>(manifestPath,{signal})
     const manifest={...raw,name:options.folderName||raw.name,files:raw.files.filter(file=>file.kind==='print')}
     if(!manifest.complete)throw new Error('等待全部打印文件完成后再下载')

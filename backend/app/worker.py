@@ -1,7 +1,5 @@
 """Durable queue with cross-process admission and conservative uncertain outcomes."""
 import asyncio
-import hashlib
-import json
 import logging
 import os
 import threading
@@ -10,10 +8,9 @@ from collections import Counter
 from .auth import generation_limit
 from .db import uid
 from .agiso_service import order_allowed
-from . import credits, oss_delivery
-from .processing import PRINT_LAYOUT_STYLE, decode, encode, overview, pack_set
+from . import request_tracking, oss_delivery
+from .processing import decode, encode
 from .providers import DEFAULT_MAX_UPLOADS, DEFAULT_UPLOAD_TIMEOUT, CutoutDeferred, FalProvider, ProviderFailure, YeziProvider
-from .schemas import PrintSettings
 from .storage import asset_bytes, save_asset
 
 log = logging.getLogger(__name__)
@@ -63,7 +60,7 @@ class Worker:
                             item.update(status='queued', next_at=0, remote_reserved=True)
                         else:
                             item.update(status='unknown', remote_reserved=True, error='服务中断时请求可能已发出，结果待确认；不会自动重新提交')
-                        credits.progress(tx, item, now)
+                        request_tracking.progress(tx, item)
                         tx.put('items', item)
             for owner in tx.all('workers'):
                 if owner['expires'] < now:
@@ -114,7 +111,7 @@ class Worker:
             item.update(status='running', worker_id=self.id, run_id=uid(), attempt=item['attempt'] + int(new_request), started_at=now, error=None)
             if not postprocess:
                 item['remote_reserved'] = True
-            credits.progress(tx, item, now)
+            request_tracking.progress(tx, item)
             tx.put('items', item)
             return item
 
@@ -130,7 +127,7 @@ class Worker:
                 if current.get('cutout_inflight'):
                     raise ProviderFailure(CUTOUT_UNCERTAIN, 'unknown')
                 order = tx.get('orders', item['order_id'])
-                if order.get('workflow_version') == 3 and not order_allowed(tx, order) and (current.get('processing_stage') == 'postprocess' or not current.get('fal_request_id')):
+                if not order_allowed(tx, order) and (current.get('processing_stage') == 'postprocess' or not current.get('fal_request_id')):
                     current.update(status='queued', remote_reserved=False)
                     tx.put('items', current)
                     return
@@ -172,10 +169,9 @@ class Worker:
                     if latest['status'] != 'running' or latest.get('worker_id') != self.id or latest.get('run_id') != item.get('run_id'):
                         return
                     raw = save_asset(self.db, tx, encode(image), item['owner'], 'raw_result', order_id=item['order_id'])
-                    credits.settle(tx, latest.get('generation_id'), 'charge', self.clock())
                     latest.update(raw_result_id=raw['id'], remote_reserved=False, processing_stage='postprocess')
                     latest_order = tx.get('orders', item['order_id'])
-                    if latest_order.get('workflow_version') == 3 and not order_allowed(tx, latest_order):
+                    if not order_allowed(tx, latest_order):
                         # Reconcile the already submitted generation, then pause before any new processing call.
                         latest.update(status='queued', next_at=0)
                         tx.put('items', latest)
@@ -194,16 +190,14 @@ class Worker:
                     if latest.get('cutout_inflight'):
                         raise ProviderFailure(CUTOUT_UNCERTAIN, 'unknown')
                     latest_order = tx.get('orders', item['order_id'])
-                    if latest_order.get('workflow_version') == 3 and not order_allowed(tx, latest_order):
+                    if not order_allowed(tx, latest_order):
                         latest.update(status='queued', next_at=0, remote_reserved=False, processing_stage='postprocess')
                         tx.put('items', latest)
                         return
                     latest.update(cutout_inflight=True, cutout_started_at=self.clock())
                     tx.put('items', latest)
                 cutout = YeziProvider(self.db, key, self.clock)
-                if order.get('workflow_version') == 3:
-                    # Keep the legacy cutout(data) interface while checking each capacity wait/admission.
-                    cutout.before_submit = lambda tx: self.cutout_allowed(tx, item)
+                cutout.before_submit = lambda tx: self.cutout_allowed(tx, item)
                 data = await cutout.cutout(data)
                 image = decode(data)
             else:
@@ -220,9 +214,8 @@ class Worker:
                 order = tx.get('orders', item['order_id'])
                 order['content_version'] += 1
                 tx.put('orders', order)
-                if order.get('workflow_version') == 3:
-                    from .customer_orders import reconcile
-                    reconcile(tx, order)
+                from .customer_orders import reconcile
+                reconcile(tx, order)
             await asyncio.to_thread(self.publish, item['order_id'])
         except asyncio.CancelledError:
             # Read the durable stage: execute's original claim may predate raw save.
@@ -246,15 +239,9 @@ class Worker:
             self.fail(item, ProviderFailure('结果处理失败：' + (str(exc)[:180] if isinstance(exc, ValueError) else type(exc).__name__) + '；不会自动重新生图', 'failed' if response_received else 'unknown'))
 
     def unpublished(self):
-        with self.db.transaction() as tx:
-            # SQL preselects a superset: submitted orders not yet fully published, plus every legacy
-            # order (workflow_version missing or not 3). The Python filter below stays authoritative.
-            wv = "json_extract(doc,'$.workflow_version')"
-            unfinished = "json_extract(doc,'$.state') = 'submitted' AND (json_extract(doc,'$.delivery_ready') IS NOT 1 OR json_extract(doc,'$.overview_ready') IS NOT 1)"
-            orders = tx.find('orders', (unfinished, ()), (wv + ' IS NULL', ()), (wv + ' < 3', ()), (wv + ' > 3', ()))
-            return [o['id'] for o in orders if not o.get('processing_error') and
-                    ((o.get('workflow_version') == 3 and o['state'] == 'submitted' and (not o.get('delivery_ready') or not o.get('overview_ready'))) or
-                     (o.get('workflow_version') != 3 and (not o.get('overview_ready') or o.get('overview_style') != 'bold-outline-shadow-v3')))]
+        with self.db.transaction(readonly=True) as tx:
+            return [o['id'] for o in tx.where('orders', 'state', 'submitted')
+                    if not o.get('processing_error') and (not o.get('delivery_ready') or not o.get('overview_ready'))]
 
     def cutout_allowed(self, tx, item):
         latest = tx.get('items', item['id'])
@@ -267,7 +254,7 @@ class Worker:
             latest = tx.get('items', item['id'])
             if latest and latest['status']=='running' and latest.get('run_id') == item.get('run_id') and latest.get('worker_id') == self.id:
                 latest.update(fields)
-                credits.progress(tx, latest, self.clock())
+                request_tracking.progress(tx, latest)
                 tx.put('items', latest)
 
     def defer(self, item, delay):
@@ -294,7 +281,7 @@ class Worker:
                 tx.put('config', config)
             if error.status == 'failed' or (error.status == 'retry' and not known):
                 latest['remote_reserved'] = False
-            credits.progress(tx, latest, self.clock())
+            request_tracking.progress(tx, latest)
             tx.put('items', latest)
 
     def publish(self, order_id, force=False, watermark_only=False):
@@ -307,73 +294,10 @@ class Worker:
                 order = tx.get('orders', order_id)
                 if not order:
                     return False
-                if order.get('workflow_version') == 3:
-                    from .customer_orders import reconcile
-                    reconcile(tx, order)
-                    customer_order = order
-                else:
-                    customer_order = None
-                    owner = tx.get('users', order['owner'])
-                    items = sorted([i for i in tx.where('items', 'order_id', order_id) if i['order_id'] == order_id], key=lambda i: (i['set_index'], i['position']))
-                    snapshot = order['content_version']
-                    binaries = {i['id']: asset_bytes(self.db, tx.get('assets', i['result_id'])) for i in items if i.get('result_id')}
-            if customer_order:
-                # publish_customer reads exactly the frozen final entries itself.
-                from .publication import publish_customer
-                return publish_customer(self.db, customer_order, force, watermark_only)
-            if order.get('selection_version') == 2:
-                from .publication import publish_selection
-                return publish_selection(self.db, order, items, binaries, owner, force, watermark_only)
-            set_sizes = {t['code']: len(t['images']) for t in order.get('template_snapshots', [])}
-            group_sizes = [set_sizes.get(code, sum(i['set_code'] == code for i in items)) for code in order['template_codes']]
-            settings = PrintSettings(**order['print_settings'])
-            old_signatures = order.get('publish_signatures', {})
-            signatures = dict(old_signatures)
-            replacements = {}
-            if not watermark_only:
-                for code in order['template_codes']:
-                    group = [i for i in items if i['set_code'] == code]
-                    if not group or len(group) != set_sizes.get(code, len(group)) or any(not i.get('result_id') for i in group):
-                        continue
-                    signature = hashlib.sha256(json.dumps([PRINT_LAYOUT_STYLE, order['name'], settings.model_dump(), [i['result_id'] for i in group]], sort_keys=True).encode()).hexdigest()
-                    if not force and signature == old_signatures.get(code):
-                        continue
-                    replacements[code] = pack_set([binaries[i['id']] for i in group], order['name'], code, settings)
-                    signatures[code] = signature
-            ready = bool(items) and all(group_sizes) and len(binaries) == len(items) == sum(group_sizes) and all(i['status'] == 'completed' for i in items)
-            watermark = owner['watermark'] or owner['display_name']
-            overview_signature = hashlib.sha256(json.dumps([[i.get('result_id') for i in items], group_sizes, watermark, 'bold-outline-shadow-v3']).encode()).hexdigest()
-            new_overview = None
-            if ready and (force or old_signatures.get('_overview') != overview_signature):
-                new_overview = overview([binaries[i['id']] for i in items], watermark, group_sizes)
-                signatures['_overview'] = overview_signature
-            if not replacements and new_overview is None:
-                return False
-            with self.db.transaction() as tx:
-                latest = tx.get('orders', order_id)
-                if not latest or latest['content_version'] != snapshot:
-                    return False
-                artifacts = latest['artifacts']
-                by_code = {}
-                for code in order['template_codes']:
-                    if code in replacements:
-                        group = []
-                        for filename, data in replacements[code]:
-                            a = save_asset(self.db, tx, data, order['owner'], 'print', order_id=order_id)
-                            group.append({k: a[k] for k in ('id', 'url', 'sha256', 'size', 'kind')} | {'path': filename, 'set_code': code})
-                        by_code[code] = group
-                    else:
-                        by_code[code] = [a for a in artifacts if a.get('set_code') == code]
-                artifacts = [a for code in order['template_codes'] for a in by_code[code]]
-                if new_overview is not None:
-                    latest['overview_style'] = 'bold-outline-shadow-v3'
-                    a = save_asset(self.db, tx, new_overview, order['owner'], 'overview', order_id=order_id)
-                    artifacts.append({k: a[k] for k in ('id', 'url', 'sha256', 'size', 'kind')} | {'path': order['name'] + '_水印总览.png'})
-                else:
-                    artifacts.extend(a for a in latest['artifacts'] if a['kind'] == 'overview')
-                latest.update(artifacts=artifacts, artifact_version=latest['artifact_version'] + 1, overview_ready=ready, publish_signatures=signatures, processing_error=None)
-                tx.put('orders', latest)
-            return True
+                from .customer_orders import reconcile
+                reconcile(tx, order)
+            from .publication import publish_customer
+            return publish_customer(self.db, order, force, watermark_only)
         except Exception as exc:
             with self.db.transaction() as tx:
                 latest = tx.get('orders', order_id)

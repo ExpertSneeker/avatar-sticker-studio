@@ -89,15 +89,15 @@ def test_existing_orders_adopt_shared_rerun_budget(tmp_path):
     from backend.app.db import Database
     first=Database(tmp_path)
     with first.transaction() as tx:
-        tx.put('orders',{'id':'o1','workflow_version':3,'generation_limit':4,'rerun_limit':2,'version':1,'state':'draft'})
-        tx.put('orders',{'id':'o2','workflow_version':2,'rerun_limit':2,'version':1})
+        tx.put('orders',{'id':'o1','generation_limit':4,'rerun_limit':2,'version':1,'state':'draft'})
+        tx.put('orders',{'id':'o2','generation_limit':3,'rerun_limit':2,'version':1,'state':'draft'})
         # 模拟升级前已存在的数据：迁移标记尚未写入。
         tx.delete('migrations','order-shared-rerun-v1')
     second=Database(tmp_path)
     with second.transaction() as tx:
         migrated=tx.get('orders','o1')
         assert migrated['rerun_limit']==4 and migrated['version']==2
-        assert tx.get('orders','o2')['rerun_limit']==2
+        assert tx.get('orders','o2')['rerun_limit']==3
 
 
 def test_guest_privacy_cancel_restore_submitted_and_media(context):

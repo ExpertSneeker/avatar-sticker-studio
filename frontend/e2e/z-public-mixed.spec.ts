@@ -1,17 +1,14 @@
 import {test,expect} from '@playwright/test'
 import {readFileSync} from 'node:fs'
-import {createCustomer} from './customer-fixtures'
-import {createHash} from 'node:crypto'
+import {createCustomer,generateCustomer,mutate,staffLogin,submitCustomer,uploadAvatar} from './customer-fixtures'
 import {uploadStickers} from './library-fixtures'
 test('mixed public selections deduplicate generation and retain every exported copy',async({page})=>{
- const status=await (await page.request.get('/api/auth/status')).json()
- if(status.needs_setup)await page.request.post('/api/auth/setup',{data:{username:'testadmin',password:'local-test-password',display_name:'测试管理员'}})
- else await page.request.post('/api/auth/login',{data:{username:'testadmin',password:'local-test-password'}})
+ await staffLogin(page.request)
  const pixel=readFileSync(new URL('./fixtures/portrait.png',import.meta.url))
  const stickers=await uploadStickers(page.request,[{name:'MIX-one.png',mimeType:'image/png',buffer:pixel},{name:'MIX-two.png',mimeType:'image/png',buffer:pixel}])
  const sets=[]
  for(const code of ['MIX-A','MIX-B']){const response=await page.request.post('/api/templates',{data:{code,name:code,category:'general',sticker_ids:[stickers[0].id]}});expect(response.ok()).toBeTruthy();sets.push(await response.json())}
- const customer=await createCustomer(page.request,{generation_limit:6,final_count:1})
+ const customer=await createCustomer(page.request,{generation_limit:4,final_count:4})
  await page.goto('/')
  await page.getByRole('button').filter({hasText:customer.order_number}).first().click()
  await page.getByLabel('上传头像').setInputFiles({name:'混合验收.png',mimeType:'image/png',buffer:pixel})
@@ -31,21 +28,25 @@ test('mixed public selections deduplicate generation and retain every exported c
  // The avatar row reports deduplicated generation work after the picker closes.
  await expect(page.locator('.customer-avatar-name').getByText('4 张已选 · 2 张实际生成')).toBeVisible()
  await expect(page.locator('.customer-submit-bar')).toContainText('实际生成 2 张')
- const upload=await (await page.request.post('/api/uploads/init',{data:{filename:'混合验收.png',size:pixel.length,sha256:createHash('sha256').update(pixel).digest('hex')}})).json()
- await page.request.put('/api/uploads/'+upload.id,{data:pixel,headers:{'Upload-Offset':'0'}});await page.request.post('/api/uploads/'+upload.id+'/complete')
- const response=await page.request.post('/api/orders',{data:{upload_id:upload.id,name:'混合验收',template_ids:sets.map(s=>s.id),sticker_ids:stickers.map(s=>s.id),print_settings:{},client_token:'mixed-e2e'}})
- expect(response.ok(),await response.text()).toBeTruthy();const order=await response.json()
- expect(order.generation_count).toBe(2);expect(order.export_count).toBe(4)
- await expect.poll(async()=>(await(await page.request.get('/api/orders/'+order.id)).json()).download_ready,{timeout:60000}).toBe(true)
- const detail=await(await page.request.get('/api/orders/'+order.id)).json()
- expect(detail.export_entries).toHaveLength(4)
- expect(detail.items).toHaveLength(2)
- const manifest=await(await page.request.get('/api/orders/'+order.id+'/manifest')).json()
+ const avatars=[{upload_id:await uploadAvatar(page.request,'混合验收.png'),template_ids:sets.map(s=>s.id),sticker_ids:stickers.map(s=>s.id)}]
+ const latest=await(await page.request.get('/api/customer-orders/'+customer.id)).json()
+ const preflight=await mutate(page.request,latest,'preflight',{avatars})
+ expect(preflight).toMatchObject({generation_count:2,selection_count:4})
+ const generated=await generateCustomer(page.request,customer,avatars)
+ expect(generated.slots).toHaveLength(4)
+ expect(new Set(generated.slots.map((slot:any)=>slot.selected_version_id)).size).toBe(2)
+ const shared=generated.slots.filter((slot:any)=>slot.sticker_code===stickers[0].code)
+ expect(shared).toHaveLength(3)
+ expect(new Set(shared.map((slot:any)=>slot.selected_version_id)).size).toBe(1)
+ const submitted=await submitCustomer(page.request,generated)
+ expect(submitted.state).toBe('submitted')
+ expect(submitted.slots).toHaveLength(4)
+ const manifest=await(await page.request.get('/api/customer-orders/'+customer.id+'/manifest')).json()
  expect(manifest.files.every((file:{kind:string})=>file.kind==='print')).toBe(true)
 })
 
 test('retired browser drafts cannot create orders or bind download destinations',async({page})=>{
- await page.request.post('/api/auth/login',{data:{username:'testadmin',password:'local-test-password'}})
+ await staffLogin(page.request)
  const user=await(await page.request.get('/api/auth/me')).json()
  // Seed before mounting the app so its initial empty-draft persistence cannot overwrite the fixture.
  await page.goto('/api/health')

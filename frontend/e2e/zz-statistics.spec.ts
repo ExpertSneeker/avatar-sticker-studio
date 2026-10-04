@@ -1,27 +1,27 @@
 import { test, expect } from '@playwright/test'
 import { mkdirSync, readFileSync } from 'node:fs'
-import { createHash } from 'node:crypto'
+import { createCustomer,generateCustomer,staffLogin,submitCustomer,uploadAvatar } from './customer-fixtures'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
 test('personal and admin statistics scopes, filters, charts and responsive layout', async ({page})=>{
   const errors:string[]=[]
   page.on('pageerror',error=>errors.push(error.message))
-  const status=await (await page.request.get('/api/auth/status')).json()
-  if(status.needs_setup)await page.request.post('/api/auth/setup',{data:{username:'testadmin',password:'local-test-password',display_name:'联调管理员'}})
-  else expect((await page.request.post('/api/auth/login',{data:{username:'testadmin',password:'local-test-password'}})).ok()).toBeTruthy()
+  await staffLogin(page.request)
+  const beforeStats=await(await page.request.get('/api/statistics?days=0')).json()
   const pixel=readFileSync(new URL('./fixtures/portrait.png',import.meta.url))
   const form=new FormData()
   for(let i=0;i<12;i++)form.append('files',new Blob([new Uint8Array(pixel)],{type:'image/png'}),`stats-${i}.png`)
   const stickers=await (await page.request.post('/api/stickers',{multipart:form})).json()
   const template=await (await page.request.post('/api/templates',{data:{code:'STAT01',name:'统计测试套装',category:'boy',sticker_ids:stickers.map((s:{id:string})=>s.id)}})).json()
   expect(template.id).toBeTruthy()
-  const upload=await (await page.request.post('/api/uploads/init',{data:{filename:'统计样本.png',size:pixel.length,sha256:createHash('sha256').update(pixel).digest('hex')}})).json()
-  expect((await page.request.put('/api/uploads/'+upload.id,{data:pixel,headers:{'Upload-Offset':'0'}})).ok()).toBeTruthy()
-  expect((await page.request.post('/api/uploads/'+upload.id+'/complete')).ok()).toBeTruthy()
-  const order=await (await page.request.post('/api/orders',{data:{upload_id:upload.id,name:'统计样本',template_ids:[template.id],print_settings:{},client_token:'stats-order'}})).json()
-  expect(order.id).toBeTruthy()
-  await expect.poll(async()=> (await (await page.request.get('/api/orders/'+order.id)).json()).download_ready,{timeout:30000}).toBeTruthy()
+  const order=await createCustomer(page.request,{generation_limit:12,final_count:12})
+  const generated=await generateCustomer(page.request,order,[{upload_id:await uploadAvatar(page.request,'统计样本.png'),template_ids:[template.id],sticker_ids:[]}])
+  expect(generated.slots).toHaveLength(12)
+  await submitCustomer(page.request,generated)
+  const afterStats=await(await page.request.get('/api/statistics?days=0')).json()
+  expect(afterStats.summary).toMatchObject({orders:beforeStats.summary.orders+1,images:beforeStats.summary.images+12,completed:beforeStats.summary.completed+12,ready_orders:beforeStats.summary.ready_orders+1})
+  expect(afterStats.order_statuses.submitted).toBe(beforeStats.order_statuses.submitted+1)
   await page.goto('/')
   await page.getByRole('navigation').getByRole('button',{name:'统计',exact:true}).click()
   await expect(page.getByRole('heading',{name:'统计',exact:true,level:1})).toBeVisible()
@@ -41,7 +41,6 @@ test('personal and admin statistics scopes, filters, charts and responsive layou
   await page.getByLabel('搜索统计成员').fill('no-such-member')
   await expect(page.getByRole('heading',{name:'没有匹配的成员记录'})).toBeVisible()
   await page.getByLabel('搜索统计成员').clear()
-  await expect(page.getByRole('rowheader',{name:'STAT01',exact:true})).toBeVisible()
   const folder=join(tmpdir(),'avatar-studio-fal-qa');mkdirSync(folder,{recursive:true})
   await page.evaluate(()=>window.scrollTo(0,0))
   await page.screenshot({path:join(folder,'statistics-admin.png'),fullPage:true})

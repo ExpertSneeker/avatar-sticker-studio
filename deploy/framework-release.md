@@ -1,4 +1,4 @@
-# Organization and guest workflow release
+# 数据迁移、配对备份与发布
 
 This release adds tenant isolation, a separate guest workflow, immutable customer
 result versions, and explicit print-only delivery. Source specification and API
@@ -7,18 +7,11 @@ contract: `docs/superpowers/plans/2026-09-11-organization-guest.md`.
 ## Compatibility and backup boundary
 
 Run the migration audit using the previous deployed release's data schema (the
-implementation baseline is `eb627b8`). A much older local database can still run
-older application migrations first; those historical migrations intentionally
-add fields. Do that normalization on an isolated copy, never by replacing live
-production data with a local database.
+implementation baseline is `eb627b8`). This section records the historical organization migration. Current Stage B startup rejects orders/items with missing or non-3 workflow versions before mutation. Older data must first be explicitly converted and rehearsed in isolation; never replace production with a local database.
 
 The `organizations-v1` migration adds organization ownership, converts existing
 administrators to organization administrators, and preserves catalog revisions,
-order snapshots and original asset bytes. It is idempotent. New customer orders
-are separate from legacy backend orders; old display names are never guest login
-credentials. New generation requests retain service accounting but no longer
-reserve or require credits. Historical ledger rows remain, with positively
-ended holds released and unresolved requests retained for review.
+order snapshots and original asset bytes. It is idempotent. Current customer orders use one structure; legacy order routes have been removed. Old display names are never guest login credentials. Actual generation/request records and unresolved holds remain; website credit ledgers and wallet fields are removed by the explicit Stage B migration.
 
 A code-only rollback to pre-organization releases is not supported: those
 releases do not understand the new roles or customer order workflow. If rollback
@@ -111,3 +104,12 @@ Saving files requires an explicit backend action. Batch delivery uses the
 browser directory picker when available, otherwise ZIP; only print pages appear
 in either manifest. Folder names are sanitized from order number and internal
 notes. Customers never receive those notes or the original print manifest.
+
+
+## 2026-10-05 阶段 B 发布闸门
+
+使用新 release 的审计器和实际生产数据路径，先 `--allow-single-order-migration --rehearse`，核对 source/migrated integrity=ok、idempotent=true、failures=[]；该操作仅迁移临时 SQLite 副本、不启动 worker、不复制改写原图。正式发布前生成相同模式基线，发布后用 `--baseline` 对比。模式只允许版本/点数指定字段和点数集合删除及合法 OSS 打印标记变化，generations、原图和业务状态严格保留。
+
+停止服务前后均确认没有正在运行、未知、远端占用或不确定抠图。取消且暂停订单的 queued 记录可能是刻意保留：仅无请求，或已处于 postprocess、FAL COMPLETED 且原图文件哈希核验通过时，才可认定不在途；不修改这些记录来制造空队列。
+
+发布前明确告知：阶段 B 删除字段后，旧代码会看不到订单，回退必须停服并恢复本次配对完整备份及旧 release；仅限尚未产生新业务时。新订单/生成结果产生后向前修复。完成真实 OSS 下载与权限验收后，将新备份归档读回校验，再按最近三份/本机最新一份规则整理。

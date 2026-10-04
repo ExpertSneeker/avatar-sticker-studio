@@ -1,6 +1,6 @@
 # Avatar Sticker Studio backend
 
-Read [AGENTS.md](../AGENTS.md) first. The current organization/guest workflow is documented in [architecture and contracts](../docs/architecture-and-contracts.md); safe local and production operations are in [the operations guide](../docs/agent-operations.md). Legacy order APIs remain for compatibility and do not define the current customer UI.
+Read [AGENTS.md](../AGENTS.md) first. The current organization/guest workflow is documented in [architecture and contracts](../docs/architecture-and-contracts.md); safe local and production operations are in [the operations guide](../docs/agent-operations.md). Only the current customer-order API remains; the legacy `/api/orders` routes and workflow-version field have been removed.
 
 Customer watermarked media (guest and staff order routes) permits private browser
 storage with `private, no-cache`, `Vary: Cookie` and content-based weak ETags.
@@ -54,8 +54,8 @@ The initial administrator can only be created from a loopback connection while n
 - Current templates contain 1–100 ordered, distinct sticker IDs and belong to an organization. Stickers and templates have immutable revisions; current orders freeze source revisions and prompt snapshots. The original twelve-upload template model is historical, not the current write API.
 - Print settings default to A4, 85 mm effective-content long edge, 300 DPI, 10 mm margins and gaps. `brightness` and `color_balance` are booleans, both false by default. Enabled presets apply 1.15 brightness and RGB multipliers [1.04, 1.00, 0.97], preserving alpha.
 - Printing uses transparent alpha-composite and premultiplied-alpha resizing, never masked paste. Whole sets publish atomically. A4 is 2480×3508 with 300 DPI metadata. Set pages start at 1 and stay in selection order.
-- Overview/publication paths differ for legacy orders and customer workflow v3. Current customer orders publish the selected final occurrences, a watermarked overview and print pages; see `publication.py` and `guest_media.py`. Single-preview watermark strength and cache versions are independent of already generated overviews. Repacking/watermark updates do not call image generation or change originals.
-- Manifests use safe filenames relative to the order directory, immutable authenticated asset URLs, SHA256, byte counts and a monotonic artifact version. Previous artifacts remain available after a rerun or processing failure.
+- Customer orders publish the selected final occurrences, a watermarked overview and print pages; see `publication.py` and `guest_media.py`. Single-preview watermark strength and cache versions are independent of already generated overviews. Repacking/watermark updates do not call image generation or change originals.
+- Manifests use safe filenames relative to the order directory, private OSS signed URLs with authenticated local fallback, SHA256, byte counts and a monotonic delivery version. Previous artifacts remain available after a rerun or processing failure.
 
 ## Verification
 
@@ -69,7 +69,7 @@ Tests use temporary directories and explicitly injected providers or HTTP transp
 
 ## Resume postprocessing without regenerating
 
-`POST /api/orders/{order_id}/items/{item_id}/reprocess` with no body returns the full Order and durably queues only postprocessing of the retained raw image. Items expose `raw_available: boolean` and `processing_stage: "generate" | "postprocess"`. This endpoint requires an existing raw result and rejects already queued/running items with409. It respects the order's paused state. It never calls image generation or increments `attempt` (the number of generation submissions), and works without a FAL key; opaque raw images use the independently limited Yezi API. Failures preserve previous good results/files, and reprocessing remains available across restart. In-progress uncertain cutout outcomes also require explicit operator retry.
+`POST /api/customer-orders/{id}/slots/{slot_id}/reprocess` 使用 `client_token`、`expected_version`，仅在保留原图且原请求/抠图占用已核对完后恢复后处理。它不重新调用生图、不增加生成 attempt；已有原图和旧结果继续保留，重启后仍可恢复。当前订单状态必须允许操作。
 
 Library categories are editable organization-scoped identities, initially seeded from boy/girl/animal/general. Use returned category IDs rather than assuming only `boy` / `girl`. Display names are trimmed and cannot be whitespace-only. Current sticker/template disable endpoints are retired; use the guarded deletion workflow and retain historical references.
 
@@ -83,4 +83,6 @@ Only `superadmin` may configure `fal_admin_key` through `PATCH /api/admin/settin
 
 Official references checked 2026-09-11: [edit schema](https://fal.ai/models/openai/gpt-image-2.5/flare/edit/api), [queue API](https://fal.ai/docs/documentation/model-apis/inference/queue), [concurrency](https://fal.ai/docs/documentation/model-apis/concurrency-limits).
 
-Each detailed item exposes `fal_request_id`, `fal_status`, `queue_position`, `remote_reserved` and `recoverable` without queue URLs. `POST /api/orders/{order_id}/items/{item_id}/recover` resumes lookup for an unknown job with an ID. `POST /api/orders/{order_id}/items/{item_id}/resolve` requires `{"confirmed_ended":true}` and unknown status; it records the operator's assertion that the original job ended/does not exist, releases the reservation, and does not generate. The operator must verify FAL dashboard state before confirming. A later rerun is a separate action. Submission429 also sets a shared cooldown so other workers/orders cannot bypass backoff.
+后台客户订单的任务详情保留 `fal_request_id`、`fal_status`、`queue_position` 和 `remote_reserved`，不暴露队列 URL。Worker 在重启或瞬时错误后继续查询已保存的原请求 ID，不重新提交付费生成。未知结果继续占用；后台 `POST /api/customer-orders/{id}/slots/{slot_id}/resolve` 要求 `confirmed_ended=true`、当前版本和幂等 token，只有人工核对供应商确认原请求结束后才使用。`retry` 仅用于确定失败且没有原图/占用的首次生成，不能替代未知请求查询。429 共享冷却和并发保护继续有效。
+
+点数接口和 `credits.py` 已移除；`request_tracking.py` 只保留实际请求 ID 同步。两项一次性迁移与配对回退要求见架构和发布文档。`generations` 和 FAL 余额查询不是点数记录，不得随点数下线删除。

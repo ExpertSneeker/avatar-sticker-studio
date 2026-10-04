@@ -28,7 +28,8 @@ def test_guest_cannot_read_any_backend_original_or_other_order_media(context):
     for asset in assets:
         for suffix in ('', '/preview?size=1280'):
             assert guest_a.get('/api/assets/'+asset['id']+suffix).status_code == 401
-    for path in ('/api/orders', '/api/customer-orders', '/api/admin/settings', '/api/admin/users', '/api/stickers', '/api/templates'):
+    assert guest_a.get('/api/orders').status_code==404
+    for path in ('/api/customer-orders', '/api/admin/settings', '/api/admin/users', '/api/stickers', '/api/templates'):
         assert guest_a.get(path).status_code == 401
 
 

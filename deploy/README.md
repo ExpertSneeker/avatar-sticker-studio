@@ -106,37 +106,13 @@ pregenerates library tiers 160/320/640 for every in-use watermark and the 640
 preview of open-order customer images. When migrating servers, the cache need
 not be copied.
 
-## Historical release: personal templates and production credits
+## 单一订单结构与点数下线
 
-The one-time `personal-credits-v1` database migration preserves existing template
-IDs, images and versions as public resources. Existing members begin with zero
-credits; administrators are exempt. Previously submitted items have no billable
-generation record and finish without retroactive charging. New orders and manual
-reruns reserve one credit per image for the order owner. A valid 1024 × 1024 raw
-result saved on the server settles that reservation; subsequent matting, layout,
-watermark and download operations are free. Definitive failures release holds;
-unknown provider results remain held for recovery or administrator reconciliation.
-Do not clear unknown generations directly in the database.
+现有客户订单统一使用 `/api/customer-orders`，不保留旧 `/api/orders` 批量流程和 `workflow_version` 运行分支。`drop-workflow-version-v1` 迁移先拒绝非整数 3 或缺失版本的旧数据，再删除版本字段与索引；`drop-credits-v1` 删除点数记录及指定字段。生成请求记录、原图、未知占用与 FAL 余额查询保留，详细边界见 [架构契约](../docs/architecture-and-contracts.md)。
 
-Account management provides member creation, invitations, activation, password
-reset and credit adjustment. Temporary passwords are shown once; password resets
-revoke existing sessions. Setting a balance changes available credits only, leaving
-frozen credits intact. Adjustments use a wallet version and idempotent client token.
-`POST /api/orders/{id}/items/{item_id}/rerun` also requires a JSON `client_token`, retained by clients
-until the operation has been confirmed. A retry with the same token never creates
-a second generation, even after the first finishes. Manual new reruns use new tokens.
+`personal-credits-v1` 历史迁移标记仅用于幂等保留原有图库 scope/owner 转换，不再创建点数字段或财务记录。账号创建、邀请、停用、密码重置和会话撤销继续有效。客户操作仍要求 `client_token` 与 `expected_version`；响应不确定时重用原 token 和请求体。
 
-Personal templates are editable only by their owner, public templates only by
-administrators. Source and preview endpoints enforce access before cache or 304
-responses. Set codes remain globally unique. Production statistics filter by order
-submission date; credit ledger filters use the transaction's own timestamp.
-
-Date cleanup releases remaining eligible reservations and removes associated
-images, preview cache and generation records, preserving the minimal credit ledger.
-Orders with unresolved credits must be reconciled before cleanup. No paid provider
-requests are needed for regression testing: `uv run pytest backend/tests`,
-`npm test --prefix frontend`, `npm run build --prefix frontend` and
-`npm run test:e2e --prefix frontend` use isolated data and mock generation services.
+阶段 B 发布前以新审计器的 `--allow-single-order-migration --rehearse` 做私密副本演练，再停服完整备份、切换和审计。该迁移不能仅切旧代码回退：尚无新业务时配对恢复备份与旧 release，接收新业务后向前修复。备份仍按本文 OSS 三份保留规则处理。
 
 ## Task previews and repeated names
 

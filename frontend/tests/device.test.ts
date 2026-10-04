@@ -55,6 +55,11 @@ beforeEach(async()=>{
 })
 
 describe('real directory synchronization flow',()=>{
+  it('uses the customer manifest by default and encodes the order ID',async()=>{
+    const saved=await syncOrder('u','order /客户',root.handle(),()=>{})
+    expect(saved.complete).toBe(true)
+    expect(fetch).toHaveBeenCalledWith('/api/customer-orders/order%20%2F%E5%AE%A2%E6%88%B7/manifest',expect.anything())
+  })
   it('can re-download to another directory and then back to its previously managed directory',async()=>{
     await syncOrder('u','o',root.handle(),()=>{})
     const alternate=new TestDirectory();alternate.name='alternate-output'
@@ -302,7 +307,7 @@ describe('OSS print delivery',()=>{
       return new Response('',{status:403})
     }))
     await expect(syncOrder('u','o',root.handle(),()=>{})).rejects.toThrow('后台账号已失效')
-    expect(requested).toEqual(['/api/orders/o/manifest',remote,'/api/orders/o/manifest'])
+    expect(requested).toEqual(['/api/customer-orders/o/manifest',remote,'/api/customer-orders/o/manifest'])
     expect(root.writes).toEqual([])
   })
   it('does not retry a failed local fallback',async()=>{

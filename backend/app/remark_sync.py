@@ -48,7 +48,7 @@ async def sync_submitted(db, order_id, transport, clock):
     from .customer_orders import audit
     with db.transaction() as tx:
         order = tx.get('orders', order_id)
-        if not order or order.get('workflow_version') != 3 or order['state'] != 'submitted' or not order.get('remark_sync_pending'):
+        if not order or order['state'] != 'submitted' or not order.get('remark_sync_pending'):
             return
         source = remark_source(tx, order, clock())
     remark = await fetch_remark(source, protocol.settings(), transport, clock())

@@ -1,7 +1,7 @@
 import json
 from backend.tests.test_worker import context
 from backend.tests.test_api import png
-from backend.tests.test_credits import member
+from backend.tests.helpers import member
 
 
 def stickers(client, codes):
