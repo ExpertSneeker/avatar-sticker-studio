@@ -254,12 +254,12 @@ def test_invalid_confirmation_time_is_rejected(configured):
     assert c.get('/api/customer-orders').json()==[]
 
 
-def test_trade_push_keeps_buyer_memo_and_platform_remark(configured):
+def test_trade_push_brings_seller_remark_and_hides_buyer_memo(configured):
     app,c,_=configured;shop(configured)
     assert push(c,trade(BuyerMemo='两个颜色',Remark='商家备注')).status_code==200
     process(app)
     order=c.get('/api/customer-orders').json()[0]
-    assert order['buyer_memo']=='两个颜色' and order['platform_remark']=='商家备注'
+    assert order['platform_remark']=='商家备注' and 'buyer_memo' not in order
 
 
 def test_buyer_memo_push_updates_existing_order_without_touching_state(configured,monkeypatch):
@@ -269,7 +269,7 @@ def test_buyer_memo_push_updates_existing_order_without_touching_state(configure
     assert push(c,{'mall_id':'999','tid':'ORDER-1','buyer_memo':'改成红色'},topic='64').status_code==200
     process(app)
     order=c.get('/api/customer-orders').json()[0]
-    assert order['buyer_memo']=='改成红色'
+    assert 'buyer_memo' not in order
     assert order['state']=='draft' and not order['paused']
     assert push(c,trade(),topic='64').status_code==422
 
@@ -291,7 +291,7 @@ def test_shipping_notice_is_recorded_without_refund_processing(configured):
     assert push(c,{'mall_id':'999','tid':'ORDER-1'},topic='32').status_code==200
     process(app)
     order=c.get('/api/customer-orders').json()[0]
-    assert order['state']=='draft' and not order['paused'] and not order['buyer_memo']
+    assert order['state']=='draft' and not order['paused'] and 'buyer_memo' not in order
     events=c.get('/api/agiso/shops/'+s['id']+'/events').json()
     shipping=[e for e in events if e['topic']=='32']
     assert len(shipping)==1 and shipping[0]['status']=='processed'
@@ -567,3 +567,105 @@ def test_goods_disabled_permission_has_actionable_safe_message(configured):
     assert result['available'] is False and result['goods']==[]
     assert '17' in result['message'] and '权限' in result['message']
     assert 'private provider' not in result['message']
+
+
+def remark_provider(remarks, calls):
+    """Agiso stub: Trade/Detail answers the current seller remark (None simulates a failed lookup)."""
+    def handle(request):
+        if request.url.path.endswith('/Trade/Detail'):
+            tid=parse_qs(request.content.decode())['tid'][0];calls.append(tid)
+            remark=remarks.get(tid)
+            return httpx.Response(200,json={'IsSuccess':False,'Error_Code':17} if remark is None else {'IsSuccess':True,'Data':{'remark':remark,'buyer_memo':'不显示'}})
+        return provider(request)
+    return handle
+
+
+def submitted_linked(configured, number, remark=''):
+    from backend.tests.test_api import upload
+    from backend.tests.test_mixed_stickers import sticker
+    from backend.tests.test_customer_orders import action, run
+    app,c,_=configured
+    push(c,trade(number,Remark=remark));process(app)
+    order=next(o for o in c.get('/api/customer-orders').json() if o['order_number']==number)
+    sid=sticker(c,'S'+number)['id']
+    order=action(c,order,'generate',avatars=[{'upload_id':upload(c)['id'],'template_ids':[],'sticker_ids':[sid]}]).json()
+    run(app);order=c.get('/api/customer-orders/'+order['id']).json()
+    order=action(c,order,'submit',slot_ids=[order['slots'][0]['id']]).json()
+    assert order['state']=='submitted'
+    return order
+
+
+def test_submit_reads_latest_seller_remark_before_layout(configured):
+    app,c,_=configured;shop(configured,quota=1)
+    remarks,calls={},[]
+    order=submitted_linked(configured,'RM-1','开户时备注')
+    app.state.agiso_worker.transport=httpx.MockTransport(remark_provider(remarks,calls))
+    remarks['RM-1']='客服后加备注'
+    asyncio.run(app.state.agiso_worker.submitted_remark(order['id']))
+    synced=c.get('/api/customer-orders/'+order['id']).json()
+    assert calls==['RM-1'] and synced['platform_remark']=='客服后加备注' and synced['remark_sync']['status']=='ok'
+    assert 'buyer_memo' not in synced
+    # Once per submission: another pass does not query again, and layout proceeds with the new remark.
+    asyncio.run(app.state.agiso_worker.submitted_remark(order['id']));assert calls==['RM-1']
+    from backend.app.publication import customer_print_title
+    assert customer_print_title(app.state.db.read(lambda tx:tx.get('orders',order['id'])))=='RM-1 客服后加备注'
+    app.state.worker.publish(order['id'])
+    assert c.get('/api/customer-orders/'+order['id']).json()['delivery_ready'] is True
+
+
+def test_failed_remark_lookup_keeps_previous_remark_and_still_lays_out(configured):
+    app,c,_=configured;shop(configured,quota=1)
+    calls=[]
+    order=submitted_linked(configured,'RM-2','开户时备注')
+    app.state.agiso_worker.transport=httpx.MockTransport(remark_provider({},calls))
+    asyncio.run(app.state.agiso_worker.submitted_remark(order['id']))
+    synced=c.get('/api/customer-orders/'+order['id']).json()
+    assert calls==['RM-2'] and synced['platform_remark']=='开户时备注' and synced['remark_sync']['status']=='failed'
+    app.state.worker.publish(order['id'])
+    assert c.get('/api/customer-orders/'+order['id']).json()['delivery_ready'] is True
+
+
+def test_staff_bulk_remark_fetch_updates_changed_orders_and_relays_out(configured):
+    app,c,_=configured;shop(configured,quota=1)
+    remarks,calls={},[]
+    first=submitted_linked(configured,'RM-3','旧备注')
+    push(c,trade('RM-4',Remark='未变'));process(app)
+    second=next(o for o in c.get('/api/customer-orders').json() if o['order_number']=='RM-4')
+    app.state.worker.publish(first['id'])
+    before=c.get('/api/customer-orders/'+first['id']).json();assert before['delivery_ready'] is True
+    app.state.agiso_worker.transport=httpx.MockTransport(remark_provider(remarks,calls))
+    remarks.update({'RM-3':'新备注','RM-4':'未变'})
+    result=c.post('/api/customer-orders/remarks/sync',json={'ids':[first['id'],second['id'],'missing']})
+    assert result.status_code==200,result.text
+    rows={r['order_number']:r for r in result.json()['results']}
+    assert rows['RM-3']['status']=='updated' and rows['RM-3']['remark']=='新备注'
+    assert rows['RM-4']['status']=='unchanged' and len(rows)==2 and sorted(calls)==['RM-3','RM-4']
+    after=c.get('/api/customer-orders/'+first['id']).json()
+    assert after['platform_remark']=='新备注' and after['delivery_ready'] is False and after['delivery_version']==before['delivery_version']+1
+    # Unchanged remarks do not trigger another layout; failures keep the remark.
+    app.state.worker.publish(first['id'])
+    remarks['RM-3']=None
+    again=c.post('/api/customer-orders/remarks/sync',json={'ids':[first['id']]}).json()['results'][0]
+    assert again['status']=='failed' and again['remark']=='新备注'
+    assert c.get('/api/customer-orders/'+first['id']).json()['delivery_ready'] is True
+
+
+def test_worker_loop_reads_remark_before_publishing(configured, monkeypatch):
+    app,c,_=configured;shop(configured,quota=1)
+    remarks,calls={'RM-5':'循环中读取'},[]
+    order=submitted_linked(configured,'RM-5')
+    app.state.agiso_worker.transport=httpx.MockTransport(remark_provider(remarks,calls))
+    from backend.app import publication
+    titles=[];original=publication.customer_print_title
+    monkeypatch.setattr(publication,'customer_print_title',lambda o:titles.append(original(o)) or original(o))
+    worker=app.state.worker
+    async def loop():
+        task=asyncio.create_task(worker.run())
+        for _ in range(200):
+            await asyncio.sleep(0.05)
+            if app.state.db.read(lambda tx:tx.get('orders',order['id'])).get('delivery_ready'):break
+        worker.stopping=True;await task
+    asyncio.run(loop())
+    done=c.get('/api/customer-orders/'+order['id']).json()
+    assert done['delivery_ready'] is True and done['platform_remark']=='循环中读取' and calls==['RM-5']
+    assert titles and titles[0]=='RM-5 循环中读取'

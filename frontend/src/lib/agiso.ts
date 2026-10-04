@@ -37,7 +37,7 @@ export function ruleError(rules: SkuRule[]): string {
     keys.add(key)
     if (![rule.generation_limit, rule.final_count, rule.rerun_limit].every(Number.isSafeInteger)) return label + '数量必须是整数'
     if (rule.generation_limit < 1 || rule.generation_limit > 360 || rule.final_count < 1 || rule.final_count > 360) return label + '生成和提交数量须为 1 至 360'
-    if (rule.final_count > rule.generation_limit) return label + '最终提交数量不能超过生成数量'
+    if (rule.final_count > rule.generation_limit) return label + '可提交印刷数量不能超过生成数量'
     if (rule.rerun_limit < 0) return label + '整单重试次数不能小于 0'
   }
   return ''

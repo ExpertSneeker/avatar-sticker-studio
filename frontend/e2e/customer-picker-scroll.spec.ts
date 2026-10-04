@@ -38,7 +38,7 @@ test('mobile picker opens on single stickers and keeps filters and apply pinned 
   await picker.getByRole('button',{name:'应用选择'}).click()
   await page.getByRole('button',{name:'核对并开始生成'}).click()
   const check=page.getByRole('dialog',{name:'生成前核对'})
-  await expect(check.locator('.customer-counts>div').filter({hasText:'可最终提交'})).toHaveText('可最终提交15')
+  await expect(check.locator('.customer-counts>div').filter({hasText:'可提交印刷'})).toHaveText('可提交印刷15')
   await expect(check.getByText('实际生成',{exact:true})).toHaveCount(0)
   await page.screenshot({path:'/tmp/customer-preflight-mobile.png'})
   expect(errors).toEqual([])

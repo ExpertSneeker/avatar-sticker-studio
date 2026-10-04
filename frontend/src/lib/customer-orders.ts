@@ -27,7 +27,7 @@ export interface CustomerOrder extends GuestOrder {
   version:number;
   shop_id?:string|null; shop_name?:string; owner:string; owner_name:string; organization_id:string; notes:string
   watermark:string; print_settings:PrintSettings; delivery_version:number
-  buyer_memo?:string; platform_remark?:string
+  platform_remark?:string; remark_sync?:{status:'ok'|'failed';at:number}|null
 }
 export interface LibrarySticker {id:string;code:string;name:string;category:string;revision:number;preview_url:string;active?:boolean}
 export interface LibraryTemplate {id:string;code:string;name:string;category:string;sticker_ids:string[];images:{preview_url:string;code?:string}[];active?:boolean;available?:boolean}

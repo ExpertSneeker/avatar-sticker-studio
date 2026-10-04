@@ -143,7 +143,7 @@ class Rule(BaseModel):
 
     @model_validator(mode='after')
     def limits(self):
-        if self.final_count>self.generation_limit: raise ValueError('最终数量不能超过生成上限')
+        if self.final_count>self.generation_limit: raise ValueError('可提交印刷数量不能超过生成上限')
         return self
 
 

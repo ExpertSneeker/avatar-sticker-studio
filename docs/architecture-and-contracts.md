@@ -90,7 +90,7 @@
 - 水印媒体三层缓存（`guest_media.py`、`media_cache.py`）：每进程 256MB 内存 LRU → 硬盘缓存（`STUDIO_MEDIA_CACHE_DIR`，生产为 `/var/cache/avatar-sticker-studio/media`，默认 `<数据目录>/media-cache`）→ 现场生成。文件按内容命名，相同贴纸 + 水印文字 + 尺寸在所有订单间共用，生成量与订单数无关。`library/<asset>/` 存在用图库贴纸，在贴纸删除、水印不再被在职账号或未完成订单使用、管线变化时清理；`customer/<org>/<asset>/` 存头像/结果/总览，最后访问满组织设置天数（`organizations.media_cache_days`，默认 15，组织管理员 1–365 天，`/api/organization/settings`）后清理。不设容量上限，磁盘剩余低于 512MB 时只跳过写入。`MediaWarmer` 后台线程（nice 19，每 10 分钟）先清理再预生成：在用水印 × 在用贴纸的 160/320/640 三档（一次水印绘制），以及未完成订单在保留期内的头像/结果和已就绪总览的 640。资产删除通过 `cleanup_files` 的 `media-cache/<asset>` 记录持久重试清理。超管存储面板分别统计图库水印图与客户图片。
 - 水印分单张预览、访客媒体、已生成总览等路径；水印强度和缓存版本改变要分别核对，避免给已经带水印的总览再次叠加。原图与打印文件不能带预览水印。
 - 默认打印 A4、300 DPI、内容长边 85mm、边距/间距 10mm；亮度与色彩预设默认关闭。透明通道、预乘 alpha 缩放和不可变原图需要保留。
-- v3 打印标题为订单号加卖家备注（打印最多 60 字）。`platform_remark`、买家留言 `buyer_memo`、内部备注 `notes` 各有用途；修改已提交订单的卖家备注会重新排版，下载目录仍按 `订单号_内部备注` 规则。
+- v3 打印标题为订单号加卖家备注（打印最多 60 字）。卖家备注 `platform_remark` 只来自拼多多、站内不可编辑：开户时取交易推送的 `Remark`；提交（`submit`）时为关联阿奇索的订单置 `remark_sync_pending`，Worker 在排版前经 `before_publish` 钩子调用阿奇索 `Trade/Detail` 读取一次（[remark_sync.py](../backend/app/remark_sync.py)），失败保留原值并记 `remark_sync.status=failed`，不阻塞排版；后台 `POST /api/customer-orders/remarks/sync`（最多 200 单，限本组织）手动读取，备注变化时更新，已提交订单 `delivery_version+1` 并重新排版。买家留言 `buyer_memo` 仍随推送保存，但不再出现在任何 API 响应和界面中。内部备注 `notes` 用于下载目录 `订单号_内部备注`。界面中 `final_count` 统一称“可提交印刷数量”。
 - 打印文件整批原子发布，失败保留已有有效结果。后台下载清单和 ZIP 只包含最终打印拼图；仅在用户点击后写目录或下载。目录文件通过哈希、清单和归属保护，不能覆盖未经系统管理的同名文件。
 
 ## Agiso 接入边界

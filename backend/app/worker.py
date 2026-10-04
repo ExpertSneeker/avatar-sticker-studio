@@ -41,6 +41,7 @@ class Worker:
         self.db, self.provider, self.clock = db, provider, clock or time.time
         self.id = uid()
         self.tasks = set()
+        self.before_publish = None
         self.loop_task = None
         self.lease_task = None
         self.stopping = False
@@ -398,6 +399,9 @@ class Worker:
                 await asyncio.to_thread(self.recover)
                 # Startup or racing publishers may have saved images but not their derived files.
                 pending = await asyncio.to_thread(self.unpublished)
+                # Hook (seller remark lookup) that must finish before an order's pages are laid out.
+                if pending and self.before_publish:
+                    await asyncio.gather(*(self.before_publish(id) for id in pending))
                 for id in pending:
                     await asyncio.to_thread(self.publish, id)
                 while not self.stopping:

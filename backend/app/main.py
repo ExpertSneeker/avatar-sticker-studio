@@ -41,6 +41,7 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
         from .worker import Worker
         drain_cleanup(db)
         app.state.worker = Worker(db, provider=provider, clock=now)
+        app.state.worker.before_publish = app.state.agiso_worker.submitted_remark
         if start_worker:
             await app.state.worker.start()
             await app.state.agiso_worker.start()

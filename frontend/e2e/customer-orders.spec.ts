@@ -15,7 +15,7 @@ test('staff opens order; guest uploads two avatars, repeats choices, compares re
   const create=page.getByRole('dialog',{name:'开新订单'})
   const number='Guest-'+randomUUID().slice(0,8)
   await create.getByLabel('订单号',{exact:true}).fill(number)
-  await create.getByLabel('可预览数量').fill('4');await create.getByLabel('最终提交数量').fill('2');await create.getByLabel('整单重试次数').fill('1')
+  await create.getByLabel('可预览数量').fill('4');await create.getByLabel('可提交印刷数量').fill('2');await create.getByLabel('整单重试次数').fill('1')
   await create.getByLabel('内部备注').fill('仅员工可见的备注')
   await create.getByRole('button',{name:'创建订单',exact:true}).click()
   await expect(page.getByRole('heading',{name:'订单 '+number,level:2})).toBeVisible()
@@ -39,7 +39,7 @@ test('staff opens order; guest uploads two avatars, repeats choices, compares re
     await expect(guest.locator('.customer-submit-bar')).toContainText('实际生成 3 张')
     await guest.getByRole('button',{name:'核对并开始生成'}).click()
     const preflight=guest.getByRole('dialog',{name:'生成前核对'})
-    // Preflight shows avatars, preview selections and the final submission allowance (可最终提交).
+    // Preflight shows avatars, preview selections and the final submission allowance (可提交印刷).
     await expect(preflight.locator('.customer-counts strong')).toHaveText(['2','4','2'])
     await preflight.getByRole('button',{name:'确认开始生成'}).click()
     await expect(guest.locator('.customer-result')).toHaveCount(4)

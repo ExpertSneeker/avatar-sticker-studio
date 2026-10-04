@@ -13,6 +13,11 @@ class AgisoWorker:
         self.db,self.clock,self.transport=db,clock,transport
         self.id=uid();self.task=None
 
+    async def submitted_remark(self,order_id):
+        from .remark_sync import sync_submitted
+        try:await sync_submitted(self.db,order_id,self.transport,self.clock)
+        except Exception:log.exception('Seller remark sync failed')
+
     def recover(self):
         now=self.clock()
         with self.db.transaction() as tx:

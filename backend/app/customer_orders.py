@@ -40,7 +40,7 @@ class OpenOrder(Model):
     @model_validator(mode='after')
     def limits(self):
         if self.final_count > self.generation_limit:
-            raise ValueError('最终数量不能超过生成上限')
+            raise ValueError('可提交印刷数量不能超过生成上限')
         return self
 
 
@@ -76,8 +76,8 @@ class Repack(Mutation):
     print_settings: PrintSettings | None = None
 
 
-class SellerRemark(Mutation):
-    remark: str = Field('', max_length=2000)
+class RemarkSync(Model):
+    ids: list[str] = Field(min_length=1, max_length=200)
 
 
 class Resolve(Mutation):
@@ -238,8 +238,9 @@ def dto(tx, order, guest=False, summary=False):
         result['shop_id'] = shop.get('id')
         result['shop_name'] = shop.get('shop_name', '')
         result['processing_error'] = order.get('processing_error')
-        result['buyer_memo'] = order.get('buyer_memo', '')
+        # Seller remark comes only from Pinduoduo; it is printed after the order number on each page.
         result['platform_remark'] = order.get('platform_remark', '')
+        result['remark_sync'] = order.get('remark_sync')
     return result
 
 
@@ -268,7 +269,7 @@ def library_records(tx, order):
 
 def expand(tx, order, body, is_guest):
     if len(body.avatars) > order['final_count'] or len({a.upload_id for a in body.avatars}) != len(body.avatars):
-        raise HTTPException(422, '头像数量须为1至最终数量，且不能重复使用同一头像记录')
+        raise HTTPException(422, '头像数量须为1至可提交印刷数量，且不能重复使用同一头像记录')
     stickers, templates = library_records(tx, order)
     by_sticker, by_template = {s['id']: s for s in stickers}, {t['id']: t for t in templates}
     avatars, occurrences, unique = [], [], {}
@@ -297,7 +298,7 @@ def expand(tx, order, body, is_guest):
             if len(occurrences) > order['generation_limit']:
                 raise HTTPException(422, '选择数量超过订单生成上限')
     if len(occurrences) < order['final_count']:
-        raise HTTPException(422, '选择数量不能少于最终数量')
+        raise HTTPException(422, '选择数量不能少于可提交印刷数量')
     return avatars, occurrences, list(unique.values())
 
 
@@ -305,7 +306,7 @@ def save_draft(tx, order, data, is_guest, now):
     if order['state'] != 'draft':
         raise HTTPException(409, '订单选择已冻结')
     if len(data.avatars) > order['final_count'] or len({a.upload_id for a in data.avatars}) != len(data.avatars):
-        raise HTTPException(422, '头像数量不能超过最终数量，且不能重复')
+        raise HTTPException(422, '头像数量不能超过可提交印刷数量，且不能重复')
     saved = draft_avatars(order)
     stickers, templates = library_records(tx, order)
     by_sticker, by_template = {s['id'] for s in stickers}, {t['id']: t for t in templates if t.get('sticker_ids')}
@@ -632,6 +633,9 @@ def register_customer_orders(app, db, user):
                     frozen.append({'slot_id': sid, **deepcopy(version)})
                 order.update(state='submitted', final_entries=frozen, delivery_ready=False, delivery_version=order['delivery_version']+1,
                              overview_ready=False, processing_error=None)
+                # Linked orders read the latest seller remark from Pinduoduo once before the pages are laid out.
+                if order.get('agiso_id'):
+                    order['remark_sync_pending'] = True
             elif action == 'cancel':
                 if state == 'cancelled':
                     raise HTTPException(409, '订单已取消')
@@ -651,14 +655,6 @@ def register_customer_orders(app, db, user):
                 if data.print_settings:
                     order['print_settings'] = data.print_settings.model_dump()
                 order.update(delivery_ready=False, delivery_version=order['delivery_version']+1, processing_error=None, publish_signatures={})
-            elif action == 'remark':
-                if guest:
-                    raise HTTPException(403, '需要工作人员处理')
-                remark = ' '.join(data.remark.split())[:2000]
-                if remark != order.get('platform_remark', ''):
-                    order['platform_remark'] = remark
-                    if order['state'] == 'submitted':
-                        order.update(delivery_ready=False, delivery_version=order['delivery_version']+1, publish_signatures={})
             order['version'] += 1
             order['content_version'] += 1
             tx.put('orders', order)
@@ -712,9 +708,14 @@ def register_customer_orders(app, db, user):
     def repack(id: str, data: Repack, request: Request):
         return mutate(request, data, 'repack', id)
 
-    @app.post('/api/customer-orders/{id}/remark')
-    def remark(id: str, data: SellerRemark, request: Request):
-        return mutate(request, data, 'remark', id)
+    @app.post('/api/customer-orders/remarks/sync')
+    async def sync_remarks(data: RemarkSync, request: Request):
+        from .remark_sync import sync_orders
+        with db.transaction() as tx:
+            actor = user(tx, request)
+            ids = [o['id'] for o in (tx.get('orders', id) for id in dict.fromkeys(data.ids))
+                   if o and o.get('workflow_version') == 3 and scoped(o, actor)]
+        return {'results': await sync_orders(db, ids, actor['id'], app.state.agiso_worker.transport, now)}
 
     def delivery(tx, request, id):
         order, _ = access(tx, request, id)

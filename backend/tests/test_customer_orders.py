@@ -192,36 +192,14 @@ def test_watermark_rotation_and_optimistic_idempotency(context):
     assert c.post(path,json={**mutation,'expected_version':999}).status_code==409
 
 
-def test_seller_remark_is_idempotent_and_version_checked(context):
-    app,c,_,_=context
-    o=opened(c)
-    body={'remark':'已补差价','client_token':'remark-1','expected_version':o['version']}
-    first=c.post('/api/customer-orders/'+o['id']+'/remark',json=body)
-    assert first.status_code==200,first.text
-    assert first.json()['platform_remark']=='已补差价'
-    repeat=c.post('/api/customer-orders/'+o['id']+'/remark',json=body)
-    assert repeat.json()['version']==first.json()['version']
-    assert c.post('/api/customer-orders/'+o['id']+'/remark',json={**body,'expected_version':999}).status_code==409
-
-
-def test_seller_remark_edit_republishes_submitted_order(context):
-    app,c,_,_=context
-    o=generate(c,opened(c),sticker(c,'ONE')['id']); run(app)
-    o=c.get('/api/customer-orders/'+o['id']).json()
-    submitted=action(c,o,'submit',slot_ids=[slot['id'] for slot in o['slots']])
-    assert submitted.status_code==200,submitted.text
-    o=submitted.json()
-    app.state.worker.publish(o['id'])
-    o=c.get('/api/customer-orders/'+o['id']).json()
-    assert o['delivery_ready']
-    before=o['delivery_version']
-    result=action(c,o,'remark',remark='加急制作')
-    assert result.status_code==200,result.text
-    o=result.json()
-    assert o['platform_remark']=='加急制作' and o['delivery_ready'] is False and o['delivery_version']>before
-    app.state.worker.publish(o['id'])
-    o=c.get('/api/customer-orders/'+o['id']).json()
-    assert o['delivery_ready']
+def test_seller_remark_cannot_be_edited_on_site(context):
+    app,c,_,_=context; o=opened(c)
+    assert c.post('/api/customer-orders/'+o['id']+'/remark',json={'remark':'x','client_token':'r','expected_version':o['version']}).status_code in {404,405}
+    detail=c.get('/api/customer-orders/'+o['id']).json()
+    assert detail['platform_remark']=='' and 'buyer_memo' not in detail
+    # Orders without a Pinduoduo link have no remark source.
+    result=c.post('/api/customer-orders/remarks/sync',json={'ids':[o['id']]}).json()['results']
+    assert result==[{'id':o['id'],'order_number':o['order_number'],'status':'no_link','remark':''}]
 
 
 def test_login_repeated_failures_do_not_block_valid_order_and_inactive_org(context):

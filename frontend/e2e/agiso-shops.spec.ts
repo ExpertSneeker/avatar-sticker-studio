@@ -26,7 +26,7 @@ test('套餐必须填真实 ID，保存精确额度，消息结果不确定时�
     await page.getByLabel('商品名称 '+n,{exact:true}).fill('补差价专用')
     await page.getByLabel('规格名称 '+n,{exact:true}).fill(n===1?'10张':'20张')
     await page.getByLabel('每件可生成 '+n,{exact:true}).fill(n===1?'10':'20')
-    await page.getByLabel('每件最终提交 '+n,{exact:true}).fill(n===1?'10':'20')
+    await page.getByLabel('每件可提交印刷 '+n,{exact:true}).fill(n===1?'10':'20')
   }
   await expect(page.getByLabel('每件可生成 2', { exact:true })).toHaveValue('20')
   await expect(page.getByRole('button', { name: '开启自动开户' })).toBeDisabled()
