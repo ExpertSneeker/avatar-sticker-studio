@@ -44,6 +44,7 @@ async function owned(values:Record<string,string>){
 beforeEach(async()=>{
   localStore.values.clear();localStore.writes=0;localStore.failAt=0
   root=new TestDirectory();blobs=new Map();duringDownload=()=>{}
+  vi.stubGlobal('location',{href:'https://studio.example/customer-orders',origin:'https://studio.example'})
   manifest={order_id:'o',name:'小满',version:2,complete:true,files:[await artifact('a.png','new-a'),await artifact('b.png','new-b')]}
   vi.stubGlobal('fetch',vi.fn(async(input:string)=>{
     if(input.endsWith('/manifest'))return Response.json(manifest)
@@ -147,4 +148,202 @@ describe('real directory synchronization flow',()=>{
     await expect(syncOrder('u','o',root.handle(),()=>{},{signal:controller.signal})).rejects.toThrow()
     expect(root.writes).toEqual([])
   })
+})
+
+
+describe('OSS print delivery',()=>{
+  const remote='https://print.example/a.png?signature=initial'
+  async function remoteFile(){
+    manifest.files=[{...manifest.files[0],url:remote,local_url:'/a.png'}]
+    return manifest.files[0]
+  }
+  function route(handler:(url:string,options:RequestInit)=>Promise<Response>|Response){
+    vi.stubGlobal('fetch',vi.fn(async(url:string,options:RequestInit)=>{
+      if(url.endsWith('/manifest'))return Response.json(manifest)
+      return handler(url,options)
+    }))
+  }
+  it('omits credentials on cross-origin downloads and retains them for same-origin files',async()=>{
+    await remoteFile()
+    manifest.files.push({...await artifact('b.png','new-b'),url:'https://studio.example/b.png'})
+    route((url,options)=>{
+      if(url===remote){
+        expect(options.credentials).toBe('omit')
+        return new Response(blobs.get('/a.png'))
+      }
+      expect(options.credentials).toBe('same-origin')
+      return new Response(blobs.get('/b.png'))
+    })
+    const progress:string[]=[]
+    await syncOrder('u','o',root.handle(),message=>progress.push(message))
+    expect(root.writes).toEqual(['a.png','b.png'])
+    expect(progress.some(message=>message.includes('从 OSS 下载'))).toBe(true)
+  })
+  it('uses the last refreshed signature for the next file',async()=>{
+    const first='https://print.example/a.png?signature=initial'
+    const stale='https://print.example/b.png?signature=stale'
+    const fresh='https://print.example/b.png?signature=fresh'
+    manifest.files=manifest.files.map((file,index)=>({...file,url:index?stale:first,local_url:'/'+file.path}))
+    const requested:string[]=[]
+    route(url=>{
+      requested.push(url)
+      if(url===first){manifest={...manifest,files:manifest.files.map(file=>file.path==='b.png'?{...file,url:fresh}:file)};return new Response(blobs.get('/a.png'))}
+      return url===fresh?new Response(blobs.get('/b.png')):new Response('',{status:403})
+    })
+    await syncOrder('u','o',root.handle(),()=>{})
+    expect(requested).toEqual([first,fresh])
+    expect(root.writes).toEqual(['a.png','b.png'])
+  })
+  it('refreshes a rejected signature once and saves from the renewed remote URL',async()=>{
+    await remoteFile()
+    const fresh='https://print.example/a.png?signature=fresh'
+    const requested:string[]=[]
+    route(url=>{
+      requested.push(url)
+      if(url===remote){manifest={...manifest,files:manifest.files.map(file=>({...file,url:fresh}))};return new Response('',{status:403})}
+      return new Response(blobs.get('/a.png'))
+    })
+    await syncOrder('u','o',root.handle(),()=>{})
+    expect(requested).toEqual([remote,fresh])
+    expect(await root.files.get('a.png')!.text()).toBe('new-a')
+  })
+  it('falls back to the local URL after exactly one remote retry and reports slower transfer',async()=>{
+    await remoteFile()
+    const fresh='https://print.example/a.png?signature=fresh'
+    const requested:string[]=[],progress:string[]=[]
+    route(url=>{
+      requested.push(url)
+      if(url===remote){manifest={...manifest,files:manifest.files.map(file=>({...file,url:fresh}))};throw new TypeError('network disconnected')}
+      if(url===fresh)return new Response('',{status:403})
+      return new Response(blobs.get('/a.png'))
+    })
+    await syncOrder('u','o',root.handle(),message=>progress.push(message))
+    expect(requested).toEqual([remote,fresh,'/a.png'])
+    expect(progress.some(message=>message.includes('服务器下载')&&message.includes('较慢'))).toBe(true)
+    expect(await root.files.get('a.png')!.text()).toBe('new-a')
+  })
+  it('retries a remote body network failure before falling back',async()=>{
+    await remoteFile()
+    const requested:string[]=[]
+    route(url=>{
+      requested.push(url)
+      if(url===remote){const response=new Response();vi.spyOn(response,'blob').mockRejectedValue(new TypeError('body disconnected'));return response}
+      return new Response(blobs.get('/a.png'))
+    })
+    await syncOrder('u','o',root.handle(),()=>{})
+    expect(requested).toEqual([remote,remote,'/a.png'])
+    expect(root.writes).toEqual(['a.png'])
+  })
+  it.each(['version','sha256'] as const)('stops before retry when the refreshed %s changes',async(field)=>{
+    await remoteFile()
+    const requested:string[]=[]
+    route(url=>{
+      requested.push(url)
+      manifest=field==='version'?{...manifest,version:3}:{...manifest,files:manifest.files.map(file=>({...file,sha256:'changed'}))}
+      return new Response('',{status:403})
+    })
+    await expect(syncOrder('u','o',root.handle(),()=>{})).rejects.toThrow('结果已更新')
+    expect(requested).toEqual([remote])
+    expect(root.writes).toEqual([])
+  })
+  it('stops before writing if the refreshed hash changes after download',async()=>{
+    await remoteFile()
+    route(()=>{
+      manifest={...manifest,files:manifest.files.map(file=>({...file,sha256:'changed'}))}
+      return new Response(blobs.get('/a.png'))
+    })
+    await expect(syncOrder('u','o',root.handle(),()=>{})).rejects.toThrow('结果已更新')
+    expect(root.writes).toEqual([])
+  })
+  it('does not retry or fall back after an abort',async()=>{
+    await remoteFile()
+    const controller=new AbortController(),requested:string[]=[]
+    route(url=>{requested.push(url);controller.abort();throw new DOMException('cancelled','AbortError')})
+    await expect(syncOrder('u','o',root.handle(),()=>{},{signal:controller.signal})).rejects.toThrow('cancelled')
+    expect(requested).toEqual([remote])
+    expect(root.writes).toEqual([])
+  })
+  it('does not retry same-origin failures as OSS failures',async()=>{
+    const requested:string[]=[]
+    route(url=>{requested.push(url);return new Response('',{status:503})})
+    await expect(syncOrder('u','o',root.handle(),()=>{})).rejects.toThrow('下载失败')
+    expect(requested).toEqual(['/a.png'])
+    expect(root.writes).toEqual([])
+  })
+  it('does not retry or fall back for remote content integrity failure',async()=>{
+    await remoteFile()
+    const requested:string[]=[]
+    route(url=>{requested.push(url);return new Response('wrong')})
+    await expect(syncOrder('u','o',root.handle(),()=>{})).rejects.toThrow('文件校验失败')
+    expect(requested).toEqual([remote])
+    expect(root.writes).toEqual([])
+  })
+  it('stops on non-network response read failures without renewing or falling back',async()=>{
+    await remoteFile()
+    const requested:string[]=[]
+    route(url=>{
+      requested.push(url)
+      const response=new Response()
+      vi.spyOn(response,'blob').mockRejectedValue(new DOMException('cannot allocate buffer','QuotaExceededError'))
+      return response
+    })
+    await expect(syncOrder('u','o',root.handle(),()=>{})).rejects.toThrow('cannot allocate buffer')
+    expect(requested).toEqual([remote])
+    expect(root.writes).toEqual([])
+  })
+  it('stops on refreshed manifest authorization denial without using the old local URL',async()=>{
+    await remoteFile()
+    let authorized=true
+    const requested:string[]=[]
+    vi.stubGlobal('fetch',vi.fn(async(url:string)=>{
+      requested.push(url)
+      if(url.endsWith('/manifest'))return authorized?Response.json(manifest):Response.json({detail:'后台账号已失效'},{status:403})
+      authorized=false
+      return new Response('',{status:403})
+    }))
+    await expect(syncOrder('u','o',root.handle(),()=>{})).rejects.toThrow('后台账号已失效')
+    expect(requested).toEqual(['/api/orders/o/manifest',remote,'/api/orders/o/manifest'])
+    expect(root.writes).toEqual([])
+  })
+  it('does not retry a failed local fallback',async()=>{
+    await remoteFile()
+    const requested:string[]=[]
+    route(url=>{requested.push(url);return new Response('',{status:503})})
+    await expect(syncOrder('u','o',root.handle(),()=>{})).rejects.toThrow('下载失败')
+    expect(requested).toEqual([remote,remote,'/a.png'])
+    expect(root.writes).toEqual([])
+  })
+  it('uses the refreshed local URL for fallback',async()=>{
+    await remoteFile()
+    const requested:string[]=[]
+    route(url=>{
+      requested.push(url)
+      if(url===remote){manifest={...manifest,files:manifest.files.map(file=>({...file,local_url:'/latest-local.png'}))};return new Response('',{status:403})}
+      return url==='/latest-local.png'?new Response(blobs.get('/a.png')):new Response('',{status:404})
+    })
+    await syncOrder('u','o',root.handle(),()=>{})
+    expect(requested).toEqual([remote,remote,'/latest-local.png'])
+    expect(root.writes).toEqual(['a.png'])
+  })
+  it('downloads the local manifest URL only once if OSS is disabled after refresh',async()=>{
+    await remoteFile()
+    const requested:string[]=[]
+    route(url=>{
+      requested.push(url)
+      if(url===remote){manifest={...manifest,files:manifest.files.map(file=>({...file,url:'/a.png'}))};return new Response('',{status:403})}
+      return new Response(blobs.get('/a.png'))
+    })
+    await syncOrder('u','o',root.handle(),()=>{})
+    expect(requested).toEqual([remote,'/a.png'])
+    expect(root.writes).toEqual(['a.png'])
+  })
+  it('rejects incorrect remote content length without retry or fallback',async()=>{
+    await remoteFile()
+    const requested:string[]=[]
+    route(url=>{requested.push(url);return new Response('too long')})
+    await expect(syncOrder('u','o',root.handle(),()=>{})).rejects.toThrow('文件校验失败')
+    expect(requested).toEqual([remote])
+    expect(root.writes).toEqual([])
+  })
+
 })

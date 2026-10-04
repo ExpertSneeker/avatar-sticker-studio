@@ -7,10 +7,12 @@ copying/modifying source assets. Invoke using the new release's Python runtime.
 import argparse
 import hashlib
 import json
+import re
 import sqlite3
 import sys
 import tempfile
 from pathlib import Path
+from copy import deepcopy
 
 REPO = Path(__file__).resolve().parents[1]
 if str(REPO) not in sys.path:
@@ -21,7 +23,23 @@ def digest(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
 
 
-def historical_content(kind, doc):
+def valid_oss_marker(order, artifact):
+    sha = artifact.get('sha256')
+    return (artifact.get('kind') == 'print' and isinstance(sha, str)
+            and re.fullmatch('[0-9a-f]{64}', sha) and order.get('organization_id') and order.get('id')
+            and artifact['oss_key'] == f"print/{order['organization_id']}/{order['id']}/{sha}.png")
+
+
+def historical_content(kind, doc, allow_oss_delivery=False):
+    if allow_oss_delivery:
+        # Stage A changes no business/tenant/generation field. Its only permitted
+        # bookkeeping difference is the exact current content-addressed print key.
+        value = deepcopy(doc)
+        if kind == 'orders':
+            for artifact in value.get('artifacts', []):
+                if 'oss_key' in artifact and valid_oss_marker(doc, artifact):
+                    artifact.pop('oss_key')
+        return value
     # Tenant metadata is the intended migration. Business snapshots remain exact.
     value = {k: v for k, v in doc.items() if k != 'organization_id'}
     if kind == 'users':
@@ -62,7 +80,7 @@ def referenced_assets(records):
     return refs
 
 
-def audit(data_dir, assets_dir=None):
+def audit(data_dir, assets_dir=None, *, allow_oss_delivery=False):
     root = Path(data_dir)
     assets = Path(assets_dir) if assets_dir else root / 'assets'
     conn = sqlite3.connect((root / 'studio.sqlite3').resolve().as_uri() + '?mode=ro', uri=True)
@@ -76,6 +94,11 @@ def audit(data_dir, assets_dir=None):
     for kind, identifier, raw in rows:
         records.setdefault(kind, {})[identifier] = json.loads(raw)
     failures, files = [], {}
+    if allow_oss_delivery:
+        for order in records.get('orders', {}).values():
+            if any('oss_key' in artifact and not valid_oss_marker(order, artifact)
+                   for artifact in order.get('artifacts', [])):
+                failures.append('invalid OSS delivery marker: ' + order['id'])
     for identifier, asset in records.get('assets', {}).items():
         filename = asset.get('file', '')
         if not filename or Path(filename).name != filename or assets.is_symlink() or (assets / filename).is_symlink():
@@ -115,10 +138,10 @@ def audit(data_dir, assets_dir=None):
                     failures.append('missing organization: ' + kind + ':' + doc['id'])
     items = list(records.get('items', {}).values())
     return {
-        'format_version': 1, 'integrity': integrity,
+        'format_version': 1, 'comparison_mode': 'oss-delivery' if allow_oss_delivery else 'framework', 'integrity': integrity,
         'counts': {kind: len(docs) for kind, docs in records.items()},
         'record_hashes': {kind: {key: digest(doc) for key, doc in docs.items()} for kind, docs in records.items()},
-        'historical_hashes': {kind: {key: digest(historical_content(kind, doc)) for key, doc in docs.items()} for kind, docs in records.items()},
+        'historical_hashes': {kind: {key: digest(historical_content(kind, doc, allow_oss_delivery)) for key, doc in docs.items()} for kind, docs in records.items()},
         'asset_hashes': files,
         'inflight': sum(i.get('status') in {'running', 'unknown'} or bool(i.get('remote_reserved')) or bool(i.get('cutout_inflight')) for i in items),
         'queued': sum(i.get('status') == 'queued' for i in items),
@@ -128,6 +151,14 @@ def audit(data_dir, assets_dir=None):
 
 def compare(before, after):
     failures = []
+    if before.get('comparison_mode', 'framework') != after.get('comparison_mode', 'framework'):
+        return ['comparison mode mismatch']
+    if before.get('format_version') != 1 or after.get('format_version') != 1:
+        return ['audit format mismatch']
+    if not isinstance(before.get('historical_hashes'), dict) or not isinstance(before.get('asset_hashes'), dict):
+        return ['invalid audit baseline']
+    if before.get('failures') or before.get('integrity') != 'ok':
+        failures.append('baseline contains audit failures')
     # Credit generations may settle/release, but ledger rows are append-only.
     for kind in ('users', 'orders', 'items', 'generations', 'uploads', 'assets',
                  'templates', 'stickers', 'library_categories', 'template_revisions',
@@ -141,9 +172,9 @@ def compare(before, after):
     return failures
 
 
-def rehearse(data_dir):
+def rehearse(data_dir, *, allow_oss_delivery=False):
     root = Path(data_dir).resolve()
-    before = audit(root)
+    before = audit(root, allow_oss_delivery=allow_oss_delivery)
     with tempfile.TemporaryDirectory(prefix='sticker-framework-rehearsal-') as tmp:
         source = sqlite3.connect((root / 'studio.sqlite3').as_uri() + '?mode=ro', uri=True)
         target = sqlite3.connect(Path(tmp) / 'studio.sqlite3')
@@ -154,13 +185,14 @@ def rehearse(data_dir):
             source.close()
         from backend.app.db import Database
         Database(tmp)
-        after = audit(tmp, root / 'assets')
+        after = audit(tmp, root / 'assets', allow_oss_delivery=allow_oss_delivery)
         Database(tmp)
-        repeated = audit(tmp, root / 'assets')
+        repeated = audit(tmp, root / 'assets', allow_oss_delivery=allow_oss_delivery)
         failures = before['failures'] + after['failures'] + compare(before, after)
         if after['record_hashes'] != repeated['record_hashes']:
             failures.append('migration is not idempotent')
-        return {'source': before, 'migrated': after, 'idempotent': after['record_hashes'] == repeated['record_hashes'], 'failures': failures}
+        return {'comparison_mode': before['comparison_mode'], 'source': before, 'migrated': after,
+                'idempotent': after['record_hashes'] == repeated['record_hashes'], 'failures': failures}
 
 
 def main():
@@ -168,9 +200,11 @@ def main():
     parser.add_argument('--data-dir', required=True, type=Path)
     parser.add_argument('--baseline', type=Path)
     parser.add_argument('--rehearse', action='store_true')
+    parser.add_argument('--allow-oss-delivery', action='store_true',
+                        help='Compare all fields strictly except exact print artifact OSS markers; use for both baseline and current audit')
     args = parser.parse_args()
     try:
-        report = rehearse(args.data_dir) if args.rehearse else audit(args.data_dir)
+        report = rehearse(args.data_dir, allow_oss_delivery=args.allow_oss_delivery) if args.rehearse else audit(args.data_dir, allow_oss_delivery=args.allow_oss_delivery)
         if args.baseline:
             if args.rehearse:
                 parser.error('--baseline and --rehearse are separate operations')

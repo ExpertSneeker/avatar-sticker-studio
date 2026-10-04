@@ -11,6 +11,7 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
+from urllib.parse import quote
 from fastapi import HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import Field, field_validator, model_validator
@@ -18,6 +19,7 @@ from .auth import token_hash
 from .db import uid
 from .schemas import Model, PrintSettings, UploadInit, safe_name
 from .storage import asset_bytes, normalize_image, save_asset
+from . import oss_delivery
 
 COOKIE = 'studio_guest'
 # Free first-generation retries a guest may start per slot; staff retries are not limited.
@@ -725,21 +727,34 @@ def register_customer_orders(app, db, user):
 
     @app.get('/api/customer-orders/{id}/manifest')
     def manifest(id: str, request: Request):
-        with db.transaction() as tx:
-            order = delivery(tx, request, id)
-            return {'order_id': id, 'order_number': order['order_number'], 'name': delivery_folder(order), 'notes': order['notes'],
-                    'version': order['delivery_version'], 'folder_name': delivery_folder(order), 'complete': True, 'files': [a for a in order['artifacts'] if a['kind'] == 'print']}
+        order = db.read(lambda tx: delivery(tx, request, id))
+        files = []
+        for artifact in order['artifacts']:
+            if artifact['kind'] != 'print':
+                continue
+            local_url = '/api/assets/' + artifact['id']
+            url = None
+            if artifact.get('oss_key') == oss_delivery.expected_key(order, artifact):
+                url = oss_delivery.sign(artifact['oss_key'])
+            files.append(artifact | {'local_url': local_url, 'url': url or local_url})
+        return JSONResponse({'order_id': id, 'order_number': order['order_number'], 'name': delivery_folder(order), 'notes': order['notes'],
+                'version': order['delivery_version'], 'folder_name': delivery_folder(order), 'complete': True, 'files': files},
+                headers={'Cache-Control': 'private, no-store'})
 
     @app.get('/api/customer-orders/{id}/download.zip')
     def download(id: str, request: Request):
-        with db.transaction() as tx:
+        def snapshot(tx):
             order = delivery(tx, request, id)
-            output = io.BytesIO()
-            with zipfile.ZipFile(output, 'w', zipfile.ZIP_DEFLATED) as archive:
-                for a in order['artifacts']:
-                    if a['kind'] == 'print':
-                        archive.writestr(delivery_folder(order)+'/'+a['path'], asset_bytes(db, tx.get('assets', a['id'])))
-            return Response(output.getvalue(), media_type='application/zip', headers={'Content-Disposition': 'attachment; filename="order.zip"'})
+            return delivery_folder(order), [(a['path'], tx.get('assets', a['id']))
+                for a in order['artifacts'] if a['kind'] == 'print']
+        folder, assets = db.read(snapshot)
+        output = io.BytesIO()
+        with zipfile.ZipFile(output, 'w', zipfile.ZIP_STORED) as archive:
+            for path, asset in assets:
+                archive.writestr(folder+'/'+path, asset_bytes(db, asset))
+        return Response(output.getvalue(), media_type='application/zip', headers={
+            'Content-Disposition': "attachment; filename*=UTF-8''" + quote(folder+'.zip', safe=''),
+            'Cache-Control': 'private, no-store'})
 
     def guest_upload(tx, request, id=None, writable=False):
         order = guest_order(tx, request, now())

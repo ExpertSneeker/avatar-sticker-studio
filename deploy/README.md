@@ -49,7 +49,7 @@ journalctl -u avatar-sticker-studio --since '30 minutes ago'
 
 Use controlled service restarts, retaining durable FAL request IDs. Unknown cutout requests require explicit manual retry; never automatically resubmit a deployment smoke request. Changing the release symlink and restarting selects another compatible code version; this does not roll back business data.
 
-No scheduled backups, off-host backups, backup timers or backup management features are installed, by the owner's instruction.
+按用户 2026-10-05 要求，每次发布验收后手动将完整备份归档到私有 OSS；本机与 OSS 合计保留最近 3 份不同快照，同一快照多处存放只计一份。本机保留最新 1 份，另两份经读回校验后仅保留 OSS 归档。不安装定时任务。具体操作见下文。
 
 ## Display image cache
 
@@ -226,3 +226,71 @@ unit disables request access logs; inspect any proxy or Cloudflare logging as we
 to avoid recording guest order query strings or authorization codes. Production
 continues to use its existing Cloudflare tunnel; no additional public port or
 Windows software is installed on the Linux website server.
+
+## OSS 打印交付配置
+
+生产 Bucket 为 `coreages-sticker`，地域 `cn-wulanchabu`，标准 ZRS、私有并阻止公共访问；不开版本控制、生命周期、CDN 或传输加速。ECS 的 `sticker-ecs-oss` 实例 RAM 角色仅允许 `print/`、`backups/`、`selftest/` 前缀的必要对象操作及带前缀条件的列举，不使用长期 AccessKey。
+
+配置项见 [production.env.example](production.env.example)：内网上传/删除/列举 Endpoint 为 `oss-cn-wulanchabu-internal.aliyuncs.com`，公网签名 Endpoint 为 `oss-cn-wulanchabu.aliyuncs.com`。`STUDIO_OSS_BUCKET` 为空时功能关闭；`STUDIO_OSS_DOWNLOAD=0` 仅关闭直链、继续后台上传；`STUDIO_OSS_URL_TTL=300`。修改私密环境文件后受控重启唯一服务，禁止输出整个环境或元数据凭证内容。
+
+CORS 只允许 `https://sticker.coreages.com` 的 GET/HEAD，允许头 `*`，暴露 ETag、Content-Length，预检缓存 600 秒。权限仍由私有对象签名控制，CORS 不代替认证。首次启用先在 `selftest/` 上传合成 PNG，验证内网读回哈希、越权前缀拒绝、生产页面跨域 fetch 及 curl 下载；测试后删除合成对象。默认域名不可用时先向用户报告，不自行绑定域名。
+
+Worker 每 30 秒串行同步当前有效打印 PNG，每 10 分钟清理过时对象；不迁移原图、头像、图库和水印预览。下载失败只影响交付，不能重新生图、释放未知请求或改订单状态。日志只记录脱敏失败类型，不记录完整签名 URL。排障先检查 Bucket/角色、内网网络、当前订单 artifacts 和上传状态，再查看脱敏日志；禁止输出密钥或客户内容。
+
+发布验收需要真实后台下载并确认正文来自 OSS 公网域名，同时观察 ECS 出网。ZIP 和远端失败后的回退仍走 3Mbps；关闭直链可快速恢复原下载路径，但已发链接直到其有效期结束仍可能可用。
+
+## 手动备份归档与三份保留
+
+`deploy/backup_archive.py` 复用应用的内网 OSS 客户端及 ECS RAM 角色。归档输入必须是停服后完成、核验过的完整配对备份目录；不要归档运行中的数据目录。脚本不创建业务备份，也不启动 Database 或 worker。
+
+以 root 读取现有私密环境文件后，从当前 release 运行（不要开启 shell trace）：
+
+```sh
+cd /opt/avatar-sticker-studio/current
+set -a
+. /etc/avatar-sticker-studio.env
+set +a
+/opt/avatar-sticker-studio/venv/bin/python deploy/backup_archive.py \
+  --archive /opt/avatar-sticker-studio/backups/<本次配对备份目录> --verify-readback
+/opt/avatar-sticker-studio/venv/bin/python deploy/backup_archive.py --prune
+/opt/avatar-sticker-studio/venv/bin/python deploy/backup_archive.py --prune --apply
+```
+
+先归档新备份并核验，再读 prune 计划；仅 `--apply` 执行删除。归档为不压缩 tar，临时文件位于 `/var/tmp`，需预留至少一份备份的空间。对象位于 `backups/<快照UTC时间>-<目录名>.tar`，快照时间取源备份时间而非本次上传时间，SHA-256 写入对象元数据；`--verify-readback` 从内网流式读回并校验，完成后删除临时 tar。重复归档按同一快照识别，不应挤占保留名额。
+
+合计保留最近 3 份不同快照；OSS 删除超出的归档，本机保留最新 1 份。位于最近 3 份内但不是最新的本机目录，必须已有匹配且读回校验通过的 OSS 归档才可删除；不在最近 3 份的旧本机目录按用户规则清理。不明目录、符号链接和不符合归档命名的对象先调查，不能按通配符删除。
+
+首次启用时先将已有 3 份备份逐个 `--archive --verify-readback`，再归档本次发布备份，最后执行 prune；目标为 OSS 3 份、本机 1 份，合计 3 个快照。每次后续发布重复“停服完整备份 → 部署验收 → 归档读回 → prune”，不添加 cron 或 systemd timer。
+
+## 从 OSS 归档恢复
+
+先确认所选快照与旧 release 配对，且恢复不会覆盖上线后新业务。停止唯一服务后，通过内网客户端把指定归档下载到受限的临时目录，核对元数据中的 SHA-256，再检查 tar 成员，解到新的暂存目录；不要直接覆盖正式数据。
+
+```sh
+umask 077
+# OSS_BACKUP_KEY 只填写经核对的 backups/ 下归档 key，不填写签名 URL。
+export OSS_BACKUP_KEY='backups/<经核对的快照>.tar'
+export OSS_RESTORE_TAR='/var/tmp/sticker-restore.tar'
+/opt/avatar-sticker-studio/venv/bin/python - <<'RESTORE'
+import hashlib, os
+from pathlib import Path
+from backend.app.oss_delivery import create_store
+store = create_store()
+key = os.environ['OSS_BACKUP_KEY']
+assert store is not None and key.startswith('backups/') and key.endswith('.tar')
+meta = store.head(key)
+expected = meta.metadata['sha256']
+p = Path(os.environ['OSS_RESTORE_TAR'])
+digest = hashlib.sha256()
+with p.open('xb') as out, store.read(key) as stream:
+    while chunk := stream.read(1024 * 1024):
+        digest.update(chunk)
+        out.write(chunk)
+assert digest.hexdigest() == expected, '归档哈希不一致，禁止恢复'
+print('归档哈希校验通过')
+RESTORE
+```
+
+使用 Python 3.13 的 `tarfile` 数据过滤器安全解包至新建目录（`extractall(..., filter='data')`），拒绝越界路径；根据归档根目录检查 `data/studio.sqlite3`、文件哈希清单与配对审计。保持原权限及服务属主，完整恢复数据目录及必要环境配置，原子选择配对旧 release 后启动并验收。SQLite 数据和 release 必须配对，不能只切链接或只恢复主数据库文件。存在新业务时采用向前修复。
+
+OSS 启用后发布审计显式使用 `deploy/audit_framework.py --allow-oss-delivery` 生成基线并执行比对（`--baseline <同模式基线>`）；该模式只忽略打印 artifact 中与组织、订单及 SHA-256 完全匹配的 oss_key 标记，其他业务字段和原图仍严格比对，错误 key 直接失败。基线与结果的比较模式必须相同，不能用旧模式基线冒充同模式检查。

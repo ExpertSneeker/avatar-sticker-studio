@@ -91,6 +91,8 @@ export STUDIO_AGENT_TMP
 studio_safe() (
   test -n "${STUDIO_AGENT_TMP:-}" && test -d "$STUDIO_AGENT_TMP" || exit 2
   unset STUDIO_FONT
+  unset STUDIO_OSS_BUCKET STUDIO_OSS_REGION STUDIO_OSS_INTERNAL_ENDPOINT
+  unset STUDIO_OSS_PUBLIC_ENDPOINT STUDIO_OSS_RAM_ROLE STUDIO_OSS_DOWNLOAD STUDIO_OSS_URL_TTL
   unset STUDIO_API_PROXY STUDIO_PORT STUDIO_TEST_BROWSER
   unset STUDIO_E2E_FRONTEND_PORT STUDIO_E2E_BACKEND_PORT
   unset UV_ENV_FILE UV_PROJECT_ENVIRONMENT VIRTUAL_ENV PYTHONPATH NODE_OPTIONS
@@ -231,11 +233,12 @@ studio_safe .venv/bin/python -B deploy/audit_framework.py \
 4. **完整且配对的备份。** 在服务停止后，按发布文档保存完整私有数据目录、审计基线及旧 release，备份目录 0700，文件按私密权限管理；验证数据库完整性、资产引用和原图哈希，不能只看大小。SQLite WAL 不能只拷一个运行中的主 DB 文件。环境中的加密密钥属于恢复依赖，单独安全保留，不能进入 Git/日志。
 5. **演练与真实迁移分开。** 先审计/副本演练，再由发布操作者按文档在正式目录初始化新 Database；这是写库步骤。不得使用本地数据库覆盖线上。创建独立超管的 [bootstrap.py](../backend/app/bootstrap.py) 也会构造 Database；`--generate-password` 把密码写到 stdout，必须进入私密凭证文件，不能共享终端日志。现有同名账号不能覆盖。
 6. **按文档原子切换并启动。** 保留旧 release 与配对备份。A1 导入是单独数据变更，不是每次部署步骤；[import_a1.py](../backend/app/import_a1.py) 的多组织导入需要 `--organization-id`，现有发布文档的旧命令不包含它。每次执行前核实目标组织、原图及碰撞检查。
-7. **完成下一节的上线验收后交付。** 不通过真实生图、真实开单或真实发送消息做自动 smoke test。
+7. **完成下一节的上线验收。** 不通过真实生图、真实开单或真实发送消息做自动 smoke test。
+8. **归档并执行保留规则。** 使用 `deploy/backup_archive.py --archive <本次配对备份目录> --verify-readback` 上传完整备份；先 `--prune` 查看计划，再 `--prune --apply`。合计最近 3 份、同一快照只算一份、本机保留最新 1 份。验证归档数量、读回哈希、清理结果与剩余空间，保留脱敏证据。
 
 回滚边界：切换 `current` 并重启只回滚代码，不回滚业务数据。迁移到组织框架后，旧代码不理解新角色和客户订单模型，不支持简单回到框架前版本。尚未接收新业务时，按已有文档停服并恢复配对数据/资产备份与旧 release；一旦接收新订单或产生新结果，应保留新数据，选择向前修复或专门审查的数据对账。不得把旧库覆盖到新客户提交之上。
 
-部署说明记载未配置定时/异地备份；这不是当前主机的实时审计结论，也不授权 Agent 自行安装备份定时任务。不要把已有 release 目录、预览缓存或单次审计报告当作完整备份。
+按用户 2026-10-05 要求，完整备份在每次发布验收后手动归档到 OSS，本机与 OSS 合计保留最近 3 份不同快照，本机仅保留最新 1 份；保留范围内的其余本机快照必须先有校验通过的远端归档。归档、prune 及恢复命令见 deploy/README.md；不安装定时任务。不要把 release、缓存或审计报告当作完整备份。
 
 ## 7. 上线验证与不收费排障
 
@@ -284,3 +287,11 @@ curl --noproxy '*' --fail --silent --show-error http://127.0.0.1:8001/api/ready
 6. 2026-09-26 已修正 4 个过期 E2E 断言，完整 E2E 34 项通过：订单详情改为弹窗后需按名称定位选图弹窗、切换导航前先关闭订单弹窗；生成前核对第三项是“可最终提交”，去重后的实际生成数在头像行和提交栏断言；`z-accounts-credits` 改为自建公共模板，不再依赖已删除用例遗留的 `B001`。新增 E2E 应自行准备数据，不依赖其他 spec 的执行顺序。
 
 交付下一位 Agent 时，列出本次实际修改文件、运行过的命令及结果、使用的隔离数据/端口、未验证项，以及是否涉及外部调用或生产变更。不要附私密原始证据；只提供脱敏摘要与受控证据位置。
+
+## OSS 下载专项验收
+
+单独核对 PNG 文件夹保存和 ZIP：前者在 OSS 就绪后直连，后者仍从服务器下载。远端失败刷新一次再回退本地，显示较慢提示；没有配置 OSS 的本地测试保持原下载行为。私有下载 URL 默认 300 秒，可在有效期内重复使用，用户接受不随状态即时撤销；签发前仍需完整业务鉴权。测试新签发拒绝与旧链接有效窗口时应区分两种语义。
+
+生产只读对账使用 sqlite3 `mode=ro`，不实例化正式 Database。核对当前有效打印文件的对象数、大小及从 OSS 读回 SHA-256；审计报告只输出汇总，不输出完整清单、客户订单号和签名 URL。监测 ECS 出网与浏览器实际请求主机，避免“文件存在 OSS”被误当作“已绕过服务器传输”。真实 OSS 自测仅用 `selftest/` 合成图片。
+
+OSS 启用后发布审计显式使用 `deploy/audit_framework.py --allow-oss-delivery` 生成基线并执行比对（`--baseline <同模式基线>`）；该模式只忽略打印 artifact 中与组织、订单及 SHA-256 完全匹配的 oss_key 标记，其他业务字段和原图仍严格比对，错误 key 直接失败。基线与结果的比较模式必须相同，不能用旧模式基线冒充同模式检查。

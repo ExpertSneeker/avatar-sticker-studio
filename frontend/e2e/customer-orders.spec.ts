@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test'
 import { randomUUID } from 'node:crypto'
+import { readFile } from 'node:fs/promises'
 import { uploadStickers } from './library-fixtures'
 import { completedCustomer, createCustomer, installDirectoryPicker, mutate, pixel, staffLogin } from './customer-fixtures'
 
@@ -107,7 +108,7 @@ test('guest cancellation polling closes previews and clears stale media, then re
 
 test('manual bulk print download selects one root, verifies hashes, preserves foreign files and supports ZIP',async({page})=>{
   await staffLogin(page.request)
-  const sticker=(await(await page.request.get('/api/stickers')).json())[0]
+  const sticker=(await uploadStickers(page.request,[{name:'ZIP-'+randomUUID().slice(0,8)+'.png',mimeType:'image/png',buffer:pixel}]))[0]
   const orders=[await completedCustomer(page.request,sticker.id,{order_number:'PRINT-'+randomUUID().slice(0,8),notes:'客户/备注'}),await completedCustomer(page.request,sticker.id,{order_number:'PRINT-'+randomUUID().slice(0,8),notes:''})]
   await installDirectoryPicker(page)
   await page.goto('/');await page.getByRole('navigation').getByRole('button',{name:'历史订单',exact:true}).click();await expect(page.getByRole('heading',{name:'历史订单',exact:true,level:1})).toBeVisible()
@@ -135,7 +136,25 @@ test('manual bulk print download selects one root, verifies hashes, preserves fo
   expect(await page.evaluate(async manifest=>{const directory=await(await(await navigator.storage.getDirectory()).getDirectoryHandle('foreign-print-output')).getDirectoryHandle(manifest.name);return(await(await directory.getFileHandle(manifest.files[0].path)).getFile()).text()},expected[0])).toBe('foreign-file')
   await page.evaluate(()=>{delete (window as any).showDirectoryPicker})
   await page.getByRole('button',{name:'批量下载打印文件 (2)',exact:true}).click()
-  await expect(page.getByRole('dialog',{name:'下载打印文件 ZIP'}).locator('a[download]')).toHaveCount(2)
+  const zipLinks=page.getByRole('dialog',{name:'下载打印文件 ZIP'}).locator('a[download]')
+  await expect(zipLinks).toHaveCount(2)
+  const zipPath=await zipLinks.first().getAttribute('href')
+  const archive=expected.find(manifest=>zipPath?.includes('/'+manifest.order_id+'/download.zip'))!
+  const [download]=await Promise.all([page.waitForEvent('download'),zipLinks.first().click()])
+  expect(download.suggestedFilename()).toBe(archive.name+'.zip')
+  expect(await download.failure()).toBeNull()
+  const zipBytes=await readFile((await download.path())!)
+  expect(zipBytes.length).toBeGreaterThan(22)
+  expect(Array.from(zipBytes.subarray(0,4))).toEqual([0x50,0x4b,0x03,0x04])
+  await page.getByRole('dialog',{name:'下载打印文件 ZIP'}).getByRole('button',{name:'关闭',exact:true}).click()
+  await page.setViewportSize({width:390,height:844})
+  const closeNavigation=page.getByRole('button',{name:'关闭导航',exact:true})
+  if(await closeNavigation.isVisible())await closeNavigation.click()
+  await expect(page.locator('.sidebar')).not.toBeInViewport()
+  const closeNotice=page.getByRole('button',{name:'关闭提示',exact:true})
+  if(await closeNotice.isVisible())await closeNotice.click()
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true)
+  await page.screenshot({path:'/tmp/avatar-studio-fal-qa/oss-zip-390.png',fullPage:true,animations:'disabled'})
 })
 
 test('active guest draft refreshes protected avatar and catalog URLs after batch watermark update',async({page,browser})=>{

@@ -111,3 +111,11 @@
 ## 生产入口与运行边界
 
 统一公网来源为 `https://sticker.coreages.com`，部署于阿里云 ECS `8.130.175.250`。Nginx 在独立虚拟主机终止 TLS 并转发到单个 loopback Uvicorn；数据库仍为单机 SQLite WAL。允许主机、修改请求来源、Secure Cookie 及 Agiso 公网来源必须一致；前端 `/api` 使用相对路径。原入口兼容跳转不承载业务 worker，原图和私有说明不通过静态目录暴露。详情见[生产部署](../deploy/README.md)。
+
+## OSS 打印文件交付
+
+配置 `STUDIO_OSS_BUCKET` 后，`oss_delivery.py` 使用官方 Python SDK V2 和 ECS 实例 RAM 角色；不保存长期 AccessKey。Worker 每 30 秒在线程中串行同步 submitted 且 delivery_ready 的当前打印 PNG，事务外经同地域内网上传，校验本地 SHA-256 并保留 SDK CRC64 校验；回写前复查订单及资产。对象路径为 `print/<组织内部ID>/<订单内部ID>/<sha256>.png`，不含客户订单号。每 10 分钟对账清理当前有效打印文件之外的对象；删除失效对象后清除对应 oss_key，使取消后恢复的订单能重新上传。没有新增任务表、租约或版本目录。
+
+后台 manifest 保留完整会话、组织及 submitted/delivery_ready 检查，返回 `local_url` 和当前可用下载 `url`，响应 `private, no-store`。启用 OSS 下载且文件已同步时签发默认 300 秒 GET 链接；客户端跨域使用 `credentials: omit`，最近清单用于下一文件，远端失败刷新一次再回退 local_url。哈希、目录归属、Web Locks 和 delivery_version 检查仍有效。用户 2026-10-05 明确接受已发链接在有效期内可重复使用且不会随账号或订单状态即时撤销，停止新签发不等于撤销旧链接。
+
+ZIP 不上传 OSS：短事务取得授权文件快照后在事务外读取并用 ZIP_STORED 打包，下载文件名按订单目录名用 RFC 5987 编码。ZIP 和 PNG 回退仍经过 ECS 公网出口。OSS 只存当前文件，本地原图及历史版本语义不变；空 Bucket 配置完全关闭同步，`STUDIO_OSS_DOWNLOAD=0` 只关闭直链、继续上传。

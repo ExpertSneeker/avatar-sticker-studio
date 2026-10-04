@@ -10,7 +10,7 @@ from collections import Counter
 from .auth import generation_limit
 from .db import uid
 from .agiso_service import order_allowed
-from . import credits
+from . import credits, oss_delivery
 from .processing import PRINT_LAYOUT_STYLE, decode, encode, overview, pack_set
 from .providers import DEFAULT_MAX_UPLOADS, DEFAULT_UPLOAD_TIMEOUT, CutoutDeferred, FalProvider, ProviderFailure, YeziProvider
 from .schemas import PrintSettings
@@ -45,6 +45,8 @@ class Worker:
         self.loop_task = None
         self.lease_task = None
         self.stopping = False
+        self.oss_next_sync = 0
+        self.oss_task = None
 
     def recover(self):
         with self.db.transaction() as tx:
@@ -392,6 +394,13 @@ class Worker:
             await asyncio.to_thread(self.heartbeat)
             await asyncio.sleep(5)
 
+    async def sync_oss(self):
+        try:
+            await asyncio.to_thread(oss_delivery.sync, self.db)
+        except Exception:
+            # SDK exception text may contain credentials or signed URLs.
+            log.warning('OSS scheduling failed; will retry')
+
     async def run(self):
         while not self.stopping:
             try:
@@ -404,6 +413,12 @@ class Worker:
                     await asyncio.gather(*(self.before_publish(id) for id in pending))
                 for id in pending:
                     await asyncio.to_thread(self.publish, id)
+                tick = self.clock()
+                if not self.stopping and tick >= self.oss_next_sync:
+                    self.oss_next_sync = tick + 30
+                    if self.oss_task is None or self.oss_task.done():
+                        # A backlog or timeout must not delay generation admission.
+                        self.oss_task = asyncio.create_task(self.sync_oss())
                 while not self.stopping:
                     item = self.claim()
                     if not item:
@@ -417,6 +432,9 @@ class Worker:
 
     async def stop(self):
         self.stopping = True
+        if self.oss_task:
+            self.oss_task.cancel()
+            await asyncio.gather(self.oss_task, return_exceptions=True)
         if self.lease_task:
             self.lease_task.cancel()
             await asyncio.gather(self.lease_task, return_exceptions=True)

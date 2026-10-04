@@ -6,6 +6,7 @@ import type { Manifest } from './types'
 type WriteIntent={sha256:string;baseline:string|null}
 interface SavedLocation {root:FileSystemDirectoryHandle;name:string;hashes:Record<string,string>;intents?:Record<string,WriteIntent>}
 export interface SavedRecord {locations?:SavedLocation[];version:number;complete:boolean;downloadedOnce?:boolean;hashes:Record<string,string>;root:FileSystemDirectoryHandle;name:string;intents?:Record<string,WriteIntent>}
+class DownloadError extends Error {}
 const active=new Set<string>()
 export const directorySupported=()=> 'showDirectoryPicker' in window
 export const savedRecord=(userId:string,orderId:string)=>readLocal<SavedRecord>('saved:'+userId+':'+orderId)
@@ -67,17 +68,60 @@ export async function syncOrder(userId:string,orderId:string,root:FileSystemDire
       try{return await sha256(await (await directory.getFileHandle(path)).getFile())}
       catch(error){if((error as Error).name==='NotFoundError')return undefined;throw error}
     }
+    let latest:Manifest=manifest
+    const refreshManifest=async()=>{
+      const current=await api<Manifest>(manifestPath,{signal})
+      if(current.version!==manifest.version || manifest.files.some(initial=>!current.files.some(file=>file.kind==='print'&&file.path===initial.path&&file.sha256===initial.sha256))) {
+        throw new Error('结果已更新，请重新保存最新版本')
+      }
+      latest=current
+    }
+    const remoteUrl=(url:string)=>new URL(url,location.href).origin!==location.origin
+    const download=async(url:string,path:string)=>{
+      signal?.throwIfAborted()
+      const response=await fetch(url,{credentials:remoteUrl(url)?'omit':'same-origin',signal})
+      if(!response.ok)throw new DownloadError('下载失败：'+path)
+      return response.blob()
+    }
+    const checkRemoteFailure=(error:unknown)=>{
+      if((error as Error)?.name==='AbortError')throw error
+      signal?.throwIfAborted()
+      if(!(error instanceof TypeError)&&!(error instanceof DownloadError))throw error
+    }
     let progress=0
     for(const path of downloads) {
       signal?.throwIfAborted()
+      // Keep content identity from the initial manifest, but use the newest signed URL.
       const file=manifest.files.find(f=>f.path===path)!
-      onProgress('正在保存 '+(++progress)+' / '+downloads.length)
-      const response=await fetch(file.url,{credentials:'same-origin',signal})
-      if(!response.ok) throw new Error('下载失败：'+path)
-      const blob=await response.blob()
+      let currentFile=latest.files.find(f=>f.kind==='print'&&f.path===path)!
+      const label=++progress+' / '+downloads.length
+      onProgress((remoteUrl(currentFile.url)?'正在从 OSS 下载 ':'正在保存 ')+label)
+      let blob:Blob
+      if(!remoteUrl(currentFile.url))blob=await download(currentFile.url,path)
+      else {
+        try {blob=await download(currentFile.url,path)}
+        catch(error) {
+          checkRemoteFailure(error)
+          // Refresh through the authenticated API before retrying; authorization or
+          // identity failures must stop the save rather than become OSS fallbacks.
+          await refreshManifest()
+          currentFile=latest.files.find(f=>f.kind==='print'&&f.path===path)!
+          if(!remoteUrl(currentFile.url)) {
+            onProgress('OSS 失败，改从服务器下载（较慢） '+label)
+            blob=await download(currentFile.url,path)
+          } else {
+            try {blob=await download(currentFile.url,path)}
+            catch(retryError) {
+              checkRemoteFailure(retryError)
+              if(!currentFile.local_url)throw retryError
+              onProgress('OSS 失败，改从服务器下载（较慢） '+label)
+              blob=await download(currentFile.local_url,path)
+            }
+          }
+        }
+      }
       if(blob.size!==file.size || await sha256(blob)!==file.sha256) throw new Error('文件校验失败：'+path)
-      const current=await api<Manifest>(manifestPath,{signal})
-      if(current.version!==manifest.version) throw new Error('结果已更新，请重新保存最新版本')
+      await refreshManifest()
       signal?.throwIfAborted()
       // A download can take minutes; do not overwrite files changed since the initial scan.
       if(await actualHash(path)!==local[path]) throw new Error('保存期间本地文件发生变化，请重新核对：'+path)
@@ -95,8 +139,7 @@ export async function syncOrder(userId:string,orderId:string,root:FileSystemDire
       // Persist every completed write so an interrupted sync can resume safely.
       await persist()
     }
-    const latest=await api<Manifest>(manifestPath,{signal})
-    if(latest.version!==manifest.version) throw new Error('结果已更新，请重新核对文件')
+    await refreshManifest()
     for(const file of manifest.files) {
       signal?.throwIfAborted()
       if(await actualHash(file.path)!==file.sha256)throw new Error('本地文件校验不一致，请重新保存：'+file.path)

@@ -118,3 +118,78 @@ def test_compare_preserves_live_catalog_and_asset_metadata(tmp_path, kind):
     with sqlite3.connect(tmp_path / 'studio.sqlite3') as conn:
         conn.execute('DELETE FROM records WHERE kind=? AND id=?', (kind, identifier))
     assert f'changed or missing historical {kind}: {identifier}' in audit_framework.compare(before, audit_framework.audit(tmp_path))
+
+
+def print_order(root):
+    docs = seed(root)
+    sha = docs['assets'][0]['sha256']
+    order = docs['orders'][0] | {'organization_id': 'org', 'state': 'submitted', 'delivery_ready': True,
+                                'delivery_version': 3, 'artifacts': [{'id': 'asset', 'kind': 'print', 'sha256': sha, 'size': 20}]}
+    replace(root, 'orders', order)
+    return order, f'print/org/o/{sha}.png'
+
+
+def test_oss_comparison_allows_only_expected_print_key_addition_and_removal(tmp_path):
+    order, key = print_order(tmp_path)
+    before = audit_framework.audit(tmp_path, allow_oss_delivery=True)
+    strict_before = audit_framework.audit(tmp_path)
+    order['artifacts'][0]['oss_key'] = key
+    replace(tmp_path, 'orders', order)
+    after = audit_framework.audit(tmp_path, allow_oss_delivery=True)
+    assert before['comparison_mode'] == after['comparison_mode'] == 'oss-delivery'
+    assert audit_framework.compare(before, after) == []
+    assert audit_framework.compare(after, before) == []
+    assert 'changed or missing historical orders: o' in audit_framework.compare(strict_before, audit_framework.audit(tmp_path))
+    assert audit_framework.compare(strict_before, after) == ['comparison mode mismatch']
+
+
+@pytest.mark.parametrize('kind,key', [('print', 'print/foreign/o/invalid.png'), ('overview', 'expected'), ('print', None)])
+def test_oss_comparison_rejects_malformed_and_nonprint_markers(tmp_path, kind, key):
+    order, expected = print_order(tmp_path)
+    order['artifacts'][0].update(kind=kind, oss_key=expected if key == 'expected' else key)
+    replace(tmp_path, 'orders', order)
+    report = audit_framework.audit(tmp_path, allow_oss_delivery=True)
+    assert 'invalid OSS delivery marker: o' in report['failures']
+    assert 'foreign' not in json.dumps(report)
+
+
+@pytest.mark.parametrize('change', ['hash', 'asset', 'state', 'version', 'generation'])
+def test_oss_comparison_keeps_all_other_business_fields_strict(tmp_path, change):
+    order, key = print_order(tmp_path)
+    with sqlite3.connect(tmp_path / 'studio.sqlite3') as conn:
+        conn.execute('INSERT INTO records VALUES(?,?,?)', ('generations', 'g', json.dumps({'id': 'g', 'status': 'reserved'})))
+    before = audit_framework.audit(tmp_path, allow_oss_delivery=True)
+    order['artifacts'][0]['oss_key'] = key
+    if change == 'hash': order['artifacts'][0]['sha256'] = '0' * 64
+    elif change == 'asset': order['artifacts'][0]['id'] = 'different'
+    elif change == 'state': order['state'] = 'cancelled'
+    elif change == 'version': order['delivery_version'] += 1
+    elif change == 'generation': replace(tmp_path, 'generations', {'id': 'g', 'status': 'settled'})
+    replace(tmp_path, 'orders', order)
+    changed_kind = 'generations: g' if change == 'generation' else 'orders: o'
+    assert 'changed or missing historical ' + changed_kind in audit_framework.compare(before, audit_framework.audit(tmp_path, allow_oss_delivery=True))
+
+
+def test_oss_audit_cli_requires_same_explicit_mode_in_baseline(tmp_path):
+    order, key = print_order(tmp_path)
+    baseline = tmp_path / 'baseline.json'
+    baseline.write_text(json.dumps(audit_framework.audit(tmp_path)))
+    script = Path(audit_framework.__file__)
+    args = [sys.executable, str(script), '--data-dir', str(tmp_path), '--allow-oss-delivery', '--baseline', str(baseline)]
+    result = subprocess.run(args, capture_output=True, text=True)
+    assert result.returncode == 1 and 'comparison mode mismatch' in json.loads(result.stdout)['failures']
+    baseline.write_text(json.dumps(audit_framework.audit(tmp_path, allow_oss_delivery=True)))
+    order['artifacts'][0]['oss_key'] = key
+    replace(tmp_path, 'orders', order)
+    result = subprocess.run(args, capture_output=True, text=True)
+    assert result.returncode == 0 and not json.loads(result.stdout)['failures']
+
+
+def test_oss_rehearsal_uses_explicit_mode_and_leaves_source_unmodified(tmp_path):
+    from backend.app.db import Database
+    db = Database(tmp_path)
+    before = (tmp_path / 'studio.sqlite3').read_bytes()
+    report = audit_framework.rehearse(tmp_path, allow_oss_delivery=True)
+    assert report['comparison_mode'] == report['source']['comparison_mode'] == report['migrated']['comparison_mode'] == 'oss-delivery'
+    assert report['idempotent'] and report['failures'] == []
+    assert (tmp_path / 'studio.sqlite3').read_bytes() == before
