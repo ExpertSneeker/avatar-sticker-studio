@@ -136,7 +136,7 @@ ZIP 不上传 OSS：短事务取得授权文件快照后在事务外读取并用
 
 全站 `config/settings.fal_input_mode` 的迁移默认值为 `inline`，有效值只有 `inline` / `oss`。仅超级管理员可读取、修改全站设置；响应中的 `fal_input_oss_available` 只读派生于服务器 OSS 配置。配置不可用时有效模式为 inline，拒绝设置 oss，不泄露凭证。设置即时作用于后续新提交，不改变已有请求的恢复路径。
 
-OSS 模式在数据库事务外计算模板和头像 SHA-256，HEAD 检查 `fal-inputs/<YYYYMMDD UTC>/<sha256>.png`；只有确定 NoSuchKey 才上传，设置 image/png。同日同内容复用，签名由公网 SDK 客户端产生，不带下载附件头。`STUDIO_FAL_INPUT_URL_TTL` 默认 7200 秒；签名只存在提交内存，请求正文不进入数据库、日志或前端。Bucket 的 `fal-inputs-expire-2d` 规则仅清理 `fal-inputs/`，满 2 天后按 OSS 日调度及异步执行，不保证严格 72 小时内完成；打印、备份和本地原图不在此规则内。
+OSS 模式在数据库事务外计算模板和头像 SHA-256，HEAD 检查 `fal-inputs/<YYYYMMDD UTC>/<sha256>.png`；只有确定 NoSuchKey 才上传，设置 image/png。同日同内容复用，签名由公网 SDK 客户端产生，不主动设置 `response-content-disposition`；OSS 默认域名仍可能强制返回 attachment，不能保证最终响应没有下载头。`STUDIO_FAL_INPUT_URL_TTL` 默认 7200 秒；签名只存在提交内存，请求正文不进入数据库、日志或前端。Bucket 的 `fal-inputs-expire-2d` 规则仅清理 `fal-inputs/`，满 2 天后按 OSS 日调度及异步执行，不保证严格 72 小时内完成；打印、备份和本地原图不在此规则内。
 
 OSS 暂存/签名失败发生在 FAL POST 前，同一次尝试回退原 inline 请求；item 记录实际 `fal_input=inline` 和脱敏原因。POST 的写入/连接失败、未知响应、429 退避语义沿用原规则。`max_uploads` 仍统计没有 request ID 的 running 提交任务，包含暂存阶段；全站及账号并发继续共同约束。已知请求 ID 的 poll/result/恢复不再暂存或重新提交。inline 请求体保持原有字节编码。
 
