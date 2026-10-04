@@ -239,6 +239,8 @@ Worker 每 30 秒串行同步当前有效打印 PNG，每 10 分钟清理过时�
 
 发布验收需要真实后台下载并确认正文来自 OSS 公网域名，同时观察 ECS 出网。ZIP 和远端失败后的回退仍走 3Mbps；关闭直链可快速恢复原下载路径，但已发链接直到其有效期结束仍可能可用。
 
+安装依赖前使用 `umask 022`，随后以 `sticker` 服务账号验证依赖导入及 OSS 只读访问。不能只用 root 验证：root 可以读取权限误设为 `0600` 的依赖代码，实际服务账号却不能。仅程序代码需要普通读取权限；环境文件和客户数据仍保持私有。发布前预检可在加载生产 OSS 配置后运行服务账号 Python，导入 `alibabacloud_oss_v2` 与 `alibabacloud_credentials`、构造 `create_store()` 并列举 `selftest/`；不要输出凭证或签名地址。
+
 ## 手动备份归档与三份保留
 
 `deploy/backup_archive.py` 复用应用的内网 OSS 客户端及 ECS RAM 角色。归档输入必须是停服后完成、核验过的完整配对备份目录；不要归档运行中的数据目录。脚本不创建业务备份，也不启动 Database 或 worker。
@@ -283,7 +285,7 @@ expected = meta.metadata['sha256']
 p = Path(os.environ['OSS_RESTORE_TAR'])
 digest = hashlib.sha256()
 with p.open('xb') as out, store.read(key) as stream:
-    while chunk := stream.read(1024 * 1024):
+    for chunk in stream.iter_bytes(block_size=1024 * 1024):
         digest.update(chunk)
         out.write(chunk)
 assert digest.hexdigest() == expected, '归档哈希不一致，禁止恢复'

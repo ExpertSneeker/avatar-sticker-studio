@@ -223,3 +223,99 @@ def test_later_corrupt_readback_revokes_prior_verification(archiver, tmp_path):
     with pytest.raises(ValueError, match='readback'):
         archive(archiver, root, source, store, temp)
     assert key + '.verified.json' not in store.objects and source.exists()
+
+
+class SDKResponse:
+    """Offline HttpResponse boundary; actual SDK StreamBodyReader wraps it."""
+    def __init__(self, body):
+        self.body = body
+        self.chunk_sizes = []
+        self.yielded_sizes = []
+        self.is_closed = False
+
+    def read(self):
+        raise AssertionError('Whole archive/body reads are forbidden')
+
+    def iter_bytes(self, *, block_size):
+        self.chunk_sizes.append(block_size)
+        for offset in range(0, len(self.body), block_size):
+            chunk = self.body[offset:offset + block_size]
+            self.yielded_sizes.append(len(chunk))
+            yield chunk
+
+    def close(self):
+        self.is_closed = True
+
+
+class SDKMemoryStore(MemoryStore):
+    def __init__(self):
+        super().__init__()
+        self.responses = []
+
+    @contextmanager
+    def read(self, key):
+        from alibabacloud_oss_v2.io_utils import StreamBodyReader
+        response = SDKResponse(self.objects[key][0])
+        self.responses.append(response)
+        stream = StreamBodyReader(response)
+        try:
+            yield stream
+        finally:
+            stream.close()
+
+
+def test_actual_sdk_reader_archive_hash_streams_in_bounded_chunks(archiver):
+    from alibabacloud_oss_v2.io_utils import StreamBodyReader
+    body = b'x' * (3 * archiver.CHUNK + 17)
+    response = SDKResponse(body)
+    actual = archiver._hash(StreamBodyReader(response))
+    assert actual == (hashlib.sha256(body).hexdigest(), len(body))
+    assert len(response.yielded_sizes) == 4 and max(response.yielded_sizes) <= archiver.CHUNK
+
+
+def test_archive_and_repeat_verification_use_actual_sdk_reader(archiver, tmp_path):
+    root, temp = tmp_path / 'backups', tmp_path / 'temp'
+    temp.mkdir()
+    source = snapshot(root, 'sdk-stream', 1_700_000_000)
+    store = SDKMemoryStore()
+    first = archive(archiver, root, source, store, temp)
+    assert first['verified']
+    second = archive(archiver, root, source, store, temp)
+    assert second['verified'] and second['sha256'] == first['sha256']
+    assert all(response.is_closed for response in store.responses)
+
+
+def test_actual_sdk_verification_marker_rejects_more_than_16k_without_full_read(archiver, tmp_path):
+    root, temp = tmp_path / 'backups', tmp_path / 'temp'
+    temp.mkdir()
+    source = snapshot(root, 'sdk-marker', 1_700_000_000)
+    store = MemoryStore()
+    key = archive(archiver, root, source, store, temp)['key']
+    marker = key + '.verified.json'
+    # Valid JSON/proof plus whitespace: only size makes this otherwise-valid proof unsafe.
+    proof = store.objects[marker][0]
+    response = SDKResponse(proof + b' ' * (100_000 - len(proof)))
+    from alibabacloud_oss_v2.io_utils import StreamBodyReader
+    @contextmanager
+    def read(key):
+        yield StreamBodyReader(response)
+    store.read = read
+    assert not archiver._verified(store, {'key': key, 'info': store.head(key)}, {marker})
+    assert sum(response.yielded_sizes) <= 16_385
+
+
+@pytest.mark.parametrize('sdk_reader', [False, True])
+def test_verification_marker_accepts_exact_16k_and_rejects_next_byte(archiver, tmp_path, sdk_reader):
+    root, temp = tmp_path / 'backups', tmp_path / 'temp'
+    temp.mkdir()
+    source = snapshot(root, 'marker-boundary', 1_700_000_000)
+    store = SDKMemoryStore() if sdk_reader else MemoryStore()
+    key = archive(archiver, root, source, store, temp)['key']
+    marker = key + '.verified.json'
+    proof = store.objects[marker][0]
+    padded = proof + b' ' * (16_384 - len(proof))
+    store.objects[marker] = (padded, {})
+    remote = {'key': key, 'info': store.head(key)}
+    assert archiver._verified(store, remote, {marker})
+    store.objects[marker] = (padded + b' ', {})
+    assert not archiver._verified(store, remote, {marker})

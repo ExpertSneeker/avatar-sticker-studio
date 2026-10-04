@@ -37,9 +37,19 @@ def _json(value):
     return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(',', ':')).encode()
 
 
+def _chunks(stream, size):
+    # OSS StreamBodyReader.read() consumes the entire body and takes no size.
+    # Its Requests transport supports bounded iteration using block_size.
+    if callable(getattr(stream, 'iter_bytes', None)):
+        yield from stream.iter_bytes(block_size=size)
+    else:
+        while chunk := stream.read(size):
+            yield chunk
+
+
 def _hash(stream):
     digest, size = hashlib.sha256(), 0
-    while chunk := stream.read(CHUNK):
+    for chunk in _chunks(stream, CHUNK):
         digest.update(chunk)
         size += len(chunk)
     return digest.hexdigest(), size
@@ -115,10 +125,12 @@ def _verified(store, remote, listed_keys, fingerprint=None):
     marker = key + '.verified.json'
     if marker not in listed_keys:
         return False
+    raw = bytearray()
     with store.read(marker) as stream:
-        raw = stream.read(16_385)
-    if len(raw) > 16_384:
-        return False
+        for chunk in _chunks(stream, 16_385):
+            if len(raw) + len(chunk) > 16_384:
+                return False
+            raw.extend(chunk)
     try:
         proof = json.loads(raw)
     except (ValueError, UnicodeDecodeError):
