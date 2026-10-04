@@ -614,12 +614,22 @@
   overflow-wrap: anywhere;
 }
 
+/* Buttons fill top to bottom, at most 4 per column; further buttons open a new column. Right aligned. */
 .customer-order-actions {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
+  display: grid;
+  grid-auto-flow: column;
+  grid-template-rows: repeat(4, auto);
+  grid-auto-columns: minmax(124px, auto);
+  justify-content: end;
+  align-content: center;
   gap: 8px;
-  flex-wrap: wrap;
+  flex-shrink: 0;
+}
+
+.customer-order-actions>.button,
+.customer-order-actions>.text-button {
+  width: 100%;
+  justify-content: center;
 }
 
 .customer-order-status {
@@ -750,10 +760,18 @@
     align-items: flex-start;
     flex-wrap: wrap;
   }
+  /* Below the order details there is room for one horizontal, wrapping row again. */
   .customer-order-actions {
     width: 100%;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
     justify-content: flex-start;
     padding-left: 28px;
+  }
+  .customer-order-actions>.button,
+  .customer-order-actions>.text-button {
+    width: auto;
   }
   .customer-catalog {
     grid-template-columns: repeat(5,minmax(0,1fr));
