@@ -82,7 +82,7 @@ export default function Guest() {
         <CustomerWorkbench key={order.id} initial={order} mode="guest" library={library} onChange={setOrder}/> :
         <form className="guest-login settings-section" onSubmit={login}>
           <h1>查看你的头像贴纸</h1>
-          {otherOrder ? <div role="status"><strong>当前已登录其他订单</strong><p>确认下方订单号后，可切换到本次购买的订单。</p></div> : <p>输入拼多多订单号，上传头像、选择贴纸并确认成品。</p>}
+          {otherOrder ? <div role="status"><strong>当前已登录其他订单</strong><p>确认下方订单号后，可切换到本次购买的订单。</p></div> : <p>输入订单号，上传头像、选择贴纸并确认成品。</p>}
           <label className="field">订单号<input required autoComplete="off" autoCapitalize="none" spellCheck={false} value={number} onChange={e => setNumber(e.target.value)} maxLength={100}/></label>
           {error && <div className="error-banner" role="alert">{error}</div>}
           <button className="button primary" disabled={busy || !number.trim()}>{busy && <Spinner/>}{otherOrder ? '切换并进入订单' : '进入订单'}</button>
