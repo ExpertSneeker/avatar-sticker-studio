@@ -19,7 +19,7 @@ procedure to upgrade an existing production database.
 - 签发命令：`certbot certonly --webroot -w /var/www/acme -d sticker.coreages.com --non-interactive --agree-tos --reuse-key`（首次使用需按账户状态配置联系邮箱）。
 - 现有 `certbot.timer` 管理续期；`/etc/letsencrypt/renewal-hooks/deploy/20-nginx-reload` 在续期后执行 `nginx -t` 并 reload。验证使用 `certbot renew --cert-name sticker.coreages.com --dry-run`。
 - Nginx 不直接公开数据目录，也不为受保护 API 设置共享缓存。请求访问日志关闭，错误请求 URL 不落盘；应用诊断通过 systemd journal 的脱敏业务日志查看。
-- 历史客户入口仅作为服务器端兼容跳转，保留路径和订单号参数；业务、回调和未来消息统一使用新入口。兼容入口也在本服务器续期，不运行另一套业务服务。
+- 历史客户入口 `sticker.magnusma.online` 已于 2026-10-06 停用：用户确认旧链接已无人使用，删除了其 Cloudflare 解析（此前因源站只放行 ESA 已无法到达）。服务器上残留的兼容跳转虚拟主机与证书不再可达，证书续期会失败，可在清理时一并移除。业务、回调和消息只使用 `sticker.coreages.com`。
 
 ## ESA 边缘加速与源站防护
 
