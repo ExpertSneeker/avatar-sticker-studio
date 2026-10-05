@@ -4,7 +4,7 @@
 
 ## 当前生产部署
 
-统一入口 `https://sticker.coreages.com`，阿里云 ECS `8.130.175.250`；发布使用单个 `avatar-sticker-studio` systemd 服务、独立 Python 3.13 和 Nginx TLS 虚拟主机。配置、DNS、证书续期及迁移顺序见[部署说明](../deploy/README.md)，2026-10-03 验收范围见[迁移记录](aliyun-migration-verification.md)。生产状态仍须现场确认，不能以本文代替线上核对。
+统一入口 `https://sticker.coreages.com`，经阿里云 ESA 回源到 ECS `8.130.175.250`（源站 80/443 只放行 ESA，直连会超时）；发布使用单个 `avatar-sticker-studio` systemd 服务、独立 Python 3.13 和 Nginx TLS 虚拟主机。配置、DNS、证书续期及迁移顺序见[部署说明](../deploy/README.md)，2026-10-03 验收范围见[迁移记录](aliyun-migration-verification.md)。生产状态仍须现场确认，不能以本文代替线上核对。
 
 ## 1. 接手范围与证据
 

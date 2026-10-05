@@ -12,7 +12,7 @@ procedure to upgrade an existing production database.
 
 ## DNS、SSL 与入口
 
-阿里云 DNS 的 `sticker` A 记录指向 `8.130.175.250`，TTL 为 600 秒。生产后台为 https://sticker.coreages.com/，客户入口为 https://sticker.coreages.com/guest。前端 API 使用同源 `/api`，不需要把服务器 IP 写入前端代码。
+自 2026-10-06 起，公网入口经阿里云 ESA（边缘安全加速，基础版）：阿里云 DNS 的 `sticker` 为 CNAME `sticker.coreages.com.a1.initxa.com`，TTL 600 秒，源站仍为 ECS `8.130.175.250`。生产后台为 https://sticker.coreages.com/，客户入口为 https://sticker.coreages.com/guest。前端 API 使用同源 `/api`，不需要把服务器 IP 写入前端代码。ESA 配置见下文“ESA 边缘加速与源站防护”。
 
 - Nginx 模板：[sticker-nginx.conf](sticker-nginx.conf)；生产安装到 `/etc/nginx/sites-available/sticker.coreages.com` 并链接到 `sites-enabled/`。
 - 独立 Let's Encrypt 证书位于 `/etc/letsencrypt/live/sticker.coreages.com/`。HTTP 的 `/.well-known/acme-challenge/` 使用 `/var/www/acme`；其他 HTTP 请求以 308 跳转 HTTPS。
@@ -20,6 +20,51 @@ procedure to upgrade an existing production database.
 - 现有 `certbot.timer` 管理续期；`/etc/letsencrypt/renewal-hooks/deploy/20-nginx-reload` 在续期后执行 `nginx -t` 并 reload。验证使用 `certbot renew --cert-name sticker.coreages.com --dry-run`。
 - Nginx 不直接公开数据目录，也不为受保护 API 设置共享缓存。请求访问日志关闭，错误请求 URL 不落盘；应用诊断通过 systemd journal 的脱敏业务日志查看。
 - 历史客户入口仅作为服务器端兼容跳转，保留路径和订单号参数；业务、回调和未来消息统一使用新入口。兼容入口也在本服务器续期，不运行另一套业务服务。
+
+## ESA 边缘加速与源站防护
+
+ESA 站点 `coreages.com`（SiteId `182026692718828`，CNAME 接入，加速区域仅中国内地，绑定一年期基础版套餐）。阿里云 DNS 仍是权威解析，其他记录不经过 ESA。以下为 2026-10-06 上线时的配置；变更前用 `aliyun esa` 实时查询，不以本文作为当前状态证明。
+
+| 项目 | 设置 |
+| --- | --- |
+| 记录 | `sticker.coreages.com` A/AAAA → `8.130.175.250`，开启代理，业务类型 web |
+| 边缘证书 | ESA 免费 Let's Encrypt 证书，ESA 自动续期；源站证书仍由 certbot 管理 |
+| 回源规则 | 协议跟随客户端（HTTP 80 / HTTPS 443），Host 与 SNI 均为 `sticker.coreages.com`，校验源站证书，读超时 180 秒，不跟随 302 |
+| 缓存 | `/api/` 与 `/.well-known/` 强制绕过缓存；其余遵循源站头。源站只对 `/assets/` 下真实存在的构建文件返回 `public, max-age=31536000, immutable`，HTML、API、水印图均不进共享缓存 |
+| 真实 IP | 托管转换添加 `ali-real-client-ip`；Nginx 仅从 ESA 回源地址恢复该头（`/etc/nginx/snippets/esa-origin-ips.conf`），登录限流因此按访客真实 IP 计算 |
+| 多级缓存 / 源站防护 | 边缘 + 区域；源站防护开启，`AutoConfirmIPList=off`。基础版不支持回源收敛 |
+| WAF | ESA 自动生成的“安全等级低”托管规则对威胁分 26–100 的请求出验证码；白名单规则 `agiso-webhook-callback` 让 `/api/agiso/webhook` 与 `/api/agiso/callback` 跳过全部防护，机器推送不会遇到验证码。两接口仍靠签名、state/nonce 自行校验 |
+| 安全组 | `sg-0jlhqi0txhes06ug8wdc` 的 TCP 80–443 只允许前缀列表 `pl-0jlj4dafkh3brxsuzz2b`（ESA 当前回源 IPv4 段）；22 端口未改。ECS 无公网 IPv6 |
+
+只有 22、80、443 在公网监听，因此 80–443 端口范围规则不会额外暴露服务。主站和 Wiki 的解析当前暂停；恢复它们时必须同样经 ESA 代理接入，否则会被安全组拒绝。
+
+### 回源 IP 列表变更
+
+源站防护在 ESA 回源 IP 变化时通知，未确认前 ESA 继续使用旧列表。`deploy/esa_origin_ips.py` 取“当前列表 ∪ 待确认列表”，因此按以下顺序可保证 ESA 用到的地址始终已放行：
+
+```sh
+aliyun esa GetOriginProtection --region cn-hangzhou --SiteId 182026692718828 > /tmp/op.json   # NeedUpdate / DiffIPWhitelist
+python3 deploy/esa_origin_ips.py ipv4  < /tmp/op.json   # 与前缀列表比对，ModifyPrefixList 只 AddEntry 新增网段
+python3 deploy/esa_origin_ips.py nginx < /tmp/op.json   # 覆盖 /etc/nginx/snippets/esa-origin-ips.conf，nginx -t 后 reload
+# 在 ESA 确认新列表（UpdateOriginProtectionIpWhiteList），然后重新导出 /tmp/op.json 再运行上面两条：
+# 此时只剩确认后的列表，从前缀列表 RemoveEntry 已删除网段并重新生成 Nginx 片段。
+```
+
+### 验证与排障
+
+- 本机经 Surge 访问会得到 198.18.x 假 IP；检查 ESA 时用 `dig @223.5.5.5 sticker.coreages.com` 取边缘 IP，再 `curl --resolve sticker.coreages.com:443:<边缘IP>`。响应头 `X-Site-Cache-Status`：HTML/API 应为 `DYNAMIC`/`BYPASS`，构建文件重复请求为 `HIT`。
+- 源站直连（含 `curl --resolve ...:8.130.175.250`）现在应超时；从服务器本机 `curl http://127.0.0.1:8000/api/ready` 不受影响。
+- Agiso 推送通道探针：对 `/api/agiso/webhook` 发送格式正确、签名错误的 form 请求，应得到应用的 `403 通知签名无效`，不是 ESA 页面或验证码；签名错误不写库。
+- 出站（FAL `queue.fal.run`、Agiso API、OSS）不经过 ESA，也不受入方向安全组影响。
+- certbot HTTP-01 续期经 ESA 的 HTTP 回源到 `/var/www/acme`；验证 `certbot renew --cert-name sticker.coreages.com --dry-run --no-random-sleep-on-renew`。
+
+### 回退
+
+1. 恢复安全组 TCP 80、443 对 `0.0.0.0/0` 的放行（`AuthorizeSecurityGroup`）。
+2. 将 AliDNS `sticker` 改回 A `8.130.175.250`（RecordId `2106291818949629952`），等待 600 秒 TTL。
+3. Nginx real-IP 片段只信任 ESA 地址，直连时无副作用，可保留；应用的静态缓存头对直连同样适用，无需回退代码。
+
+若 ECS 公网 IP 已被黑洞，DNS 改回直连无效，应按云平台黑洞或付费防护流程处理。
 
 官方运行工具：[uv Python 安装](https://docs.astral.sh/uv/guides/install-python/)、[Certbot webroot](https://eff-certbot.readthedocs.io/en/stable/using.html#webroot)。
 

@@ -111,7 +111,7 @@
 
 ## 生产入口与运行边界
 
-统一公网来源为 `https://sticker.coreages.com`，部署于阿里云 ECS `8.130.175.250`。Nginx 在独立虚拟主机终止 TLS 并转发到单个 loopback Uvicorn；数据库仍为单机 SQLite WAL。允许主机、修改请求来源、Secure Cookie 及 Agiso 公网来源必须一致；前端 `/api` 使用相对路径。原入口兼容跳转不承载业务 worker，原图和私有说明不通过静态目录暴露。详情见[生产部署](../deploy/README.md)。
+统一公网来源为 `https://sticker.coreages.com`，经阿里云 ESA 回源到 ECS `8.130.175.250`；ESA 只缓存带内容哈希的 `/assets/` 构建文件，`/api/` 一律绕过缓存，访客真实 IP 经 `ali-real-client-ip` 由 Nginx 仅从 ESA 地址恢复。Nginx 在独立虚拟主机终止 TLS 并转发到单个 loopback Uvicorn；数据库仍为单机 SQLite WAL。允许主机、修改请求来源、Secure Cookie 及 Agiso 公网来源必须一致；前端 `/api` 使用相对路径。原入口兼容跳转不承载业务 worker，原图和私有说明不通过静态目录暴露。详情见[生产部署](../deploy/README.md)。
 
 ## OSS 打印文件交付
 
