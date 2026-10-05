@@ -135,6 +135,8 @@ class Database:
                     value.pop('billing_legacy', None)
                     tx.put('items', value)
                 tx.put('migrations', {'id': 'drop-credits-v1'})
+            from .sku_defaults import migrate_sku_defaults
+            migrate_sku_defaults(tx)
         os.chmod(self.path, 0o600)
         # An idle connection keeps the WAL open, so closing each per-transaction connection is
         # no longer "last close" (checkpoint, fsync and WAL deletion on every transaction).

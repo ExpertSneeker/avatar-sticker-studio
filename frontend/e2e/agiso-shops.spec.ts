@@ -39,9 +39,12 @@ test('套餐必须填真实 ID，保存精确额度，消息结果不确定时�
   await page.getByRole('button', { name: '保存套餐' }).click()
   await expect(page.getByText('套餐已保存，仅影响之后的新订单。')).toBeVisible()
   expect(saved).toEqual([
-    {goods_id:'100',sku_id:'101',goods_name:'补差价专用',sku_name:'10张',generation_limit:10,final_count:10,rerun_limit:2,enabled:false},
-    {goods_id:'100',sku_id:'102',goods_name:'补差价专用',sku_name:'20张',generation_limit:20,final_count:20,rerun_limit:2,enabled:false},
+    {goods_id:'100',sku_id:'101',goods_name:'补差价专用',sku_name:'10张',generation_limit:10,final_count:10,rerun_limit:2,enabled:true},
+    {goods_id:'100',sku_id:'102',goods_name:'补差价专用',sku_name:'20张',generation_limit:20,final_count:20,rerun_limit:2,enabled:true},
   ])
+  await expect(page.getByRole('button', { name: '开启自动开户' })).toBeEnabled()
+  for (const checkbox of await page.getByLabel('启用此 SKU 自动开户').all()) await checkbox.uncheck()
+  await page.getByRole('button', { name: '保存套餐' }).click()
   await expect(page.getByRole('button', { name: '开启自动开户' })).toBeDisabled()
   await page.getByLabel('启用此 SKU 自动开户').first().check()
   await page.getByRole('button', { name: '保存套餐' }).click()
@@ -94,3 +97,59 @@ test('授权失败提示在店铺刷新完成后仍然保留', async ({ page }) 
   await expect(page.getByRole('alert')).toContainText('店铺授权未完成')
   await expect(page).toHaveURL(/\/$/)
 })
+
+for (const width of [1440,390]) {
+  test(`新增规格默认启用并匹配数量，可保留未匹配和手动额度 ${width}px`, async ({ page }) => {
+    const errors: string[] = []
+    page.on('pageerror', error => errors.push(error.message))
+    await page.setViewportSize({width,height:900})
+    await staffLogin(page.request)
+    const shop = { id:'local-shop',shop_id:'10001',shop_name:'SKU 测试店',owner:'test-owner',owner_name:'测试账户',organization_id:'org',enabled:false,authorized:true,expires_at:1900000000,last_event_at:null,can_manage:true }
+    let saved: unknown = []
+    await page.route('**/api/agiso/**', async route => {
+      const path=new URL(route.request().url()).pathname
+      if (path.endsWith('/status')) return route.fulfill({json:{configured:true,missing:[],authorization_callback_url:null,webhook_url:null,aftersales_enabled:false}})
+      if (path.endsWith('/shops')) return route.fulfill({json:[shop]})
+      if (path.endsWith('/rules')) {
+        if (route.request().method()==='PUT') saved=route.request().postDataJSON().rules
+        return route.fulfill({json:saved})
+      }
+      if (path.endsWith('/goods')) return route.fulfill({json:{available:true,goods:[{goods_id:'100',goods_name:'磁贴',skus:[{sku_id:'200',sku_name:'6张赠1个，42张套餐'}]}],total:1,page:1,message:''}})
+      return route.fulfill({status:404})
+    })
+    await page.goto('/')
+    if (width < 720) await page.getByRole('button',{name:'展开导航',exact:true}).click()
+    await page.getByRole('button',{name:'店铺接入',exact:true}).click()
+    await page.getByRole('button',{name:'从店铺选择规格',exact:true}).click()
+    await page.getByRole('button',{name:'6张赠1个，42张套餐 · 200',exact:true}).click()
+    await page.getByRole('button',{name:'完成选择',exact:true}).click()
+    await expect(page.getByLabel('启用此 SKU 自动开户').first()).toBeChecked()
+    await expect(page.getByLabel('每件可生成 1',{exact:true})).toHaveValue('50')
+    await expect(page.getByLabel('每件可提交印刷 1',{exact:true})).toHaveValue('42')
+    await expect(page.getByLabel('整单重试次数 1',{exact:true})).toHaveValue('18')
+    await page.getByRole('button',{name:'手动添加',exact:true}).click()
+    await expect(page.getByLabel('启用此 SKU 自动开户').nth(1)).toBeChecked()
+    await page.getByLabel('商品 ID 2',{exact:true}).fill('100')
+    await page.getByLabel('SKU ID 2',{exact:true}).fill('201')
+    await page.getByLabel('规格名称 2',{exact:true}).fill('6个')
+    await expect(page.getByLabel('每件可生成 2',{exact:true})).toHaveValue('8')
+    await expect(page.getByLabel('每件可提交印刷 2',{exact:true})).toHaveValue('6')
+    await expect(page.getByLabel('整单重试次数 2',{exact:true})).toHaveValue('3')
+    await page.getByLabel('规格名称 2',{exact:true}).fill('18张')
+    await expect(page.getByLabel('每件可生成 2',{exact:true})).toHaveValue('24')
+    await expect(page.getByLabel('每件可提交印刷 2',{exact:true})).toHaveValue('18')
+    await expect(page.getByLabel('整单重试次数 2',{exact:true})).toHaveValue('7')
+    await page.getByLabel('规格名称 2',{exact:true}).fill('16张')
+    await expect(page.getByLabel('每件可生成 2',{exact:true})).toHaveValue('24')
+    await page.getByLabel('每件可生成 2',{exact:true}).fill('26')
+    await page.getByRole('button',{name:'保存套餐',exact:true}).click()
+    await expect(page.getByText('套餐已保存，仅影响之后的新订单。')).toBeVisible()
+    await page.reload()
+    if (width < 720) await page.getByRole('button',{name:'展开导航',exact:true}).click()
+    await page.getByRole('button',{name:'店铺接入',exact:true}).click()
+    await expect(page.getByLabel('每件可生成 2',{exact:true})).toHaveValue('26')
+    await expect(page.getByLabel('每件可提交印刷 2',{exact:true})).toHaveValue('18')
+    expect(errors).toEqual([])
+    await page.screenshot({path:`/tmp/sticker-sku-${width}.png`,fullPage:true})
+  })
+}

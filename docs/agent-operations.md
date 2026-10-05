@@ -309,3 +309,7 @@ OSS 启用后发布审计显式使用 `deploy/audit_framework.py --allow-oss-del
 - 带宽验证：`/proc/net/dev` 的网卡发送量包含 OSS 内网流量，不能单独当作公网出口；结合云监控 `VPC_PublicIP_InternetOutRate` 或按公网目的地址过滤的包头计数。恢复旧 release 前排空提交并保留最新数据；此功能新增可忽略设置字段，无须为切回 inline 恢复旧数据库。
 
 2026-10-05 真实联调记录：默认 OSS 域名的首张 FAL 试验返回结果 HTTP 422 / `file_download_error`，网站正确记为可重试失败、无未知占用。普通公网及美国 DMIT 下载成功不能证明 FAL 可取图。已按方案停止后续 OSS 批次并恢复 inline；在定位原因并重新通过真实试验前不要将此配置视为已联通。实测响应有 `Content-Disposition: attachment` / `x-oss-force-download: true`；[阿里云当前规则](https://help.aliyun.com/zh/oss/user-guide/0048-00000114)包含乌兰察布新建 Bucket 的 PNG，但尚未证实该头就是 FAL 失败根因。本次未启用自定义域名、CDN 或传输加速。
+
+## SKU 规格默认配置升级
+
+`sku-spec-defaults-v1` 启动迁移对所有组织的现有店铺 SKU 执行一次更新：启用 SKU，识别规格完整数量加“个/张”并按默认表更新额度；18个/18张为 G=24/F=18/R=7，未命中保留额度。只修改店铺规则，不修改订单、任务、原图、授权或店铺总开关。发布前在 SQLite 隔离副本演练，比较所有非店铺记录及未改字段，核对变更数量；发布后复验幂等与人工配置保留。不要为诊断实例化生产 Database 或启动第二套 worker。

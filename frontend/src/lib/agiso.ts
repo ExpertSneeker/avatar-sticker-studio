@@ -14,6 +14,25 @@ export interface SkuRule {
   goods_id: string; sku_id: string; goods_name: string; sku_name: string
   generation_limit: number; final_count: number; rerun_limit: number; enabled: boolean
 }
+// Kept in sync with backend/app/sku_defaults.py; both sides have contract tests.
+const specQuotas: Partial<Record<number, readonly [number, number, number]>> = {
+  42: [50, 42, 18], 36: [42, 36, 15], 30: [35, 30, 12],
+  24: [30, 24, 9], 18: [24, 18, 7], 12: [16, 12, 6], 6: [8, 6, 3], 1: [3, 1, 1],
+}
+export function withSpecDefaults(rule: SkuRule): SkuRule {
+  for (const quantity of [42, 36, 30, 24, 18, 12, 6, 1]) {
+    if (new RegExp(`(?<![\\d.])${quantity}[个张]`).test(rule.sku_name)) {
+      const quotas = specQuotas[quantity]
+      if (!quotas) return rule
+      const [generation_limit, final_count, rerun_limit] = quotas
+      return { ...rule, generation_limit, final_count, rerun_limit }
+    }
+  }
+  return rule
+}
+export function newSkuRule(): SkuRule {
+  return { goods_id: '', sku_id: '', goods_name: '', sku_name: '', generation_limit: 10, final_count: 10, rerun_limit: 2, enabled: true }
+}
 export interface ShopOrder {
   id: string; order_number: string; customer_order_id: string | null; open_status: string
   message_status: string; guest_url: string | null; error: string | null

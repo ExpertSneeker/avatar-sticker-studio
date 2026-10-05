@@ -138,7 +138,7 @@ class Rule(BaseModel):
     generation_limit: int = Field(strict=True,ge=1,le=360)
     final_count: int = Field(strict=True,ge=1,le=360)
     rerun_limit: int = Field(strict=True,ge=0,le=1000)
-    enabled: bool = Field(False,strict=True)
+    enabled: bool = Field(True,strict=True)
     _ids = field_validator('goods_id','sku_id',mode='before')(identifier)
 
     @model_validator(mode='after')

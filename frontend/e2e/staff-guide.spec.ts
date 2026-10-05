@@ -7,7 +7,7 @@ test('后台可阅读和搜索说明，退出登录后不再显示正文', async
   await page.getByRole('button', { name: '使用说明', exact: true }).click()
   await expect(page.getByRole('heading', { name: '后台使用说明', exact: true })).toBeVisible()
   await expect(page.getByRole('heading', { name: '开户与额度', exact: true })).toBeVisible()
-  await page.getByRole('searchbox', { name: '搜索使用说明' }).fill('20张')
+  await page.getByRole('searchbox', { name: '搜索使用说明' }).fill('规格名称')
   await expect(page.getByRole('heading', { name: '拼多多店铺接入', exact: true })).toBeVisible()
   await expect(page.getByRole('heading', { name: '图库与模板', exact: true })).toHaveCount(0)
   await page.getByRole('searchbox', { name: '搜索使用说明' }).fill('不存在的帮助词')

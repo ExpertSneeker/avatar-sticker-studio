@@ -669,3 +669,15 @@ def test_worker_loop_reads_remark_before_publishing(configured, monkeypatch):
     done=c.get('/api/customer-orders/'+order['id']).json()
     assert done['delivery_ready'] is True and done['platform_remark']=='循环中读取' and calls==['RM-5']
     assert titles and titles[0]=='RM-5 循环中读取'
+
+
+def test_new_sku_enabled_by_default_but_explicit_disable_is_preserved(configured):
+    app,c,_=configured
+    s=shop(configured)
+    base='/api/agiso/shops/'+s['id']+'/rules'
+    rule={'goods_id':'111','sku_id':'333','sku_name':'6张','generation_limit':8,'final_count':6,'rerun_limit':3}
+    response=c.put(base,json={'rules':[rule]})
+    assert response.status_code==200
+    assert response.json()[0]['enabled'] is True
+    rule['enabled']=False
+    assert c.put(base,json={'rules':[rule]}).json()[0]['enabled'] is False
