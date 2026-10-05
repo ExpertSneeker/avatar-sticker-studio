@@ -28,6 +28,11 @@ from .auth import can_read_asset, generation_limit, DEFAULT_GENERATION_CONCURREN
 from .schemas import AccountConcurrencyPatch, AccountDeleteConfirm, AdminCreateUser
 
 
+FRONTEND_DIST = Path(__file__).resolve().parents[2] / 'frontend' / 'dist'
+# Vite 构建文件名带内容哈希，可交给 ESA 边缘与浏览器长期缓存；HTML、API 和受保护媒体不适用。
+IMMUTABLE_ASSET = 'public, max-age=31536000, immutable'
+
+
 def create_app(data_root=None, provider=None, clock=None, start_worker=True):
     db = Database(data_root or os.environ.get('STUDIO_DATA_DIR', '.data'))
     now = clock or time.time
@@ -528,13 +533,18 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
             raise HTTPException(405, 'Method Not Allowed', headers={'Allow': ', '.join(sorted(allowed))})
         raise HTTPException(404, '接口不存在')
 
-    frontend_dist = Path(__file__).resolve().parents[2] / 'frontend' / 'dist'
+    frontend_dist = FRONTEND_DIST
     if frontend_dist.exists():
         @app.get('/{path:path}', include_in_schema=False)
         def frontend(path: str):
             candidate = (frontend_dist / path).resolve()
             if not candidate.is_relative_to(frontend_dist.resolve()) or path.startswith('api/'):
                 raise HTTPException(404, '页面不存在')
+            if path.startswith('assets/'):
+                # 缺失的构建文件必须 404，不能回退成会被当作脚本长期缓存的 HTML。
+                if not candidate.is_file():
+                    raise HTTPException(404, '文件不存在')
+                return FileResponse(candidate, headers={'Cache-Control': IMMUTABLE_ASSET})
             return FileResponse(candidate if candidate.is_file() else frontend_dist / 'index.html')
     return app
 

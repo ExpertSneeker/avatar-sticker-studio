@@ -238,3 +238,25 @@ def test_setup_explicitly_disabled_even_on_loopback(tmp_path, monkeypatch):
         assert client.get('/api/auth/status').json()['needs_setup'] is False
     with app.state.db.transaction() as tx:
         assert tx.all('users') == []
+
+
+def test_hashed_frontend_assets_are_publicly_cacheable_and_missing_ones_404(tmp_path, monkeypatch):
+    from backend.app import main
+    dist = tmp_path / 'dist'
+    (dist / 'assets').mkdir(parents=True)
+    (dist / 'index.html').write_text('<!doctype html><title>studio</title>')
+    (dist / 'assets' / 'index-Ab12_cd.js').write_text('console.log(1)')
+    monkeypatch.setattr(main, 'FRONTEND_DIST', dist)
+    app = create_app(tmp_path / 'data', start_worker=False)
+    with TestClient(app) as client:
+        asset = client.get('/assets/index-Ab12_cd.js')
+        assert asset.status_code == 200 and asset.text == 'console.log(1)'
+        assert asset.headers['cache-control'] == 'public, max-age=31536000, immutable'
+        # A stale hash from an older build must not fall back to cacheable HTML.
+        missing = client.get('/assets/index-old.js')
+        assert missing.status_code == 404 and missing.headers['cache-control'] == 'no-store'
+        for page in ('/', '/guest'):
+            html = client.get(page)
+            assert html.status_code == 200 and 'studio' in html.text
+            assert html.headers['cache-control'] == 'no-store'
+        assert client.get('/api/staff-guide').headers['cache-control'] == 'no-store'
