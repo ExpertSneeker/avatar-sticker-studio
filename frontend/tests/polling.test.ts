@@ -1,5 +1,5 @@
 import {afterEach,expect,test,vi} from 'vitest'
-import {visiblePolling} from '../src/lib/polling'
+import {staffPolling,visiblePolling} from '../src/lib/polling'
 
 function fakeDocument(state:'visible'|'hidden'){
   const listeners=new Set<()=>void>()
@@ -29,4 +29,16 @@ test('a tab opened in the background starts polling when first shown',()=>{
   page.set('visible');expect(tick).toHaveBeenCalledTimes(1)
   vi.advanceTimersByTime(2000);expect(tick).toHaveBeenCalledTimes(3)
   stop()
+})
+
+test('staff pages check the account every 5 s but reload the large library only every minute',()=>{
+  vi.useFakeTimers()
+  const page=fakeDocument('visible'),account=vi.fn(),library=vi.fn()
+  const stop=staffPolling(account,library)
+  vi.advanceTimersByTime(55000);expect(account).toHaveBeenCalledTimes(11);expect(library).not.toHaveBeenCalled()
+  vi.advanceTimersByTime(5000);expect(account).toHaveBeenCalledTimes(12);expect(library).toHaveBeenCalledTimes(1)
+  page.set('hidden');vi.advanceTimersByTime(300000);expect(account).toHaveBeenCalledTimes(12);expect(library).toHaveBeenCalledTimes(1)
+  // Returning to the tab shows fresh library data immediately, not after another minute.
+  page.set('visible');expect(account).toHaveBeenCalledTimes(13);expect(library).toHaveBeenCalledTimes(2)
+  stop();vi.advanceTimersByTime(120000);expect(library).toHaveBeenCalledTimes(2);expect(page.listeners.size).toBe(0)
 })

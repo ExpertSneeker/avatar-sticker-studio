@@ -12,7 +12,7 @@ import { Accounts } from './pages/Accounts'
 import { Account, Admin } from './pages/Settings'
 import { Brand, NoticeContext, Spinner } from './components/UI'
 import { api, expectUser, post } from './lib/api'
-import { visiblePolling } from './lib/polling'
+import { staffPolling } from './lib/polling'
 import { isAdmin, roleLabel, staffLibrary } from './lib/customer-orders'
 import type { Sticker, TemplateSet, User } from './lib/types'
 
@@ -26,7 +26,7 @@ export default function App(){
   const [page,setPage]=useState<Page>(()=>new URLSearchParams(window.location.search).has('agiso')?'shops':'workspace'),[templates,setTemplates]=useState<TemplateSet[]>([]),[stickers,setStickers]=useState<Sticker[]>([])
   const [categories,setCategories]=useState<LibraryCategory[]>(DEFAULT_CATEGORIES)
   const [toast,setToast]=useState<{message:string;kind:string}|null>(null),[mobileNav,setMobileNav]=useState(false),[createRequest,setCreateRequest]=useState(0)
-  const session=useRef(new AbortController()),identity=useRef<string|null>(null),authChannel=useRef<BroadcastChannel|null>(null)
+  const session=useRef(new AbortController()),identity=useRef<string|null>(null),authChannel=useRef<BroadcastChannel|null>(null),accountFailed=useRef(false)
   const updateUser=useCallback((next:User|null)=>{
     if(identity.current!==next?.id){session.current.abort();session.current=new AbortController();identity.current=next?.id||null;setTemplates([]);setStickers([]);setCategories(DEFAULT_CATEGORIES)}
     expectUser(next?.id||null);setUser(next);if(next?.role==='superadmin'&&!next.organization_id)setPage('organizations')
@@ -48,9 +48,14 @@ export default function App(){
     if(!userId)return
     const signal=session.current.signal
     if(!hasOrganization){try{const current=await api<User>('/auth/me',{signal});if(!signal.aborted)setUser(current)}catch(e){if(!signal.aborted)setError((e as Error).message)}return}
-    try{const [sets,currentUser,assets,cats]=await Promise.all([api<TemplateSet[]>('/templates',{signal}),api<User>('/auth/me',{signal}),api<Sticker[]>('/stickers',{signal}),api<LibraryCategory[]>('/library/categories',{signal})]);if(signal.aborted||identity.current!==userId)return;setTemplates(sets);setStickers(assets);setCategories(cats);setUser(previous=>JSON.stringify(previous)===JSON.stringify(currentUser)?previous:currentUser);setError('')}catch(e){if(!signal.aborted)setError((e as Error).message)}
+    try{const [sets,currentUser,assets,cats]=await Promise.all([api<TemplateSet[]>('/templates',{signal}),api<User>('/auth/me',{signal}),api<Sticker[]>('/stickers',{signal}),api<LibraryCategory[]>('/library/categories',{signal})]);if(signal.aborted||identity.current!==userId)return;setTemplates(sets);setStickers(assets);setCategories(cats);setUser(previous=>JSON.stringify(previous)===JSON.stringify(currentUser)?previous:currentUser);accountFailed.current=false;setError('')}catch(e){if(!signal.aborted)setError((e as Error).message)}
   },[userId,hasOrganization])
-  useEffect(()=>{void refresh();if(!userId)return;return visiblePolling(()=>void refresh(),5000)},[refresh,userId])
+  const refreshAccount=useCallback(async()=>{
+    if(!userId)return
+    const signal=session.current.signal
+    try{const current=await api<User>('/auth/me',{signal});if(signal.aborted||identity.current!==userId)return;setUser(previous=>JSON.stringify(previous)===JSON.stringify(current)?previous:current);if(accountFailed.current){accountFailed.current=false;setError('')}}catch(e){if(!signal.aborted){accountFailed.current=true;setError((e as Error).message)}}
+  },[userId])
+  useEffect(()=>{void refresh();if(!userId)return;return staffPolling(()=>void refreshAccount(),()=>void refresh())},[refresh,refreshAccount,userId])
   function changePage(next:Page){setPage(next);setMobileNav(false)}
   if(loading)return <div className="startup"><Brand/><Spinner/></div>
   if(!user)return <NoticeContext.Provider value={notice}>{error?<div className="startup"><Brand/><div className="error-banner">{error}</div><button className="button" onClick={()=>void auth()}>重新连接</button></div>:<Auth needsSetup={needsSetup} onLogin={next=>{updateUser(next);authChannel.current?.postMessage({userId:next.id})}}/>}</NoticeContext.Provider>

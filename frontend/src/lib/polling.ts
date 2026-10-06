@@ -10,3 +10,12 @@ export function visiblePolling(tick:()=>void,ms:number):()=>void {
   document.addEventListener('visibilitychange',change)
   return()=>{stop();document.removeEventListener('visibilitychange',change)}
 }
+
+// Staff pages: the account check is tiny and must notice deactivation or permission changes
+// quickly, while the library lists (all stickers, templates, categories) are large and change
+// rarely. Editors' own changes still reload the library at once through onRefresh.
+export const ACCOUNT_POLL_MS=5000,LIBRARY_POLL_MS=60000
+export function staffPolling(account:()=>void,library:()=>void):()=>void {
+  const stops=[visiblePolling(account,ACCOUNT_POLL_MS),visiblePolling(library,LIBRARY_POLL_MS)]
+  return()=>stops.forEach(stop=>stop())
+}
