@@ -24,11 +24,12 @@ AUDIT_MODE=${AUDIT_MODE:---allow-oss-delivery}
 step() { printf '[%s] %s\n' "$(date +%T)" "$*"; }
 ready() { [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/api/ready || true)" = 200 ]; }
 
-REV=$(tar -tzf "$TARBALL" | head -1 | cut -d/ -f1)
+# The tarball is named <commit>.tgz; REVISION inside it is checked after unpacking.
+REV=$(basename "$TARBALL" .tgz)
 NEW=$R/releases/$REV
 PREV=$(readlink -f $R/current)
 B=$R/backups/$LABEL-$(date -u +%Y%m%dT%H%M%SZ)-$REV
-[ -n "$REV" ] && [ ! -e "$NEW" ] || { echo "release $REV missing from tarball or already present"; exit 1; }
+[ -n "$REV" ] && [ ! -e "$NEW" ] || { echo "release $REV already present"; exit 1; }
 
 step "unpack $REV (previous $(basename "$PREV"))"
 umask 022
