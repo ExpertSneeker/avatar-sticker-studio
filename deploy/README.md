@@ -31,6 +31,7 @@ ESA 站点 `coreages.com`（SiteId `182026692718828`，CNAME 接入，加速区�
 | 边缘证书 | ESA 免费 Let's Encrypt 证书，ESA 自动续期；源站证书仍由 certbot 管理 |
 | 回源规则 | 协议跟随客户端（HTTP 80 / HTTPS 443），Host 与 SNI 均为 `sticker.coreages.com`，校验源站证书，读超时 180 秒，不跟随 302 |
 | 缓存 | `/api/` 与 `/.well-known/` 强制绕过缓存；其余遵循源站头。源站只对 `/assets/` 下真实存在的构建文件返回 `public, max-age=31536000, immutable`，HTML、API、水印图均不进共享缓存 |
+| 压缩 | ESA 规则 `sticker-compress` 对访客开启 Gzip 与 Brotli；sticker 虚拟主机对 JSON/JS/CSS 开启 gzip（`gzip_proxied any`），源站到 ESA 一段也压缩，节省 3Mbps 出口 |
 | 真实 IP | 托管转换添加 `ali-real-client-ip`；Nginx 仅从 ESA 回源地址恢复该头（`/etc/nginx/snippets/esa-origin-ips.conf`），登录限流因此按访客真实 IP 计算 |
 | 多级缓存 / 源站防护 | 边缘 + 区域；源站防护开启，`AutoConfirmIPList=off`。基础版不支持回源收敛 |
 | WAF | ESA 自动生成的“安全等级低”托管规则对威胁分 26–100 的请求出验证码；白名单规则 `agiso-webhook-callback` 让 `/api/agiso/webhook` 与 `/api/agiso/callback` 跳过全部防护，机器推送不会遇到验证码。两接口仍靠签名、state/nonce 自行校验 |
