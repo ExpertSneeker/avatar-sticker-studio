@@ -260,3 +260,23 @@ def test_hashed_frontend_assets_are_publicly_cacheable_and_missing_ones_404(tmp_
             assert html.status_code == 200 and 'studio' in html.text
             assert html.headers['cache-control'] == 'no-store'
         assert client.get('/api/staff-guide').headers['cache-control'] == 'no-store'
+
+
+def test_unchanged_json_polls_answer_304_without_allowing_browser_storage(tmp_path):
+    from backend.tests.helpers import template
+    app = create_app(tmp_path, start_worker=False)
+    with TestClient(app, client=('127.0.0.1', 12345)) as client:
+        assert client.post('/api/auth/setup', json={'username': 'admin', 'password': 'safe-password-123', 'display_name': '管理员'}).status_code == 200
+        first = client.get('/api/stickers')
+        assert first.status_code == 200 and first.headers['cache-control'] == 'no-store'
+        etag = first.headers['etag']
+        again = client.get('/api/stickers', headers={'If-None-Match': etag})
+        assert again.status_code == 304 and again.content == b''
+        assert again.headers['etag'] == etag and again.headers['cache-control'] == 'no-store'
+        assert again.headers['x-content-type-options'] == 'nosniff'
+        template(client)
+        changed = client.get('/api/stickers', headers={'If-None-Match': etag})
+        assert changed.status_code == 200 and changed.headers['etag'] != etag and len(changed.json()) == 12
+        # Permission checks still run before any 304.
+        client.post('/api/auth/logout')
+        assert client.get('/api/stickers', headers={'If-None-Match': changed.headers['etag']}).status_code == 401

@@ -423,11 +423,13 @@ def register_customer_orders(app, db, user):
 
     @app.get('/api/customer-orders')
     def list_orders(request: Request, state: str | None = None, owner: str | None = None, order_number: str | None = None,
-                    date_from: str | None = None, date_to: str | None = None, summary: bool = False):
+                    date_from: str | None = None, date_to: str | None = None, summary: bool = False, active: bool = False):
+        # active=1 is the workspace view (draft/review only), so its 4 s poll stays small however long the history grows.
         def read(tx):
             actor = user(tx, request)
             orders = [o for o in tx.all('orders') if scoped(o, actor)]
             return [dto(tx, o, summary=summary) for o in reversed(orders) if (not state or o['state'] == state) and (not owner or o['owner'] == owner)
+                    and (not active or o['state'] in ('draft', 'review'))
                     and (not order_number or order_number in o['order_number']) and (not date_from or o['created_at'][:10] >= date_from)
                     and (not date_to or o['created_at'][:10] <= date_to)]
         # Reconciliation may need to write; db.read() then reruns this in a write transaction.

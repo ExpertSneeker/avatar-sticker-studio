@@ -632,3 +632,15 @@ def test_templates_are_1024_and_large_avatars_shrink_to_1024_short_edge(context)
     small_avatar=guest_upload(guest)['id']
     with app.state.db.transaction() as tx: asset_id=tx.get('uploads',small_avatar)['asset_id']
     assert stored(asset_id)==(32,32)
+
+
+def test_workspace_list_carries_only_active_orders(context):
+    app,c,_,_=context
+    keep=opened(c,'ACTIVE-1'); gone=opened(c,'CANCELLED-1')
+    assert action(c,gone,'cancel').status_code==200
+    active=[o['order_number'] for o in c.get('/api/customer-orders?summary=1&active=1').json()]
+    assert active==['ACTIVE-1']
+    everything={o['order_number'] for o in c.get('/api/customer-orders?summary=1').json()}
+    assert everything=={'ACTIVE-1','CANCELLED-1'}
+    # A cancelled order stays readable on its own, so an open detail panel can show the final state.
+    assert c.get('/api/customer-orders/'+gone['id']).json()['state']=='cancelled'

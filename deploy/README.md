@@ -95,6 +95,17 @@ journalctl -u avatar-sticker-studio --since '30 minutes ago'
 
 Use controlled service restarts, retaining durable FAL request IDs. Unknown cutout requests require explicit manual retry; never automatically resubmit a deployment smoke request. Changing the release symlink and restarting selects another compatible code version; this does not roll back business data.
 
+### 标准发布脚本
+
+`deploy/release.sh` 把下述“停服完整备份 → 切换 → 审计 → 归档 → 保留三份”串成一次执行，停机只剩数秒：服务运行时先把数据目录完整复制到新备份，停服后只补同步变化的文件并核对副本与停服数据一致（rsync 无差异、数据库文件哈希相同），再原子切换并启动；新版本 90 秒内未就绪会自动切回原 release。启动后对静态副本算 `data-sha256.json`、以副本做审计基线并审计线上数据，审计无失败才归档 OSS 并 prune。旧 release 的带哈希前端文件会复制进新 release，打开中的旧页面仍能加载按需模块。
+
+```sh
+# 本机：git archive <commit> + frontend/dist + REVISION 打成 <commit>.tgz，上传到服务器 /tmp 并核对 sha256
+bash /opt/avatar-sticker-studio/releases/<commit>/deploy/release.sh /tmp/<commit>.tgz <label>   # 首次可先单独解出脚本
+```
+
+脚本不处理需要演练的数据迁移（如单一订单迁移），这类发布仍按对应章节手工执行。备份不使用硬链接：归档指纹包含 inode 与 ctime，硬链接会在旧备份删除时改变新备份指纹。
+
 按用户 2026-10-05 要求，每次发布验收后手动将完整备份归档到私有 OSS；本机与 OSS 合计保留最近 3 份不同快照，同一快照多处存放只计一份。本机保留最新 1 份，另两份经读回校验后仅保留 OSS 归档。不安装定时任务。具体操作见下文。
 
 ## Display image cache

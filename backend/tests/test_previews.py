@@ -160,3 +160,15 @@ def test_white_overview_and_new_asset_version_have_distinct_cached_previews(clie
     second = client.get(images[1]['url']+'/preview', headers={'If-None-Match':first.headers['etag']})
     assert second.status_code == 200
     assert second.headers['etag'] != first.headers['etag'] and second.content != first.content
+
+
+def test_library_sticker_images_are_browser_cacheable_but_customer_media_revalidates(client):
+    sticker = template(client)['images'][0]
+    for url in (sticker['url'] + '/preview', sticker['url']):
+        response = client.get(url)
+        assert response.status_code == 200
+        assert response.headers['cache-control'] == 'private, max-age=604800'
+        assert response.headers['vary'] == 'Cookie'
+    avatar = upload(client)
+    assert client.get(avatar['url'] + '/preview').headers['cache-control'] == 'private, no-cache'
+    assert client.get(avatar['url']).headers['cache-control'] == 'no-store'

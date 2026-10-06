@@ -31,6 +31,10 @@ from .schemas import AccountConcurrencyPatch, AccountDeleteConfirm, AdminCreateU
 FRONTEND_DIST = Path(__file__).resolve().parents[2] / 'frontend' / 'dist'
 # Vite 构建文件名带内容哈希，可交给 ESA 边缘与浏览器长期缓存；HTML、API 和受保护媒体不适用。
 IMMUTABLE_ASSET = 'public, max-age=31536000, immutable'
+# Library sticker images never change under an asset id, so staff browsers may reuse them for a
+# week without asking again. Customer media (avatars, results, print files) still revalidate on
+# every use so revoked access applies at once. The week bounds staleness if the preview pipeline changes.
+LIBRARY_ASSET_CACHE = 'private, max-age=604800'
 
 
 def create_app(data_root=None, provider=None, clock=None, start_worker=True):
@@ -81,7 +85,24 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
         response.headers['X-Content-Type-Options'] = 'nosniff'
         response.headers['Referrer-Policy'] = 'no-referrer'
         response.headers.setdefault('Cache-Control', 'no-store')
+        if request.method == 'GET' and request.url.path.startswith('/api/') and response.status_code == 200 \
+                and response.headers.get('content-type', '').startswith('application/json'):
+            return await revalidated_json(request, response)
         return response
+
+    async def revalidated_json(request, response):
+        # Polled JSON carries a content ETag; the browser keeps the last body only in page memory and
+        # sends it back, so an unchanged poll costs an empty 304. Cache-Control stays no-store and the
+        # handler (with all permission checks) still runs on every request.
+        body = b''.join([chunk async for chunk in response.body_iterator])
+        etag = 'W/"' + hashlib.sha256(body).hexdigest()[:32] + '"'
+        matched = etag in [tag.strip() for tag in request.headers.get('if-none-match', '').split(',')]
+        result = Response(status_code=304) if matched else Response(body, status_code=200)
+        skip = {b'content-length', b'content-type', b'etag'} if matched else {b'content-length', b'etag'}
+        result.raw_headers = [(k, v) for k, v in response.raw_headers if k.lower() not in skip] + [(b'etag', etag.encode())]
+        if not matched:
+            result.raw_headers.append((b'content-length', str(len(body)).encode()))
+        return result
 
     def user(tx, request):
         actor = require_user(tx, request.cookies.get('studio_session'), now())
@@ -505,7 +526,7 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
             raise HTTPException(422, '不支持的预览尺寸')
         cache = app.state.preview_cache
         etag = cache.etag(value, size)
-        headers = {'Cache-Control': 'private, no-cache', 'Vary': 'Cookie', 'ETag': etag}
+        headers = {'Cache-Control': LIBRARY_ASSET_CACHE if value['kind'] == 'template' else 'private, no-cache', 'Vary': 'Cookie', 'ETag': etag}
         candidates = [tag.strip().removeprefix('W/') for tag in request.headers.get('if-none-match', '').split(',')]
         if '*' in candidates or etag.removeprefix('W/') in candidates:
             return Response(status_code=304, headers=headers)
@@ -518,7 +539,8 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
             value = tx.get('assets', id)
             if not can_read_asset(value, actor):
                 raise HTTPException(404, '文件不存在')
-            return FileResponse(db.root / 'assets' / value['file'], media_type='image/png')
+            headers = {'Cache-Control': LIBRARY_ASSET_CACHE, 'Vary': 'Cookie'} if value['kind'] == 'template' else None
+            return FileResponse(db.root / 'assets' / value['file'], media_type='image/png', headers=headers)
 
     @app.api_route('/api/{path:path}', methods=['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'], include_in_schema=False)
     def missing_api(path: str, request: Request):

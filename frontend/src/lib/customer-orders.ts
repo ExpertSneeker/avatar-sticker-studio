@@ -1,4 +1,4 @@
-import { ApiError, post } from './api'
+import { ApiError, fetchRevalidated, post } from './api'
 import type { PrintSettings, Sticker, TemplateSet } from './types'
 import type { LibraryCategory } from './categories'
 
@@ -115,7 +115,7 @@ export function moveSelection(ids:string[],index:number,offset:number):string[] 
 export async function guestApi<T>(path:string,options:RequestInit={}):Promise<T> {
   const headers=new Headers(options.headers)
   if(typeof options.body==='string')headers.set('Content-Type','application/json')
-  const response=await fetch('/api/guest'+path,{...options,headers,credentials:'same-origin',cache:'no-store'})
+  const response=await fetchRevalidated('/api/guest'+path,{...options,headers,credentials:'same-origin',cache:'no-store'})
   if(!response.ok){
     let message='操作未完成，请稍后重试'
     try{const body=await response.json();if(typeof body.detail==='string')message=body.detail;else if(typeof body.detail?.message==='string')message=body.detail.message}catch{}
