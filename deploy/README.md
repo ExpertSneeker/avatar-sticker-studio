@@ -35,7 +35,9 @@ ESA 站点 `coreages.com`（SiteId `182026692718828`，CNAME 接入，加速区�
 | 真实 IP | 托管转换添加 `ali-real-client-ip`；Nginx 仅从 ESA 回源地址恢复该头（`/etc/nginx/snippets/esa-origin-ips.conf`），登录限流因此按访客真实 IP 计算 |
 | 多级缓存 / 源站防护 | 边缘 + 区域；源站防护开启，`AutoConfirmIPList=off`。基础版不支持回源收敛 |
 | WAF | ESA 自动生成的“安全等级低”托管规则对威胁分 26–100 的请求出验证码；白名单规则 `agiso-webhook-callback` 让 `/api/agiso/webhook` 与 `/api/agiso/callback` 跳过全部防护，机器推送不会遇到验证码。两接口仍靠签名、state/nonce 自行校验 |
-| 安全组 | `sg-0jlhqi0txhes06ug8wdc` 的 TCP 80–443 只允许前缀列表 `pl-0jlj4dafkh3brxsuzz2b`（ESA 当前回源 IPv4 段）；22 端口未改。ECS 无公网 IPv6 |
+| 安全组 | `sg-0jlhqi0txhes06ug8wdc` 的 TCP 80–443 只允许前缀列表 `pl-0jlj4dafkh3brxsuzz2b`（ESA 当前回源 IPv4 段）；3389 已于 2026-10-06 关闭，22 仅密钥登录。ECS 无公网 IPv6 |
+| HTTPS | HTTP/2、HTTP/3 开启；TLS 1.0/1.1 关闭，只允许 TLS 1.2/1.3 |
+| 监控 | 云监控应用分组 `sticker-coreages`（GroupId `247491708`）：可用性监控任务 `sticker_ready`（TaskId `2034724`）由 ECS 上的云监控插件每 60 秒请求 `https://sticker.coreages.com/api/ready`（经 ESA 全链路），状态码 ≥400 或响应 >10 秒连续 3 次即短信+邮件通知“云账号报警联系人”，1 小时静默；报警规则 `sticker-ecs-statuscheck` 在 ECS 平台状态检测 `StatusCheck` 连续 3 分钟异常时通知（主机宕机时插件探测无法自报）。指标在 `acs_cms_detect` 命名空间。云监控“站点监控/云拨测”无免费探测点，未使用 |
 
 只有 22、80、443 在公网监听，因此 80–443 端口范围规则不会额外暴露服务。主站和 Wiki 的解析当前暂停；恢复它们时必须同样经 ESA 代理接入，否则会被安全组拒绝。
 
