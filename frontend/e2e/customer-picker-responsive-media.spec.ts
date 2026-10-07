@@ -12,13 +12,13 @@ async function pickerImages(browser:Browser,baseURL:string,orderNumber:string,su
   const context=await browser.newContext({baseURL,viewport:{width,height:900},deviceScaleFactor:dpr})
   const page=await context.newPage()
   const requested:number[]=[]
-  page.on('request',request=>{if(request.url().includes('/api/guest/media/'))requested.push(tierOf(request.url()))})
+  page.on('request',request=>{if(request.url().includes('/media/catalog/'))requested.push(tierOf(request.url()))})
   await page.goto('/guest')
   await page.getByLabel('订单号',{exact:true}).fill(orderNumber);await page.getByRole('button',{name:'进入订单'}).click()
   await page.getByLabel('上传头像').setInputFiles({name:'avatar.png',mimeType:'image/png',buffer:pixel})
   // The picker opens on single stickers; drop that first batch so template thumbnails are measured first.
   let holdMedia=true
-  await page.route('**/api/guest/media/**',route=>holdMedia?route.abort():route.continue())
+  await page.route('**/media/catalog/**',route=>holdMedia?route.abort():route.continue())
   await page.getByRole('button',{name:'选择模板和贴纸'}).first().click()
   const picker=page.getByRole('dialog',{name:'选择模板和贴纸'})
   await expect(picker.locator('.customer-catalog-image img').first()).toBeAttached()

@@ -36,21 +36,23 @@ def test_library_renders_are_shared_across_orders_and_survive_restart(context, m
     sticker(staff, 'SHARE')
     first, data = guest(app, opened(staff, 'SHARE-1'))
     link = library_link(data, 'SHARE')
-    assert link.split('?')[1].startswith('m=')
-    original = first.get(link + '&size=320')
+    # Catalog images use one public URL per image + watermark: no order id, no query state.
+    assert link.startswith('/media/catalog/') and data['id'] not in link and '?' not in link
+    original = first.get(link + '?size=320')
     assert original.status_code == 200
     [path] = cached(app, 'library')
-    assert path.parent.name == link.split('?')[0].rsplit('/', 1)[1] and path.name.split('-')[1] == '320'
-    # Another order with the same watermark reuses the render (memory and disk).
+    assert path.parent.name == link.split('/')[3] and path.name.split('-')[1] == '320'
+    # Another order with the same watermark gets the same URL and reuses the render (memory and disk).
     second, data = guest(app, opened(staff, 'SHARE-2'))
+    assert library_link(data, 'SHARE') == link
     forbid_render(monkeypatch)
-    again = second.get(library_link(data, 'SHARE') + '&size=320')
+    again = second.get(library_link(data, 'SHARE') + '?size=320')
     assert again.content == original.content and again.headers['etag'] == original.headers['etag']
     # A new process (empty memory) is served from disk.
     restarted = create_app(tmp_path, start_worker=False)
     with TestClient(restarted) as client:
         assert client.post('/api/guest/login', json={'order_number': 'SHARE-1'}).status_code == 200
-        response = client.get(link + '&size=320')
+        response = client.get(link + '?size=320')
         assert response.status_code == 200 and response.content == original.content
 
 
@@ -168,12 +170,12 @@ def test_pregeneration_matches_on_demand_renders_and_is_idempotent(context, monk
     client, data = guest(app, order)
     forbid_render(monkeypatch)
     for size in (160, 320, 640):
-        response = client.get(library_link(data, 'WARM') + f'&size={size}')
+        response = client.get(library_link(data, 'WARM') + f'?size={size}')
         assert response.status_code == 200
     assert client.get(data['slots'][0]['versions'][0]['preview_url']).status_code == 200
     monkeypatch.undo()
     with app.state.db.transaction() as tx:
-        asset = tx.get('assets', library_link(data, 'WARM').split('?')[0].rsplit('/', 1)[1])
+        asset = tx.get('assets', library_link(data, 'WARM').split('/')[3])
     from backend.app.storage import asset_bytes
     source = asset_bytes(app.state.db, asset)
     assert guest_media.render_tiers(source, order['watermark'], (160, 320, 640)) == {s: guest_media.render(source, order['watermark'], s) for s in (160, 320, 640)}
@@ -189,3 +191,36 @@ def test_storage_stats_report_watermark_and_customer_cache_separately(context):
     assert media['library']['files'] == 1 and media['customer']['files'] == 1
     assert media['library']['bytes'] > 0 and media['customer']['bytes'] > 0
     assert media['pregeneration']['running'] is False
+
+
+def test_catalog_urls_are_public_cacheable_signed_and_never_serve_customer_media(context):
+    app, staff, _, _ = context
+    order = generate(staff, opened(staff, 'PUBLIC-1'), sticker(staff, 'PUBLIC')['id']); run(app)
+    client, data = guest(app, opened(staff, 'PUBLIC-2'))
+    link = library_link(data, 'PUBLIC')
+    anonymous = TestClient(app)
+    response = anonymous.get(link + '?size=160')
+    assert response.status_code == 200 and response.headers['content-type'] == 'image/webp'
+    assert response.headers['cache-control'] == 'public, max-age=31536000, immutable'
+    assert 'cookie' not in response.headers.get('vary', '').lower()
+    assert anonymous.get(link, headers={'If-None-Match': response.headers['etag'].replace('W/', '')}).status_code in (200, 304)
+    # Tampering with the watermark, signature or render version is refused.
+    _, _, _, asset_id, encoded, version, signature = link.split('/')
+    import base64
+    blank = base64.urlsafe_b64encode(b' ').decode().rstrip('=')
+    for forged in (f'/media/catalog/{asset_id}/{blank}/{version}/{signature}',
+                   f'/media/catalog/{asset_id}/{encoded}/{version}/{"0" * 32}.webp',
+                   f'/media/catalog/{asset_id}/{encoded}/00000000/{signature}'):
+        assert anonymous.get(forged).status_code == 404
+    # A valid signature for a customer image still finds no library sticker behind it.
+    from backend.app.guest_media import catalog_url
+    with app.state.db.transaction() as tx:
+        secret = tx.get('config', 'settings')['media_url_secret']
+        stored = tx.get('orders', order['id'])
+    customer_asset = stored['avatars'][0]['asset_id']
+    assert anonymous.get(catalog_url(secret, customer_asset, stored['watermark'])).status_code == 404
+    # Customer media keeps per-request authorization and private caching.
+    owner, own = guest(app, order)
+    private = owner.get(own['slots'][0]['versions'][0]['preview_url'])
+    assert private.status_code == 200 and private.headers['cache-control'] == 'private, no-cache'
+    assert anonymous.get(own['slots'][0]['versions'][0]['preview_url']).status_code == 401

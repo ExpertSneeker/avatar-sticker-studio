@@ -1,6 +1,7 @@
 """SQLite WAL transactions coordinate all processes on one host."""
 import json
 import os
+import secrets
 import sqlite3
 import weakref
 from contextlib import contextmanager
@@ -86,6 +87,8 @@ class Database:
             config.pop('rpm', None)
             config.pop('openai_api_key', None)
             config.setdefault('fal_input_mode', 'inline')
+            # Signs public catalog image URLs (guest_media.catalog_url); rotating it only re-issues URLs.
+            config.setdefault('media_url_secret', secrets.token_hex(32))
             tx.put('config', config)
             if not tx.get('migrations', 'personal-credits-v1'):
                 for kind in ('templates', 'template_revisions'):

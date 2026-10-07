@@ -310,6 +310,8 @@ OSS 启用后发布审计显式使用 `deploy/audit_framework.py --allow-oss-del
 
 2026-10-05 真实联调记录：默认 OSS 域名的首张 FAL 试验返回结果 HTTP 422 / `file_download_error`，网站正确记为可重试失败、无未知占用。普通公网及美国 DMIT 下载成功不能证明 FAL 可取图。已按方案停止后续 OSS 批次并恢复 inline；在定位原因并重新通过真实试验前不要将此配置视为已联通。实测响应有 `Content-Disposition: attachment` / `x-oss-force-download: true`；[阿里云当前规则](https://help.aliyun.com/zh/oss/user-guide/0048-00000114)包含乌兰察布新建 Bucket 的 PNG，但尚未证实该头就是 FAL 失败根因。本次未启用自定义域名、CDN 或传输加速。
 
+2026-10-07 复测：在 ECS 上用与生产相同的暂存、签名和请求参数直接调用 FAL 两次（合成小图；1.8MB 图库原图 + 2.5MB 合成人像），两次 FAL 均成功取图并完成生成。签名 URL 的 GET 正常，HEAD 因签名方法不同返回 403，FAL 不依赖 HEAD。`oss_delivery.py` 自 10-05 试验以来未改动，该次 `file_download_error` 无法复现，原因未定（未保存 FAL 错误说明，provider 按设计只记录错误类型码）。当前设置保持 `oss`，偶发取图失败由 worker 自动 inline 重提一次兜底；观察日志 `fal_submit` 的 `mode` 与 `fal_input_retry` 事件。
+
 ## SKU 规格默认配置升级
 
 `sku-spec-defaults-v1` 启动迁移对所有组织的现有店铺 SKU 执行一次更新：启用 SKU，识别规格完整数量加“个/张”并按默认表更新额度；18个/18张为 G=24/F=18/R=7，未命中保留额度。只修改店铺规则，不修改订单、任务、原图、授权或店铺总开关。发布前在 SQLite 隔离副本演练，比较所有非店铺记录及未改字段，核对变更数量；发布后复验幂等与人工配置保留。不要为诊断实例化生产 Database 或启动第二套 worker。

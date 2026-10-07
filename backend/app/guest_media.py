@@ -1,5 +1,9 @@
 """Authorized, flattened, heavily watermarked derivatives; never original fallback."""
+import base64
+import hashlib
+import hmac
 import io
+import re
 import threading
 from collections import OrderedDict
 from fastapi import HTTPException, Request, Response
@@ -114,6 +118,25 @@ def watermarked(data, mark, size, already_watermarked=False):
     return Image.alpha_composite(canvas, layer)
 
 
+# Library catalog images are the same for every order sharing a watermark, so they are served from
+# public, immutable URLs that ESA can cache for all customers. The URL carries the watermark text and
+# an HMAC over (asset, watermark, render version): only URLs issued by the guest library work, so
+# nobody can request a sticker with a weaker or blank watermark. Customer media never uses this path.
+CATALOG_VERSION = hashlib.sha256('|'.join(pipeline(size) for size in TIERS).encode()).hexdigest()[:8]
+CATALOG_CACHE = 'public, max-age=31536000, immutable'
+_CATALOG_PATH = re.compile(r'[0-9a-f]{32}')
+
+
+def _catalog_signature(secret, asset_id, mark):
+    message = f'{asset_id}\n{mark}\n{CATALOG_VERSION}'.encode()
+    return hmac.new(secret.encode(), message, hashlib.sha256).hexdigest()[:32]
+
+
+def catalog_url(secret, asset_id, mark):
+    encoded = base64.urlsafe_b64encode(mark.encode()).decode().rstrip('=')
+    return f'/media/catalog/{asset_id}/{encoded}/{CATALOG_VERSION}/{_catalog_signature(secret, asset_id, mark)}.webp'
+
+
 def register_guest_media(app, db, user):
     from .customer_orders import customer, digest, draft_avatars, guest_order, scoped
     from .media_cache import library_owner
@@ -149,6 +172,27 @@ def register_guest_media(app, db, user):
                 return order, asset, 'library'
         raise HTTPException(404, '图片不可用')
 
+    def cached_render(key, path, asset, mark, size, already_watermarked):
+        with _lock:
+            rendered = memory.get(key)
+            if rendered is not None:
+                memory.move_to_end(key)
+        if rendered is not None:
+            cache.refresh(path, rendered)
+            return rendered
+        rendered = cache.read(path)
+        if rendered is None:
+            try:
+                rendered = render(asset_bytes(db, asset), mark, size, already_watermarked)
+            except FileNotFoundError:
+                raise HTTPException(404, '图片不可用')
+            except (OSError, ValueError, Image.DecompressionBombError):
+                raise HTTPException(422, '图片预览暂不可用')
+            cache.write(path, rendered)
+        with _lock:
+            memory.put(key, rendered)
+        return rendered
+
     def media(order_id, asset_id, request, size, is_guest, attempt=0):
         size = tier(size)
         candidates = [tag.strip().removeprefix('W/') for tag in request.headers.get('if-none-match', '').split(',')]
@@ -171,30 +215,42 @@ def register_guest_media(app, db, user):
             # A browser cache hit needs live authorization, but no image IO/encoding.
             db.read(lambda tx: authorized(tx, request, order_id, asset_id, is_guest))
             return Response(status_code=304, headers=headers)
-        with _lock:
-            rendered = memory.get(key)
-            if rendered is not None:
-                memory.move_to_end(key)
-        if rendered is not None:
-            cache.refresh(path, rendered)
-        else:
-            rendered = cache.read(path)
-            if rendered is None:
-                try:
-                    rendered = render(asset_bytes(db, asset), mark, size, already_watermarked)
-                except FileNotFoundError:
-                    raise HTTPException(404, '图片不可用')
-                except (OSError, ValueError, Image.DecompressionBombError):
-                    raise HTTPException(422, '图片预览暂不可用')
-                cache.write(path, rendered)
-            with _lock:
-                memory.put(key, rendered)
+        rendered = cached_render(key, path, asset, mark, size, already_watermarked)
         # Cancellation during rendering must invalidate this response; a watermark change re-renders once.
         order, _, _ = db.read(lambda tx: authorized(tx, request, order_id, asset_id, is_guest))
         if order['watermark'] != mark:
             if attempt:
                 raise HTTPException(409, '图片水印已更新，请刷新页面')
             return media(order_id, asset_id, request, size, is_guest, attempt + 1)
+        return Response(rendered, media_type='image/webp', headers={**headers, 'Content-Disposition': 'inline'})
+
+    @app.get('/media/catalog/{asset_id}/{encoded}/{version}/{signature}.webp')
+    def catalog_image(asset_id: str, encoded: str, version: str, signature: str, request: Request, size: int = 640):
+        # No session: the signature proves the guest library issued this exact asset + watermark pair.
+        if not _CATALOG_PATH.fullmatch(asset_id) or version != CATALOG_VERSION or len(encoded) > 400:
+            raise HTTPException(404, '图片不可用')
+        try:
+            mark = base64.urlsafe_b64decode(encoded + '=' * (-len(encoded) % 4)).decode()
+        except (ValueError, UnicodeDecodeError):
+            raise HTTPException(404, '图片不可用')
+        secret = db.read(lambda tx: tx.get('config', 'settings')['media_url_secret'])
+        if not hmac.compare_digest(signature, _catalog_signature(secret, asset_id, mark)):
+            raise HTTPException(404, '图片不可用')
+        size = tier(size)
+        def prepare(tx):
+            asset = tx.get('assets', asset_id)
+            # Only an active library sticker image of its own organization; never customer media.
+            if not asset or not library_owner(tx, asset.get('organization_id'), asset_id):
+                raise HTTPException(404, '图片不可用')
+            return asset
+        asset = db.read(prepare)
+        key = digest([asset['sha256'], mark, size, pipeline(size), False])
+        headers = {'Cache-Control': CATALOG_CACHE, 'ETag': f'W/"{key}"'}
+        candidates = [tag.strip().removeprefix('W/') for tag in request.headers.get('if-none-match', '').split(',')]
+        if '*' in candidates or f'"{key}"' in candidates:
+            return Response(status_code=304, headers=headers)
+        path = cache.path('library', asset['organization_id'], asset_id, mark, size, pipeline(size), False)
+        rendered = cached_render(key, path, asset, mark, size, False)
         return Response(rendered, media_type='image/webp', headers={**headers, 'Content-Disposition': 'inline'})
 
     @app.get('/api/guest/media/{order_id}/{asset_id}')

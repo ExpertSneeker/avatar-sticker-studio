@@ -40,8 +40,8 @@ export const isAdmin=(role:string)=>role==='superadmin'||role==='org_admin'
 export function staffLibrary(stickers:Sticker[],templates:TemplateSet[],categories:LibraryCategory[]=[]):CustomerLibrary {
   return {categories,stickers:stickers.map(s=>({...s,preview_url:s.image.url})),templates:templates.map(t=>({...t,sticker_ids:t.sticker_ids||t.images.map(i=>i.sticker_id||'').filter(Boolean),images:t.images.map(i=>({preview_url:i.url,code:i.code}))}))}
 }
-// Watermarked customer media (guest and staff order media routes) is served in fixed tiers 160/320/640/1024; staff originals are already full size.
-const isWatermarked=(url:string)=>/^\/api\/(guest\/media|customer-orders\/[^/?]+\/media)\//.test(url)
+// Watermarked media (guest/staff order media and the public catalog images) is served in fixed tiers 160/320/640/1024; staff originals are already full size.
+const isWatermarked=(url:string)=>/^\/(api\/(guest\/media|customer-orders\/[^/?]+\/media)|media\/catalog)\//.test(url)
 const sizedUrl=(url:string,size:number)=>{const [path,query='']=url.split('?'),params=new URLSearchParams(query);params.set('size',String(size));return path+'?'+params}
 // Enlarged view always uses the largest tier.
 export const zoomUrl=(url:string)=>isWatermarked(url)?sizedUrl(url,1024):url

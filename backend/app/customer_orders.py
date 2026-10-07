@@ -524,8 +524,11 @@ def register_customer_orders(app, db, user):
         if order['state'] not in {'draft', 'review'}:
             raise HTTPException(409, '当前订单不能浏览图库')
         stickers, templates = library_records(tx, order)
+        from .guest_media import catalog_url
+        secret = tx.get('config', 'settings')['media_url_secret']
         def image(s):
-            url = media_url(order, s['image']['id'])
+            # Shared catalog images: one public, ESA-cacheable URL per image and watermark text.
+            url = catalog_url(secret, s['image']['id'], order['watermark'])
             return {'id': s['image']['id'], 'code': s['code'], 'url': url, 'preview_url': url}
         by_id = {s['id']: s for s in stickers}
         # Category names for the picker filter; ids match the sticker/template `category` field.

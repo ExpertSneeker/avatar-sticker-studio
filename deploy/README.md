@@ -30,7 +30,7 @@ ESA 站点 `coreages.com`（SiteId `182026692718828`，CNAME 接入，加速区�
 | 记录 | `sticker.coreages.com` A/AAAA → `8.130.175.250`，开启代理，业务类型 web |
 | 边缘证书 | ESA 免费 Let's Encrypt 证书，ESA 自动续期；源站证书仍由 certbot 管理 |
 | 回源规则 | 协议跟随客户端（HTTP 80 / HTTPS 443），Host 与 SNI 均为 `sticker.coreages.com`，校验源站证书，读超时 180 秒，不跟随 302 |
-| 缓存 | `/api/` 与 `/.well-known/` 强制绕过缓存；其余遵循源站头。源站只对 `/assets/` 下真实存在的构建文件返回 `public, max-age=31536000, immutable`，HTML、API、水印图均不进共享缓存 |
+| 缓存 | `/api/` 与 `/.well-known/` 强制绕过缓存；其余遵循源站头。访客图库目录图 `/media/catalog/…` 为签名公开地址（`public, max-age=31536000, immutable`），在 ESA 共享缓存，选图浏览基本不再占用源站出口；客户头像、生成结果仍在 `/api/` 下逐次鉴权。源站只对 `/assets/` 下真实存在的构建文件返回 `public, max-age=31536000, immutable`，HTML、API、水印图均不进共享缓存 |
 | 压缩 | ESA 规则 `sticker-compress` 对访客开启 Gzip 与 Brotli；sticker 虚拟主机对 JSON/JS/CSS 开启 gzip（`gzip_proxied any`），源站到 ESA 一段也压缩，节省 3Mbps 出口 |
 | 真实 IP | 托管转换添加 `ali-real-client-ip`；Nginx 仅从 ESA 回源地址恢复该头（`/etc/nginx/snippets/esa-origin-ips.conf`），登录限流因此按访客真实 IP 计算 |
 | 多级缓存 / 源站防护 | 边缘 + 区域；源站防护开启，`AutoConfirmIPList=off`。基础版不支持回源收敛 |
@@ -343,3 +343,5 @@ OSS 启用后发布审计显式使用 `deploy/audit_framework.py --allow-oss-del
 - 带宽验证：`/proc/net/dev` 的网卡发送量包含 OSS 内网流量，不能单独当作公网出口；结合云监控 `VPC_PublicIP_InternetOutRate` 或按公网目的地址过滤的包头计数。恢复旧 release 前排空提交并保留最新数据；此功能新增可忽略设置字段，无须为切回 inline 恢复旧数据库。
 
 2026-10-05 真实联调记录：默认 OSS 域名的首张 FAL 试验返回结果 HTTP 422 / `file_download_error`，网站正确记为可重试失败、无未知占用。普通公网及美国 DMIT 下载成功不能证明 FAL 可取图。已按方案停止后续 OSS 批次并恢复 inline；在定位原因并重新通过真实试验前不要将此配置视为已联通。实测响应有 `Content-Disposition: attachment` / `x-oss-force-download: true`；[阿里云当前规则](https://help.aliyun.com/zh/oss/user-guide/0048-00000114)包含乌兰察布新建 Bucket 的 PNG，但尚未证实该头就是 FAL 失败根因。本次未启用自定义域名、CDN 或传输加速。
+
+2026-10-07 复测：在 ECS 上用与生产相同的暂存、签名和请求参数直接调用 FAL 两次（合成小图；1.8MB 图库原图 + 2.5MB 合成人像），两次 FAL 均成功取图并完成生成。签名 URL 的 GET 正常，HEAD 因签名方法不同返回 403，FAL 不依赖 HEAD。`oss_delivery.py` 自 10-05 试验以来未改动，该次 `file_download_error` 无法复现，原因未定（未保存 FAL 错误说明，provider 按设计只记录错误类型码）。当前设置保持 `oss`，偶发取图失败由 worker 自动 inline 重提一次兜底；观察日志 `fal_submit` 的 `mode` 与 `fal_input_retry` 事件。
