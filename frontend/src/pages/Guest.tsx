@@ -1,9 +1,11 @@
 import { IcpFiling } from '../components/IcpFiling'
 import { useEffect, useRef, useState } from 'react'
-import { LogOut } from 'lucide-react'
+import { CircleHelp, LogOut } from 'lucide-react'
 import { Brand, Spinner } from '../components/UI'
 import { CustomerWorkbench } from '../components/CustomerWorkbench'
 import { guestApi, guestPost } from '../lib/customer-orders'
+import { replayGuides } from '../lib/guide'
+import { GuideTour } from '../components/GuestGuide'
 import type { CustomerLibrary, GuestOrder } from '../lib/customer-orders'
 import './CustomerOrders.css'
 
@@ -75,7 +77,7 @@ export default function Guest() {
   }
 
   return <div className="guest-shell">
-    <header className="guest-header"><Brand/><span>客户选图</span>{order && <button className="button" disabled={busy} onClick={() => void logout()}><LogOut size={16}/>退出订单</button>}</header>
+    <header className="guest-header"><Brand/><span>客户选图</span><button type="button" className="button guide-replay" onClick={replayGuides}><CircleHelp size={16}/>操作指引</button>{order && <button className="button" disabled={busy} onClick={() => void logout()}><LogOut size={16}/>退出订单</button>}</header>
     <main className="guest-content">
       {order && error && <div className="error-banner" role="alert">{error}</div>}
       {loading ? <div className="startup"><Spinner/></div> : order ?
@@ -83,11 +85,15 @@ export default function Guest() {
         <form className="guest-login settings-section" onSubmit={login}>
           <h1>查看你的头像贴纸</h1>
           {otherOrder ? <div role="status"><strong>当前已登录其他订单</strong><p>确认下方订单号后，可切换到本次购买的订单。</p></div> : <p>输入订单号，上传头像、选择贴纸并确认成品。</p>}
-          <label className="field">订单号<input required autoComplete="off" autoCapitalize="none" spellCheck={false} value={number} onChange={e => setNumber(e.target.value)} maxLength={100}/></label>
+          <label className="field">订单号<input data-guide="order-number" required autoComplete="off" autoCapitalize="none" spellCheck={false} value={number} onChange={e => setNumber(e.target.value)} maxLength={100}/></label>
           {error && <div className="error-banner" role="alert">{error}</div>}
-          <button className="button primary" disabled={busy || !number.trim()}>{busy && <Spinner/>}{otherOrder ? '切换并进入订单' : '进入订单'}</button>
+          <button className="button primary" data-guide="enter-order" disabled={busy || !number.trim()}>{busy && <Spinner/>}{otherOrder ? '切换并进入订单' : '进入订单'}</button>
           {otherOrder && <button type="button" className="text-button" disabled={busy} onClick={() => { setOrder(otherOrder); setOtherOrder(null); setError(''); clearLink() }}>继续当前订单</button>}
         </form>}
+      {!loading && !order && <GuideTour steps={[
+        { id: 'landing-number', target: '[data-guide="order-number"]', text: <><strong>在这里输入订单号。</strong>订单号在你购买的订单详情里，长按可以复制，再粘贴到这里。</> },
+        { id: 'landing-enter', target: '[data-guide="enter-order"]', when: !!number.trim(), text: '输好后点这里进入。' },
+      ]}/>}
     </main>
     <footer className="guest-footer"><span>头像贴纸 · 客户预览</span><IcpFiling/></footer>
   </div>

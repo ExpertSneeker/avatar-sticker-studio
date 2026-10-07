@@ -1103,3 +1103,70 @@
   display: flex;
   margin: 14px auto 0;
 }
+
+/* Guest walkthrough: spotlight, photo rules and warnings. Sized for phones and first-time customers. */
+.guide-layer { position: fixed; inset: 0; z-index: 1000; pointer-events: none; }
+.guide-shade { position: fixed; background: rgb(15 23 42 / .62); pointer-events: auto; }
+.guide-ring {
+  position: fixed;
+  border: 3px solid #fbbf24;
+  border-radius: 12px;
+  box-shadow: 0 0 0 4px rgb(251 191 36 / .35);
+  animation: guide-pulse 1.4s ease-in-out infinite;
+}
+@keyframes guide-pulse { 50% { box-shadow: 0 0 0 9px rgb(251 191 36 / .12); } }
+.guide-bubble {
+  position: fixed;
+  pointer-events: auto;
+  background: #fff;
+  color: var(--ink);
+  border-radius: 16px;
+  padding: 18px 18px 14px;
+  box-shadow: 0 18px 50px rgb(15 23 42 / .35);
+  font-size: 17px;
+  line-height: 1.65;
+}
+.guide-bubble strong { color: #b45309; }
+.guide-actions { display: flex; justify-content: flex-end; align-items: center; gap: 14px; margin-top: 14px; }
+.guide-actions .button { min-height: 44px; padding: 10px 22px; font-size: 16px; }
+.guide-actions .text-button { font-size: 15px; min-height: 44px; }
+.guide-file-input { position: absolute; width: 1px; height: 1px; opacity: 0; overflow: hidden; pointer-events: none; }
+.guide-replay { white-space: nowrap; }
+
+.guide-rules { margin-top: 16px; padding: 16px; border: 2px solid #f59e0b; border-radius: 14px; background: #fffbeb; }
+.guide-rules.compact { padding: 10px 16px; }
+.guide-rules.compact summary { cursor: pointer; font-weight: 700; color: #b45309; font-size: 15px; min-height: 32px; display: flex; align-items: center; }
+.guide-rules.compact[open] summary { margin-bottom: 10px; }
+.guide-rule { margin: 0 0 14px; font-size: 17px; font-weight: 700; line-height: 1.6; color: #b45309; }
+.guide-examples { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 12px; }
+.guide-examples figure { margin: 0; }
+.guide-example-image { position: relative; aspect-ratio: 1; border-radius: 12px; overflow: hidden; border: 3px solid #16a34a; }
+.guide-examples .bad .guide-example-image { border-color: #dc2626; }
+.guide-example-image img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.guide-mark {
+  position: absolute; top: 6px; right: 6px;
+  width: 44px; height: 44px; border-radius: 50%;
+  display: grid; place-items: center;
+  color: #fff; background: #16a34a; box-shadow: 0 4px 12px rgb(0 0 0 / .3);
+}
+.guide-examples .bad .guide-mark { background: #dc2626; }
+.guide-examples.large .guide-mark { width: 60px; height: 60px; }
+.guide-examples figcaption { margin-top: 6px; text-align: center; font-size: 14px; line-height: 1.45; color: #15803d; }
+.guide-examples .bad figcaption { color: #b91c1c; }
+.guide-examples figcaption strong { display: block; font-size: 15px; }
+.guide-checklist { margin: 16px 0 4px; padding-left: 1.4em; font-size: 16px; line-height: 1.9; }
+.guide-photo-dialog .modal-footer .button { min-height: 46px; font-size: 16px; }
+.guide-warning {
+  padding: 12px 14px; border: 2px solid #dc2626; border-radius: 12px;
+  background: #fef2f2; color: #991b1b; font-size: 16px; font-weight: 700; line-height: 1.6;
+}
+.guide-waiting {
+  margin-bottom: 16px; padding: 14px 16px; border-radius: 12px;
+  background: #eff6ff; border: 2px solid #3b82f6; color: #1e3a8a; font-size: 16px; line-height: 1.6;
+}
+@media (max-width: 640px) {
+  .guide-examples { grid-template-columns: repeat(2,minmax(0,1fr)); }
+  .guide-mark { width: 38px; height: 38px; }
+  .guide-examples.large .guide-mark { width: 48px; height: 48px; }
+}
+@media (prefers-reduced-motion: reduce) { .guide-ring { animation: none; } }
