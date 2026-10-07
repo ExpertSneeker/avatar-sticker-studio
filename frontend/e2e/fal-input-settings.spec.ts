@@ -43,7 +43,9 @@ test('OSS 可用时传输方式可保存，服务端拒绝时保留修改并提�
       currentMode = body.fal_input_mode
       return route.fulfill({ json: { ok: true } })
     }
-    const response = await route.fetch()
+    // Drop If-None-Match so the rewritten response always starts from a full body, never a 304.
+    const headers = Object.fromEntries(Object.entries(route.request().headers()).filter(([name]) => name !== 'if-none-match'))
+    const response = await route.fetch({ headers })
     return route.fulfill({ response, json: { ...await response.json(), fal_input_mode: currentMode, fal_input_oss_available: true } })
   })
   await page.goto('/')

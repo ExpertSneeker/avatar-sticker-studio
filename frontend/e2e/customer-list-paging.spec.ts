@@ -7,7 +7,7 @@ test('history renders 50 rows at a time while filters and select-all cover every
   // Isolate the list UI: 60 synthetic summaries (newest first), with overview thumbnails.
   const rows=Array.from({length:60},(_,i)=>({...base,id:`paging-${i}`,order_number:`PAGE-${String(i).padStart(2,'0')}`,state:'submitted',delivery_ready:false,
     preview_url:`/api/customer-orders/paging-${i}/media/${'a'.repeat(32)}?v=1`}))
-  await page.route(/\/api\/customer-orders\?summary=1$/,route=>route.fulfill({json:rows}))
+  await page.route(/\/api\/customer-orders\?summary=1(&active=1)?$/,route=>route.fulfill({json:rows}))
   await page.route(/\/api\/customer-orders\/paging-\d+\/media\//,route=>route.fulfill({status:404}))
   await page.goto('/')
   await page.getByRole('navigation').getByRole('button',{name:'历史订单',exact:true}).click()

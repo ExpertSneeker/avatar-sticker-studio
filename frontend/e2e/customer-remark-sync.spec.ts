@@ -1,6 +1,8 @@
-import {test,expect} from '@playwright/test'
+import {test,expect,type Route} from '@playwright/test'
 import {randomUUID} from 'node:crypto'
 import {createCustomer,staffLogin} from './customer-fixtures'
+// Rewritten responses need the full body: drop the page's If-None-Match so the server never answers 304.
+const fresh=(route:Route)=>Object.fromEntries(Object.entries(route.request().headers()).filter(([name])=>name!=='if-none-match'))
 
 test('seller remark is read-only, fetched from Pinduoduo per order or in bulk; buyer memo is gone',async({page})=>{
   await staffLogin(page.request)
@@ -10,8 +12,8 @@ test('seller remark is read-only, fetched from Pinduoduo per order or in bulk; b
   // The test backend has no Pinduoduo shop: present the first order as linked, as the API does for Agiso orders.
   let remark='开户时备注'
   const decorate=(order:any)=>order.id===linked.id?{...order,shop_id:'shop-1',shop_name:'草木造物',platform_remark:remark,buyer_memo:undefined}:order
-  await page.route('**/api/customer-orders?summary=1',async route=>{const response=await route.fetch();route.fulfill({response,json:(await response.json()).map(decorate)})})
-  await page.route(`**/api/customer-orders/${linked.id}`,async route=>{const response=await route.fetch();route.fulfill({response,json:decorate(await response.json())})})
+  await page.route('**/api/customer-orders?summary=1*',async route=>{const response=await route.fetch({headers:fresh(route)});route.fulfill({response,json:(await response.json()).map(decorate)})})
+  await page.route(`**/api/customer-orders/${linked.id}`,async route=>{const response=await route.fetch({headers:fresh(route)});route.fulfill({response,json:decorate(await response.json())})})
   const requested:string[][]=[]
   await page.route('**/api/customer-orders/remarks/sync',async route=>{
     const ids=route.request().postDataJSON().ids as string[];requested.push(ids);remark='客服后加的备注'

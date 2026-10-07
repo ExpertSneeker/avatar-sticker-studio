@@ -1,7 +1,9 @@
-import {test,expect} from '@playwright/test'
+import {test,expect,type Route} from '@playwright/test'
 import {randomUUID} from 'node:crypto'
 import {uploadStickers} from './library-fixtures'
 import {completedCustomer,createCustomer,mutate,pixel,staffLogin} from './customer-fixtures'
+// Rewritten responses need the full body: drop the page's If-None-Match so the server never answers 304.
+const fresh=(route:Route)=>Object.fromEntries(Object.entries(route.request().headers()).filter(([name])=>name!=='if-none-match'))
 
 test('order row buttons stack in right-aligned columns of two on wide screens',async({page})=>{
   await staffLogin(page.request)
@@ -11,7 +13,7 @@ test('order row buttons stack in right-aligned columns of two on wide screens',a
   await createCustomer(page.request,{order_number:`ACT-${tag}-2`})
   const cancelled=await createCustomer(page.request,{order_number:`ACT-${tag}-3`});await mutate(page.request,cancelled,'cancel')
   // Present the submitted order as a Pinduoduo order so it shows every button (7).
-  await page.route('**/api/customer-orders?summary=1',async route=>{const response=await route.fetch();route.fulfill({response,json:(await response.json()).map((o:any)=>o.id===submitted.id?{...o,shop_id:'shop-1',shop_name:'草木造物',platform_remark:'66666666aaaaa [pdd73050906494 10/04 23:52]'}:o)})})
+  await page.route('**/api/customer-orders?summary=1*',async route=>{const response=await route.fetch({headers:fresh(route)});route.fulfill({response,json:(await response.json()).map((o:any)=>o.id===submitted.id?{...o,shop_id:'shop-1',shop_name:'草木造物',platform_remark:'66666666aaaaa [pdd73050906494 10/04 23:52]'}:o)})})
   await page.setViewportSize({width:1440,height:1000})
   await page.goto('/')
   await page.getByRole('navigation').getByRole('button',{name:'历史订单',exact:true}).click()
