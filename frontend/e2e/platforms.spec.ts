@@ -44,7 +44,8 @@ test('shops page offers each platform and edits a shop watermark',async({page})=
   await page.route('**/api/agiso/shops/shop-1/watermark',async route=>{saved=route.request().postDataJSON().watermark;await route.fulfill({json:{...shop,watermark:saved}})})
   await page.goto('/')
   await page.getByRole('navigation').getByRole('button',{name:'店铺接入',exact:true}).click()
-  for(const label of ['连接拼多多店铺','连接抖店店铺（接入中）','连接小红书店铺（接入中）'])await expect(page.getByRole('button',{name:label})).toBeDisabled()
+  // The e2e backend has no Agiso app configured, so every platform's button is present but disabled.
+  for(const label of ['连接拼多多店铺','连接抖店店铺','连接小红书店铺'])await expect(page.getByRole('button',{name:label})).toBeDisabled()
   await expect(page.locator('.shop-card .platform-badge')).toHaveText('拼多多')
   expect(await page.locator('.shop-card .platform-badge').evaluate(e=>getComputedStyle(e).color)).toBe('rgb(255, 225, 77)')
   await page.locator('.shop-card').screenshot({path:'/tmp/avatar-studio-fal-qa/platform-badge-shop.png'})

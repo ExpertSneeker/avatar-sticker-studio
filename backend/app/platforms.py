@@ -1,7 +1,7 @@
 """Sales platforms and their Agiso endpoints (see docs/agiso-reference/README.md).
 
-Orders and shops carry a platform key. Only platforms whose adapter is implemented accept
-authorization and pushes (`connectable`); the others are already valid for manual orders.
+Orders and shops carry a platform key. Platforms whose adapter exists (agiso_platforms.py) accept
+authorization and pushes (`connectable`). `remark_sync`: the order detail API exposes the seller remark.
 """
 from .media_cache import watermark_of
 
@@ -9,9 +9,9 @@ PLATFORMS = {
     'pdd': {'label': '拼多多', 'from_platform': 'PddAlds', 'token_platforms': ('PddAlds', 'AldsPdd'),
             'host': 'https://aldspdd.agiso.com', 'gateway': 'aldsPdd', 'connectable': True, 'remark_sync': True},
     'douyin': {'label': '抖店', 'from_platform': 'AldsDoudian', 'token_platforms': ('AldsDoudian',),
-               'host': 'https://aldsDoudian.agiso.com', 'gateway': 'aldsDoudian', 'connectable': False, 'remark_sync': False},
+               'host': 'https://aldsDoudian.agiso.com', 'gateway': 'aldsDoudian', 'connectable': True, 'remark_sync': True},
     'xhs': {'label': '小红书', 'from_platform': 'AldsXhs', 'token_platforms': ('AldsXhs',),
-            'host': 'https://aldsXhs.agiso.com', 'gateway': 'aldsXhs', 'connectable': False, 'remark_sync': False},
+            'host': 'https://aldsXhs.agiso.com', 'gateway': 'aldsXhs', 'connectable': True, 'remark_sync': False},
 }
 
 

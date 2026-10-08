@@ -9,7 +9,8 @@ from fastapi import HTTPException, Request, Response, Query
 from fastapi.responses import RedirectResponse
 from pydantic import ValidationError
 from . import agiso_protocol as protocol
-from .agiso_service import account_active, executable, integration_id, order_allowed
+from .agiso_service import account_active, event_family, event_tid, executable, integration_id, order_allowed
+from .agiso_platforms import ADAPTERS
 from .auth import token_hash
 from .db import uid
 from .platforms import PLATFORMS, from_push, platform_of
@@ -156,6 +157,13 @@ def register_agiso(app,db,user):
         label=PLATFORMS[platform_of(shop)]['label']
         failure={'available':False,'goods':[],'total':0,'page':page,'message':f'商品读取暂不可用，请从{label}后台核对商品ID和规格ID后手动填写'}
         if not config['configured'] or not shop.get('token') or shop.get('expires_at',0)<=now():return failure
+        if platform_of(shop)!='pdd':
+            try:
+                result=await ADAPTERS[platform_of(shop)].goods(shop,page,goods_name,config,app.state.agiso_worker.transport,now())
+                return {'available':True,'goods':result['goods'],'total':result['total'],'page':page,'message':''}
+            except Exception as error:
+                logging.getLogger(__name__).warning('Agiso %s goods lookup failed: %s',platform_of(shop),type(error).__name__)
+                return failure
         try:
             fields={'page':str(page),'pageSize':'100'}
             if goods_name:fields['goodsName']=goods_name
@@ -211,10 +219,38 @@ def register_agiso(app,db,user):
         with db.transaction() as tx:
             _,shop=scoped(tx,request,id,True);event=tx.get('agiso_events',event_id)
             if not event or event['shop_id']!=id:raise HTTPException(404,'记录不存在')
-            link=tx.get('agiso_orders',integration_id(id,event['payload']['Tid'])) if event['topic']=='1' else None
+            link=tx.get('agiso_orders',integration_id(id,event_tid(event))) if event_family(event)=='trade' else None
             if not replayable(event,shop) or not executable(tx,shop,now()) or link and (link.get('customer_order_id') or link.get('holds') or link['open_status']=='cancelled'):raise HTTPException(409,'当前事件不能重放')
             event.update(status='pending',error=None);tx.put('agiso_events',event)
         return {'ok':True}
+
+    def find_shop(tx,platform,key):
+        """A push names its shop by platform shop id; tokens may instead have given an Agiso user id."""
+        return next((s for s in tx.all('agiso_shops') if platform_of(s)==platform and key in {s['shop_id'],s.get('user_id'),*s.get('push_keys',[])}),None)
+
+    def store_platform_push(platform,topic,payload):
+        """Douyin/Xiaohongshu: classify, validate the ids we rely on, store durably. Their trade pushes carry
+        no SKUs, so trades wait in `fetch` until the worker reads Order/Detail; a push whose shop id matches
+        no authorized shop waits in `unmatched` until the worker finds the shop that can read the order."""
+        adapter=ADAPTERS[platform];family=adapter.families.get(topic,'other');refund=None;key=number=''
+        if family!='other':
+            try:
+                key,number=adapter.push_identity(family,payload)
+                if family=='refund':refund=adapter.refund(topic,payload)
+            except (KeyError,ValueError,TypeError):raise HTTPException(422,'通知内容无效')
+        event_id=token_hash(platform+':'+family+':'+topic+':'+json.dumps(payload,sort_keys=True,ensure_ascii=False))
+        with db.transaction() as tx:
+            if tx.get('agiso_events',event_id):return
+            shop=find_shop(tx,platform,key) if key else None
+            if family=='other':status,error='ignored','unsupported_topic'
+            elif not shop:status,error='unmatched',None
+            elif family=='trade':status,error=('fetch',None) if shop['enabled'] else ('disabled','shop_disabled')
+            else:status,error='pending',None
+            tx.put('agiso_events',{'id':event_id,'shop_id':shop['id'] if shop else '','platform':platform,'family':family,'topic':topic,
+                   'payload':payload,'shop_key':key,'tid':number,'refund':refund,'order_number':number,'status':status,'error':error,
+                   'received_at':now(),'lease_until':0,'attempts':0})
+            if shop:shop['last_event_at']=now();tx.put('agiso_shops',shop)
+        if family=='other':logging.getLogger(__name__).info('Agiso %s push topic=%s recorded without processing',platform,topic)
 
     @app.post('/api/agiso/webhook')
     async def webhook(request:Request):
@@ -248,6 +284,9 @@ def register_agiso(app,db,user):
             payload=json.loads(raw,object_pairs_hook=unique_pairs)
             if not isinstance(payload,dict):raise ValueError()
             topic=query['aopic']
+            if platform!='pdd':
+                store_platform_push(platform,topic,payload)
+                return Response(status_code=200,content=b'')
             if topic=='1':
                 family='trade'
                 if {'refund_id','operation','mall_id'} & payload.keys():raise ValueError()

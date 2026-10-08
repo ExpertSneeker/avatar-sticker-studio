@@ -57,7 +57,7 @@ test('套餐必须填真实 ID，保存精确额度，消息结果不确定时�
   await expect(page.getByText('结果待核对', { exact:true })).toBeVisible()
   await expect(page.getByRole('button', { name:'重试发送' })).toHaveCount(0)
   await expect(page.getByRole('button', { name:'复制选图链接' })).toBeVisible()
-  await expect(page.getByText('发送结果不确定，请先在拼多多核对消息。')).toBeVisible()
+  await expect(page.getByText('发送结果不确定，请先在平台聊天记录核对消息。')).toBeVisible()
 })
 
 test('较旧刷新请求失败不会覆盖已经成功的新状态', async ({ page }) => {

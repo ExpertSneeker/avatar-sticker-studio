@@ -213,6 +213,9 @@ async def request_json(method,url,transport=None,token_response=False,**kwargs):
             error=result.get('Error_Code',result.get('error_Code'))
             logging.getLogger(__name__).warning('Agiso token schema: success=%s error_code=%s fields=%s',success if type(success) is bool else 'invalid',error if type(error) is int else 'unavailable',types)
         result=token_aliases(result,('IsSuccess','Data'))
+    elif isinstance(result,dict):
+        # Douyin and Xiaohongshu answer isSuccess/data/error_Code; Pinduoduo uses the capitalized names.
+        result=token_aliases(result,('IsSuccess','Data','Error_Code','Error_Msg'))
     if not isinstance(result,dict) or type(result.get('IsSuccess')) is not bool:
         raise ProtocolError()
     return result
@@ -229,12 +232,17 @@ async def exchange(code,config,transport,now,platform='pdd'):
         logging.getLogger(__name__).warning('Agiso platform mismatch: %s',platform if isinstance(platform,str) and platform.isalnum() and len(platform)<32 else 'invalid')
         raise ProtocolError()
     shop_id=identifier(data.get('ShopId') if data.get('ShopId') is not None else data.get('UserId'))
-    if data.get('ShopId') is not None and data.get('UserId') is not None and identifier(data['UserId'])!=shop_id:
+    user_id=identifier(data['UserId']) if data.get('UserId') is not None else None
+    # Pinduoduo's two ids must agree; Douyin/Xiaohongshu tokens may carry a separate Agiso user id,
+    # kept so pushes can be matched by either.
+    if platform=='pdd' and user_id is not None and data.get('ShopId') is not None and user_id!=shop_id:
         raise ProtocolError()
     token=data.get('Token');expires=data.get('ExpiresIn');name=data.get('ShopName')
     if not isinstance(token,str) or not token or len(token)>16384 or type(expires) is not int or expires<=0 or not isinstance(name,str) or len(name)>1000:
         raise ProtocolError()
-    return {'shop_id':shop_id,'shop_name':name,'token':config['cipher'].encrypt(token.encode()).decode(),'expires_at':now+expires}
+    result={'shop_id':shop_id,'shop_name':name,'token':config['cipher'].encrypt(token.encode()).decode(),'expires_at':now+expires}
+    if platform!='pdd' and user_id is not None:result['user_id']=user_id
+    return result
 
 
 async def api(path,fields,shop,config,transport,now):

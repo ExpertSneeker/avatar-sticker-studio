@@ -81,7 +81,7 @@ export function guestLink(origin: string, number: string): string {
   return url.toString()
 }
 export function integrationLabel(value: string): string {
-  return ({ held: '售后处理中', received: '已接收', pending: '待处理', queued: '待发送', processing: '处理中', opened: '已开户', sent: '发送成功', failed: '处理失败', unknown: '结果待核对', manual: '待人工处理', ignored: '已忽略', completed: '已处理', processed: '已处理', cancelled: '已取消', paused: '已暂停', blocked: '已暂停', not_sent: '未发送', retry: '等待重试', retrying: '等待重试', ready: '待发送', skipped: '已跳过', none: '无', disabled: '已停用' } as Record<string, string>)[value] || '待核对'
+  return ({ held: '售后处理中', received: '已接收', pending: '待处理', queued: '待发送', processing: '处理中', opened: '已开户', sent: '发送成功', failed: '处理失败', unknown: '结果待核对', manual: '待人工处理', ignored: '已忽略', completed: '已处理', processed: '已处理', cancelled: '已取消', paused: '已暂停', blocked: '已暂停', not_sent: '未发送', retry: '等待重试', retrying: '等待重试', ready: '待发送', skipped: '已跳过', none: '无', disabled: '已停用', fetch: '读取订单中', unmatched: '匹配店铺中' } as Record<string, string>)[value] || '待核对'
 }
 
 export function integrationError(value: string): string {
@@ -92,8 +92,11 @@ export function integrationError(value: string): string {
     shop_disabled: '店铺自动开户已关闭。', authorization_expired: '店铺授权已失效，重新授权后会继续处理。',
     account_disabled: '负责账户已停用，请联系管理员。', aftersales_pending: '售后申请处理中，订单已暂停。',
     aftersales_review: '售后情况需要人工核对。', aftersales_disabled: '自动售后尚未启用，通知已保留。',
-    refunded: '整单退款已成功，客户访问已取消。', send_unknown: '发送结果不确定，请先在拼多多核对消息。',
+    refunded: '整单退款已成功，客户访问已取消。', send_unknown: '发送结果不确定，请先在平台聊天记录核对消息。',
     send_failed: '消息发送失败，请检查发送助手和店铺授权。',
     unsupported_topic: '该类型通知暂未参与自动处理，已记录在通知记录中。',
+    order_unpaid: '平台订单尚未付款，不开户。', order_cancelled: '平台订单已取消或关闭，不开户。',
+    order_lookup_failed: '多次读取平台订单详情失败，请核对店铺授权和订单号后重新处理。',
+    unknown_shop: '通知中的店铺未匹配到已授权店铺，请确认该店铺已在本站授权。',
   } as Record<string, string>)[value] || '需要人工核对，请查看通知记录或联系管理员。'
 }

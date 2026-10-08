@@ -73,17 +73,15 @@ def test_manual_orders_can_change_platform_but_agiso_orders_cannot(configured):
     assert c.post(f"/api/customer-orders/{linked['id']}/platform", json=attempt).status_code == 409
 
 
-def test_only_connected_platforms_authorize_or_push(configured):
+def test_every_platform_authorizes_and_unknown_ones_are_refused(configured):
     app, c, _ = configured
-    assert c.post('/api/agiso/authorize', json={'platform': 'douyin'}).status_code == 409
     assert c.post('/api/agiso/authorize', json={'platform': 'taobao'}).status_code == 409
-    url = c.post('/api/agiso/authorize', json={'platform': 'pdd'}).json()['url']
-    assert url.startswith('https://aldspdd.agiso.com/#/authorize?')
-    platforms = {p['key']: p for p in c.get('/api/agiso/status').json()['platforms']}
-    assert platforms['pdd']['connectable'] and not platforms['douyin']['connectable'] and not platforms['xhs']['connectable']
-    raw = json.dumps({'p_id': 1}, separators=(',', ':'))
+    for key, host in {'pdd': 'aldspdd', 'douyin': 'aldsDoudian', 'xhs': 'aldsXhs'}.items():
+        assert c.post('/api/agiso/authorize', json={'platform': key}).json()['url'].startswith(f'https://{host}.agiso.com/#/authorize?')
+    assert all(p['connectable'] for p in c.get('/api/agiso/status').json()['platforms'])
+    raw = '{}'
     sign = hashlib.md5(('secretjson' + raw + 'timestamp1000secret').encode()).hexdigest()
-    refused = c.post('/api/agiso/webhook', params={'timestamp': '1000', 'sign': sign, 'aopic': '1', 'fromPlatform': 'AldsDoudian'}, data={'json': raw})
+    refused = c.post('/api/agiso/webhook', params={'timestamp': '1000', 'sign': sign, 'aopic': '1', 'fromPlatform': 'AldsTaobao'}, data={'json': raw})
     assert refused.status_code == 422
 
 

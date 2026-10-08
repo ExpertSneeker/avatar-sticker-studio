@@ -95,13 +95,16 @@
 
 ## 销售平台、店铺与水印
 
-平台定义集中在 [platforms.py](../backend/app/platforms.py)：`pdd` 拼多多、`douyin` 抖店、`xhs` 小红书，含阿奇索授权域名、推送 `fromPlatform`、接口网关前缀及是否已接入（`connectable`）。协议差异见 [阿奇索资料存档](agiso-reference/README.md)。未接入的平台拒绝授权和推送，但可用于人工订单。
+平台定义集中在 [platforms.py](../backend/app/platforms.py)，抖店和小红书的推送分类、字段校验及接口调用在 [agiso_platforms.py](../backend/app/agiso_platforms.py)：`pdd` 拼多多、`douyin` 抖店、`xhs` 小红书，含阿奇索授权域名、推送 `fromPlatform`、接口网关前缀及是否已接入（`connectable`）。协议差异见 [阿奇索资料存档](agiso-reference/README.md)。三个平台都可授权和接收推送。
 
 - 订单 `platform` 必填（`POST /api/customer-orders` 的 `platform`），`shop_id` 可选；店铺必须属于本组织且平台一致，否则 422。阿奇索开户的订单继承来源店铺的平台和店铺，`platform_editable=false`；人工订单可经 `POST /api/customer-orders/{id}/platform`（`client_token` + `expected_version`）修改平台和店铺，水印快照不变。订单号全平台唯一，跨平台撞号开户进入人工处理。
 - 店铺（`agiso_shops`）以“平台 + 平台店铺 ID”识别；推送按 `fromPlatform` 定平台后再找店铺。拼多多事件 ID 保持原算法，其他平台加平台前缀去重。
 - 水印按店铺设置：`agiso_shops.watermark` 由店铺负责账号或组织管理员经 `PUT /api/agiso/shops/{id}/watermark` 修改。新订单水印 = 所属店铺水印；无店铺的人工订单用开单账号水印（账号水印留空用显示名称）。“批量更新水印”按同一规则取当前值。水印仍是订单快照，改店铺水印不改已有订单。
-- `remark_supported` = 阿奇索开户且该平台已接入订单查询（目前仅拼多多）；只有此类订单显示和处理“获取卖家备注”。
+- `remark_supported` = 阿奇索开户且该平台订单详情含卖家备注（拼多多 `Trade/Detail`、抖店 `seller_words`；小红书没有）；只有此类订单显示和处理“获取卖家备注”。
 - 售后按平台验收：`STUDIO_AGISO_AFTERSALES_PLATFORMS`（逗号分隔，如 `pdd,douyin`）列出已用真实退款验收的平台；未设置时沿用旧变量 `STUDIO_AGISO_AFTERSALES_VERIFIED=1`，仅代表拼多多。
+- 抖店/小红书推送按平台解释 aopic（抖店 1 付款、2 发起售后、4 售后关闭、8 退款成功；小红书 4 付款、16 申请退款、32 退款成功；其余记录为“已忽略”）。付款推送不含商品，事件先以 `fetch` 入库，Agiso worker 在事务外调用 `Order/Detail`（抖店参数 `shop_order_id`，小红书 `tid`）取规格、实付、卖家备注和订单状态，再与拼多多共用 `open_trade` 开户；未付款/已取消订单记为人工（`order_unpaid`/`order_cancelled`），读取 5 次失败记为 `order_lookup_failed`，授权失效时等待重新授权。抖店按父订单号开户，子订单 SKU 合并计算；小红书订单详情只有 SKU ID，规则按 SKU ID 匹配，赠品（`skuTag=1`）不计额度。
+- 授权 Token 同时给出 `ShopId`/`UserId` 时都保存；推送中的店铺 ID 与已知 ID 都不符时事件记为 `unmatched`，worker 用该平台各已授权店铺试读订单，能读到的店铺即归属，并把该店铺 ID 记入 `push_keys`；仍无法匹配记为 `unknown_shop`。
+- 退款推送规范化为拼多多同形结构交给 `apply_refund`：钱款退款（抖店售后类型 0/1/2、小红书退货类型 1/3/4/5）参与自动判断，换货等记人工；小红书没有售后关闭推送，撤销的退款需人工处理。新平台退款仅在其平台列入 `STUDIO_AGISO_AFTERSALES_PLATFORMS` 后生效，之前事件保留为 `aftersales_disabled`。
 - 迁移 `platform-v1`：所有既有店铺、阿奇索关联、推送事件和订单（含人工订单）标为 `pdd`；阿奇索订单补 `shop_id`；店铺水印取负责账号迁移时的实际水印，订单水印快照不变。
 
 ## Agiso 接入边界

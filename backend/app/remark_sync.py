@@ -24,6 +24,14 @@ async def fetch_remark(source, config, transport, now):
     """Current seller remark text, or None when it could not be read."""
     if isinstance(source, str) or not config['configured']:
         return None
+    if platform_of(source[0]) != 'pdd':
+        from .agiso_platforms import ADAPTERS
+        try:
+            remark = await ADAPTERS[platform_of(source[0])].remark(source[0], source[1], config, transport, now)
+        except Exception as error:
+            log.warning('Seller remark lookup failed: %s', type(error).__name__)
+            return None
+        return remark[:2000] if isinstance(remark, str) else None
     try:
         result = await protocol.api('Trade/Detail', {'tid': source[1]}, source[0], config, transport, now)
     except Exception as error:

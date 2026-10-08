@@ -13,6 +13,16 @@ def integration_id(shop_id,tid):
     return token_hash(shop_id+'\x00'+tid)
 
 
+def event_family(event):
+    """trade/refund/memo/... for any platform; Pinduoduo events predate the stored family."""
+    return event.get('family') or ('trade' if event['topic']=='1' else 'memo' if event['topic']=='64' else 'refund')
+
+
+def event_tid(event):
+    payload=event.get('payload') or {}
+    return event.get('tid') or payload.get('tid') or payload.get('Tid')
+
+
 def account_active(tx,shop):
     owner=tx.get('users',shop['owner'])
     org=tx.get('organizations',shop['organization_id'])
@@ -32,7 +42,7 @@ def order_allowed(tx,order):
         shop=tx.get('agiso_shops',linked['shop_id']) if linked else None
         from .agiso_protocol import settings
         from .agiso_protocol import aftersales_for
-        if linked and aftersales_for(settings(),shop) and any(e['shop_id']==linked['shop_id'] and e['topic']!='1' and e['status'] in {'pending','blocked'} and e['payload'].get('tid')==linked['tid'] for e in tx.where('agiso_events','status','pending','blocked')):
+        if linked and aftersales_for(settings(),shop) and any(e['shop_id']==linked['shop_id'] and event_family(e)!='trade' and e['status'] in {'pending','blocked'} and event_tid(e)==linked['tid'] for e in tx.where('agiso_events','status','pending','blocked')):
             return False
         # Disabling future shop automation does not stop work on an existing order.
         return bool(shop and account_active(tx,shop) and not order.get('paused'))
@@ -90,40 +100,57 @@ def apply_refund(tx,shop,payload,now):
 
 
 def apply_trade(tx,shop,payload,config,now):
-    key=integration_id(shop['id'],payload['Tid'])
-    link=tx.get('agiso_orders',key) or new_link(shop,payload['Tid'],payload['OrderSn'],now)
+    """Pinduoduo trade push (already complete in the payload)."""
+    trade={'tid':payload['Tid'],'order_number':payload['OrderSn'],'paid_cents':int(Decimal(payload['PayAmount'])*100),
+           'buyer_memo':payload.get('BuyerMemo') or '','remark':payload.get('Remark') or '','status':'paid','items':payload['ItemList']}
+    return open_trade(tx,shop,trade,config,now)
+
+
+def rule_key(shop,item):
+    # Xiaohongshu order details carry SKU ids only; every other platform matches product + SKU.
+    return item['sku_id'] if platform_of(shop)=='xhs' else (item['goods_id'],item['sku_id'])
+
+
+def open_trade(tx,shop,trade,config,now):
+    """Shared opening for every platform: SKU rules, quotas, number conflicts and refund holds."""
+    key=integration_id(shop['id'],trade['tid'])
+    link=tx.get('agiso_orders',key) or {**new_link(shop,trade['tid'],trade['order_number'],now),'platform':platform_of(shop)}
     if link.get('customer_order_id') or link['open_status']=='cancelled': return link
-    link.update(order_number=payload['OrderSn'],paid_cents=int(Decimal(payload['PayAmount'])*100))
+    link.update(order_number=trade['order_number'],paid_cents=trade['paid_cents'])
     update_aftersales(tx,link,now)
     if link.get('holds'):
         return link
-    if not executable(tx,shop,now):
+    if trade.get('status','paid')!='paid':
+        link.update(open_status='manual',error='order_'+trade['status'])
+    elif not executable(tx,shop,now):
         link.update(open_status='disabled',error='shop_disabled')
+    elif not trade['items']:
+        link.update(open_status='manual',error='unmapped_sku')
     else:
-        rules={(r['goods_id'],r['sku_id']):r for r in shop.get('rules',[])}
-        matched=[rules.get((item['goods_id'],item['sku_id'])) for item in payload['ItemList']]
+        rules={rule_key(shop,r):r for r in shop.get('rules',[])}
+        matched=[rules.get(rule_key(shop,item)) for item in trade['items']]
         if any(not r or not r['enabled'] for r in matched):
             link.update(open_status='manual',error='unmapped_sku')
         elif len({r['rerun_limit'] for r in matched})!=1:
             link.update(open_status='manual',error='conflicting_rules')
         else:
-            generation=sum(r['generation_limit']*item['goods_count'] for r,item in zip(matched,payload['ItemList']))
-            final=sum(r['final_count']*item['goods_count'] for r,item in zip(matched,payload['ItemList']))
+            generation=sum(r['generation_limit']*item['goods_count'] for r,item in zip(matched,trade['items']))
+            final=sum(r['final_count']*item['goods_count'] for r,item in zip(matched,trade['items']))
             if not 1<=final<=generation<=360:
                 link.update(open_status='manual',error='quota_exceeded')
-            elif any(o.get('order_number')==payload['OrderSn'] for o in tx.where('orders','order_number',payload['OrderSn'])):
+            elif any(o.get('order_number')==trade['order_number'] for o in tx.where('orders','order_number',trade['order_number'])):
                 link.update(open_status='manual',error='order_number_conflict')
             else:
                 owner=tx.get('users',shop['owner'])
-                body=OpenOrder(order_number=payload['OrderSn'],platform=platform_of(shop),shop_id=shop['id'],generation_limit=generation,final_count=final,rerun_limit=matched[0]['rerun_limit'],client_token='agiso:'+key)
+                body=OpenOrder(order_number=trade['order_number'],platform=platform_of(shop),shop_id=shop['id'],generation_limit=generation,final_count=final,rerun_limit=matched[0]['rerun_limit'],client_token='agiso:'+key)
                 order=create_customer_order(tx,owner,body,now,shop)
                 order['agiso_id']=key
                 order['agiso_rule_snapshot']=[dict(r) for r in matched]
-                if (payload.get('BuyerMemo') or '').strip():order['buyer_memo']=payload['BuyerMemo'].strip()[:2000]
-                if (payload.get('Remark') or '').strip():order['platform_remark']=payload['Remark'].strip()[:2000]
+                if (trade.get('buyer_memo') or '').strip():order['buyer_memo']=trade['buyer_memo'].strip()[:2000]
+                if (trade.get('remark') or '').strip():order['platform_remark']=trade['remark'].strip()[:2000]
                 tx.put('orders',order)
                 audit(tx,order,'agiso_open',owner['id'],now)
-                link.update(customer_order_id=order['id'],open_status='opened',error=None,guest_url=config['origin']+'/guest?'+urlencode({'order_number':payload['OrderSn']}))
+                link.update(customer_order_id=order['id'],open_status='opened',error=None,guest_url=config['origin']+'/guest?'+urlencode({'order_number':trade['order_number']}))
     tx.put('agiso_orders',link)
     return link
 
