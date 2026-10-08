@@ -29,5 +29,5 @@
 
 - 推送类型编号**各平台不同**，必须先按 `fromPlatform` 区分平台再解释 `aopic`；签名方式相同（`AppSecret + json… + timestamp… + AppSecret` 的 MD5）。
 - 抖店付款推送只有父订单 `p_id`、子订单列表 `s_ids`、店铺 `shop_id`、状态和实付金额（分），**不含商品/SKU**；自动开户需再调 `Order/Detail` 取规格。父子订单要按父订单去重为一个客户订单。
-- 抖店在服务市场有两个应用：自动发货 `aldsDoudian.agiso.com` 与虚拟自动发货 `aldsdd.agiso.com`，接入的是前者。
+- 抖店在服务市场有两个应用：自动发货 `aldsDoudian.agiso.com` 与虚拟自动发货 `aldsdd.agiso.com`，两者都可授权（店铺接入页两个抖店按钮）。后者无独立文档，按其 Token 的 `FromPlatform` 推导接口前缀和推送识别。
 - 各平台接口调用配额与收费见各目录 `feeStandrd.md`。

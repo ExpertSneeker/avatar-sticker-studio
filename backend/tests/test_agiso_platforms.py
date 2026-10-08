@@ -12,13 +12,15 @@ XHS_ORDER = 'P755073560412360911'
 
 def provider(state):
     def handle(request):
-        path = request.url.path
+        # The Douyin virtual auto-delivery app (aldsdd) is assumed to share the documented Douyin API.
+        path = request.url.path.replace('/aldsDd/', '/aldsDoudian/')
         form = parse_qs(request.content.decode()) if request.content else {}
-        state.setdefault('calls', []).append(path)
+        state.setdefault('calls', []).append(request.url.path)
         if path == '/auth/token':
-            platform = 'AldsDoudian' if request.url.host.lower().startswith('aldsdoudian') else 'AldsXhs'
+            host = request.url.host.lower()
+            platform = 'AldsDoudian' if host.startswith('aldsdoudian') else 'AldsDd' if host.startswith('aldsdd') else 'AldsXhs'
             data = {'FromPlatform': platform, 'UserId': 555, 'ShopName': state.get('name', '测试店'), 'Token': 'private-token', 'ExpiresIn': 86400}
-            if platform == 'AldsDoudian':
+            if platform in ('AldsDoudian', 'AldsDd'):
                 data['ShopId'] = 7784061
             return httpx.Response(200, json={'IsSuccess': True, 'Data': data})
         if path == '/aldsDoudian/Order/Detail':
@@ -51,10 +53,10 @@ def provider(state):
     return handle
 
 
-def connect(configured, platform, state):
+def connect(configured, platform, state, agiso_app=None):
     app, c, _ = configured
     app.state.agiso_worker.transport = httpx.MockTransport(provider(state))
-    url = c.post('/api/agiso/authorize', json={'platform': platform}).json()['url']
+    url = c.post('/api/agiso/authorize', json={'platform': platform, **({'app': agiso_app} if agiso_app else {})}).json()['url']
     query = parse_qs(urlsplit(url.replace('/#/', '/')).query)
     assert c.get('/api/agiso/callback', params={'state': query['state'][0], 'code': 'code'}, follow_redirects=False).headers['location'] == '/?agiso=connected'
     return next(s for s in c.get('/api/agiso/shops').json() if s['platform'] == platform)
@@ -176,3 +178,25 @@ def test_order_numbers_stay_unique_across_platforms(configured):
     assert len(c.get('/api/customer-orders').json()) == 1
     with app.state.db.transaction() as tx:
         assert [link['error'] for link in tx.all('agiso_orders')] == ['order_number_conflict']
+
+
+def test_douyin_virtual_auto_delivery_app_authorizes_and_routes_by_its_own_platform_id(configured):
+    app, c, _ = configured
+    assert c.post('/api/agiso/authorize', json={'platform': 'douyin', 'app': 'other'}).status_code == 409
+    assert c.post('/api/agiso/authorize', json={'platform': 'douyin', 'app': 'dd'}).json()['url'].startswith('https://aldsdd.agiso.com/#/authorize?')
+    apps = next(p for p in c.get('/api/agiso/status').json()['platforms'] if p['key'] == 'douyin')['apps']
+    assert [a['label'] for a in apps] == ['自动发货', '虚拟自动发货']
+    state = {}
+    shop = connect(configured, 'douyin', state, 'dd')
+    with app.state.db.transaction() as tx:
+        stored = tx.get('agiso_shops', shop['id'])
+    assert (stored['platform'], stored['from_platform'], stored['agiso_app']) == ('douyin', 'AldsDd', 'dd')
+    rule = {'goods_id': '1721288561899563', 'sku_id': '1721288561899566', 'generation_limit': 24, 'final_count': 18, 'rerun_limit': 7, 'enabled': True}
+    c.put(f"/api/agiso/shops/{shop['id']}/rules", json={'rules': [rule]}); c.patch(f"/api/agiso/shops/{shop['id']}", json={'enabled': True})
+    # Pushes name the app's own platform id; API calls use the matching aldsDd gateway.
+    assert push(c, 'AldsDd', '1', {'p_id': DOUYIN_ORDER, 'shop_id': 7784061, 'pay_amount': 1990}).status_code == 200
+    drain(app)
+    order = c.get('/api/customer-orders').json()[0]
+    assert (order['platform'], order['order_number']) == ('douyin', str(DOUYIN_ORDER))
+    assert '/aldsDd/Order/Detail' in state['calls'] and '/aldsDoudian/Order/Detail' not in state['calls']
+    assert push(c, 'AldsUnknown', '1', {'p_id': 1, 'shop_id': 1}).status_code == 422

@@ -9,7 +9,8 @@ import httpx
 from cryptography.fernet import Fernet
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from .schemas import safe_name
-from .platforms import PLATFORMS, platform_of
+import re
+from .platforms import PLATFORMS, app_of, gateway_of, platform_of
 
 MAX_BODY = 256 * 1024
 ENV = ('STUDIO_AGISO_APP_ID', 'STUDIO_AGISO_APP_SECRET', 'STUDIO_AGISO_ENCRYPTION_KEY', 'STUDIO_AGISO_PUBLIC_URL')
@@ -221,13 +222,15 @@ async def request_json(method,url,transport=None,token_response=False,**kwargs):
     return result
 
 
-async def exchange(code,config,transport,now,platform='pdd'):
+async def exchange(code,config,transport,now,platform='pdd',app=None):
     fields={'appId':config['app_id'],'code':code}
-    result=await request_json('GET',PLATFORMS[platform]['host']+'/auth/token',transport,token_response=True,params={**fields,'sign':sign(config['secret'],fields)})
+    _,settings_=app_of(platform,app)
+    result=await request_json('GET',settings_['host']+'/auth/token',transport,token_response=True,params={**fields,'sign':sign(config['secret'],fields)})
     data=result.get('Data')
     if isinstance(data,dict):
         data=token_aliases(data,('FromPlatform','ShopId','UserId','ShopName','Token','ExpiresIn'))
-    if result['IsSuccess'] is not True or not isinstance(data,dict) or data.get('FromPlatform') not in PLATFORMS[platform]['token_platforms']:
+    open_id=settings_.get('open_platform_id') and isinstance(data,dict) and isinstance(data.get('FromPlatform'),str) and re.fullmatch(r'Alds[A-Za-z]{1,30}',data['FromPlatform'])
+    if result['IsSuccess'] is not True or not isinstance(data,dict) or data.get('FromPlatform') not in PLATFORMS[platform]['token_platforms'] and not open_id:
         platform=data.get('FromPlatform') if isinstance(data,dict) else None
         logging.getLogger(__name__).warning('Agiso platform mismatch: %s',platform if isinstance(platform,str) and platform.isalnum() and len(platform)<32 else 'invalid')
         raise ProtocolError()
@@ -242,11 +245,12 @@ async def exchange(code,config,transport,now,platform='pdd'):
         raise ProtocolError()
     result={'shop_id':shop_id,'shop_name':name,'token':config['cipher'].encrypt(token.encode()).decode(),'expires_at':now+expires}
     if platform!='pdd' and user_id is not None:result['user_id']=user_id
+    if platform!='pdd':result['from_platform']=data['FromPlatform']
     return result
 
 
 async def api(path,fields,shop,config,transport,now):
     fields={**fields,'timestamp':str(int(now))}
     token=config['cipher'].decrypt(shop['token'].encode()).decode()
-    return await request_json('POST','https://gw-api.agiso.com/'+PLATFORMS[platform_of(shop)]['gateway']+'/'+path,transport,
+    return await request_json('POST','https://gw-api.agiso.com/'+gateway_of(shop)+'/'+path,transport,
                               data={**fields,'sign':sign(config['secret'],fields)},headers={'Authorization':'Bearer '+token,'ApiVersion':'1'})

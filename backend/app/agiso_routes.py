@@ -13,7 +13,7 @@ from .agiso_service import account_active, event_family, event_tid, executable, 
 from .agiso_platforms import ADAPTERS
 from .auth import token_hash
 from .db import uid
-from .platforms import PLATFORMS, from_push, platform_of
+from .platforms import PLATFORMS, app_of, from_push, platform_of
 from .media_cache import watermark_of
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -48,7 +48,8 @@ def register_agiso(app,db,user):
         config=protocol.settings();origin=config['origin'] if 'STUDIO_AGISO_PUBLIC_URL' not in config['missing'] else None
         return {k:config[k] for k in ('configured','missing')} | {
             'aftersales_enabled':'pdd' in config['aftersales_platforms'],'aftersales_platforms':sorted(config['aftersales_platforms']),
-            'platforms':[{'key':k,'label':v['label'],'connectable':v['connectable'],'remark_sync':v['remark_sync']} for k,v in PLATFORMS.items()],
+            'platforms':[{'key':k,'label':v['label'],'connectable':v['connectable'],'remark_sync':v['remark_sync'],
+                          'apps':[{'key':a,'label':s['label']} for a,s in v.get('apps',{}).items()]} for k,v in PLATFORMS.items()],
             'authorization_callback_url':origin+'/api/agiso/callback' if origin else None,'webhook_url':origin+'/api/agiso/webhook' if origin else None}
 
     @app.get('/api/agiso/shops')
@@ -60,6 +61,7 @@ def register_agiso(app,db,user):
     class AuthorizeRequest(BaseModel):
         model_config=ConfigDict(extra='forbid')
         platform:str='pdd'
+        app:str|None=Field(None,max_length=20)
 
     class ShopWatermark(BaseModel):
         model_config=ConfigDict(extra='forbid')
@@ -67,8 +69,10 @@ def register_agiso(app,db,user):
 
     @app.post('/api/agiso/authorize')
     def authorize(request:Request,response:Response,data:AuthorizeRequest|None=None):
-        platform=(data or AuthorizeRequest()).platform
+        request_data=data or AuthorizeRequest();platform=request_data.platform
         if platform not in PLATFORMS or not PLATFORMS[platform]['connectable']:raise HTTPException(409,'该平台暂未接入')
+        try:app,app_settings=app_of(platform,request_data.app)
+        except KeyError:raise HTTPException(409,'该授权应用暂未接入')
         config=require_config()
         with db.transaction() as tx:
             actor=user(tx,request)
@@ -76,8 +80,8 @@ def register_agiso(app,db,user):
             state=secrets.token_urlsafe(32)
             browser_nonce=secrets.token_urlsafe(32)
             response.set_cookie('studio_agiso_oauth',browser_nonce,max_age=900,httponly=True,samesite='lax',secure=os.environ.get('STUDIO_SECURE_COOKIE')=='1',path='/api/agiso/callback')
-            tx.put('agiso_oauth',{'id':token_hash(state),'owner':actor['id'],'organization_id':actor['organization_id'],'expires':now()+900,'used':False,'nonce_hash':token_hash(browser_nonce),'session_id':token_hash(request.cookies.get('studio_session','')),'platform':platform})
-        return {'url':PLATFORMS[platform]['host']+'/#/authorize?'+urlencode({'appId':config['app_id'],'state':state})}
+            tx.put('agiso_oauth',{'id':token_hash(state),'owner':actor['id'],'organization_id':actor['organization_id'],'expires':now()+900,'used':False,'nonce_hash':token_hash(browser_nonce),'session_id':token_hash(request.cookies.get('studio_session','')),'platform':platform,'app':app})
+        return {'url':app_settings['host']+'/#/authorize?'+urlencode({'appId':config['app_id'],'state':state})}
 
     @app.put('/api/agiso/shops/{id}/watermark')
     def shop_watermark(id:str,data:ShopWatermark,request:Request):
@@ -105,7 +109,8 @@ def register_agiso(app,db,user):
                 entry['used']=True;tx.put('agiso_oauth',entry)
             stage='exchange'
             platform=entry.get('platform','pdd')
-            authorization=await protocol.exchange(code,config,app.state.agiso_worker.transport,now(),platform)
+            authorization=await protocol.exchange(code,config,app.state.agiso_worker.transport,now(),platform,entry.get('app'))
+            if entry.get('app'):authorization['agiso_app']=entry['app']
             stage='bind'
             with db.transaction() as tx:
                 current=tx.get('users',actor['id']);org=tx.get('organizations',entry['organization_id'])
@@ -262,8 +267,15 @@ def register_agiso(app,db,user):
         query=request.query_params
         if any(len(query.getlist(k))!=1 for k in ('timestamp','sign','aopic','fromPlatform')):raise HTTPException(422,'通知参数无效')
         platform=from_push(query['fromPlatform'])
+        if not platform:
+            # Apps without their own docs (Douyin virtual auto-delivery) push the platform id their token named.
+            with db.transaction() as tx:
+                platform=next((platform_of(s) for s in tx.all('agiso_shops') if s.get('from_platform')==query['fromPlatform']),None)
         # Pushes are parsed per platform; a platform without an adapter yet is refused like an unknown one.
-        if not platform or not PLATFORMS[platform]['connectable']:raise HTTPException(422,'通知平台无效')
+        if not platform or not PLATFORMS[platform]['connectable']:
+            value=query['fromPlatform']
+            logging.getLogger(__name__).warning('Agiso push from unknown platform %s',value if value.isalnum() and len(value)<40 else 'invalid')
+            raise HTTPException(422,'通知平台无效')
         if request.headers.get('content-type','').split(';')[0].lower()!='application/x-www-form-urlencoded':raise HTTPException(422,'通知格式无效')
         try:
             fields=parse_qs(body.decode('utf-8'),strict_parsing=True,max_num_fields=2)

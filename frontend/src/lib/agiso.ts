@@ -8,15 +8,16 @@ export interface AgisoStatus {
   platforms: PlatformInfo[]
 }
 export type PlatformKey = 'pdd' | 'douyin' | 'xhs'
-export interface PlatformInfo { key: PlatformKey; label: string; connectable: boolean; remark_sync: boolean }
+export interface PlatformInfo { key: PlatformKey; label: string; connectable: boolean; remark_sync: boolean; apps?: { key: string; label: string }[] }
 // Labels for orders and filters; the authorization switch per platform comes from /agiso/status.
 export const PLATFORM_LABELS: Record<PlatformKey, string> = { pdd: '拼多多', douyin: '抖店', xhs: '小红书' }
 export const PLATFORM_KEYS = Object.keys(PLATFORM_LABELS) as PlatformKey[]
 // Hosts the authorization redirect may point to (docs/agiso-reference/README.md).
-const AUTHORIZE_HOSTS: Record<PlatformKey, string> = { pdd: 'aldspdd.agiso.com', douyin: 'aldsdoudian.agiso.com', xhs: 'aldsxhs.agiso.com' }
+// Douyin has two Agiso apps: 自动发货 (aldsDoudian) and 虚拟自动发货 (aldsdd).
+const AUTHORIZE_HOSTS: Record<PlatformKey, string[]> = { pdd: ['aldspdd.agiso.com'], douyin: ['aldsdoudian.agiso.com', 'aldsdd.agiso.com'], xhs: ['aldsxhs.agiso.com'] }
 export function validAuthorizeUrl(platform: PlatformKey, value: string) {
   const url = new URL(value)
-  return url.protocol === 'https:' && url.hostname === AUTHORIZE_HOSTS[platform]
+  return url.protocol === 'https:' && AUTHORIZE_HOSTS[platform].includes(url.hostname)
 }
 export interface Shop {
   id: string; shop_id: string; shop_name: string; owner: string; owner_name: string

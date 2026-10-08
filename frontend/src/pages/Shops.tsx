@@ -37,10 +37,10 @@ export function Shops() {
     void reload().catch(e => { if (!controller.signal.aborted) setError(e.message) }).finally(() => { if (!controller.signal.aborted) setLoading(false) })
     return () => controller.abort()
   }, [reload])
-  async function connect(platform: PlatformKey) {
+  async function connect(platform: PlatformKey, app?: string) {
     setConnecting(true); setError(''); setAuthorizationError('')
     try {
-      const result = await post<{ url: string }>('/agiso/authorize', { platform }, lifetime.current.signal)
+      const result = await post<{ url: string }>('/agiso/authorize', app ? { platform, app } : { platform }, lifetime.current.signal)
       if (!validAuthorizeUrl(platform, result.url)) throw new Error('授权地址无效，请联系管理员')
       if (!lifetime.current.signal.aborted) window.location.assign(result.url)
     } catch (e) { if (!lifetime.current.signal.aborted) setError((e as Error).message) }
@@ -48,7 +48,7 @@ export function Shops() {
   }
   const selectedShop = shops.find(shop => shop.id === selected)
   return <>
-    <div className="page-heading"><div><h1>店铺接入</h1><p>连接拼多多、抖店、小红书店铺，按购买规格自动开通客户选图；每个店铺单独设置水印。</p></div><div className="button-group"><button className="button" disabled={loading || connecting} onClick={() => { setError(''); void reload().catch(e => setError(e.message)) }}><RefreshCw size={16}/>刷新</button>{(status?.platforms || []).map(platform => <button key={platform.key} className={'button ' + (platform.connectable ? 'primary' : '')} disabled={!status?.configured || connecting || !platform.connectable} title={platform.connectable ? undefined : '该平台正在接入，暂不能授权'} onClick={() => void connect(platform.key)}>{connecting ? <Spinner/> : <Plus size={16}/>}连接{platform.label}店铺{platform.connectable ? '' : '（接入中）'}</button>)}</div></div>
+    <div className="page-heading"><div><h1>店铺接入</h1><p>连接拼多多、抖店、小红书店铺，按购买规格自动开通客户选图；每个店铺单独设置水印。</p></div><div className="button-group"><button className="button" disabled={loading || connecting} onClick={() => { setError(''); void reload().catch(e => setError(e.message)) }}><RefreshCw size={16}/>刷新</button>{(status?.platforms || []).flatMap(platform => (platform.apps?.length ? platform.apps : [undefined]).map(app => <button key={platform.key + (app?.key || '')} className={'button ' + (platform.connectable ? 'primary' : '')} disabled={!status?.configured || connecting || !platform.connectable} title={platform.connectable ? (app ? `适用于已在服务市场订购阿奇索“${app.label}”的店铺` : undefined) : '该平台正在接入，暂不能授权'} onClick={() => void connect(platform.key, app?.key)}>{connecting ? <Spinner/> : <Plus size={16}/>}连接{platform.label}店铺{app ? `（${app.label}）` : ''}{platform.connectable ? '' : '（接入中）'}</button>))}</div></div>
     {(authorizationError || error) && <div className="error-banner" role="alert">{authorizationError || error}</div>}
     {notice && <p role="status">{notice}</p>}
     {status && <section className="settings-section shop-config">
