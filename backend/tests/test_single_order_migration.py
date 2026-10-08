@@ -114,7 +114,7 @@ def test_new_customer_orders_and_items_never_write_retired_fields(tmp_path, monk
     app = create_app(tmp_path, start_worker=False)
     with TestClient(app) as client:
         assert client.post('/api/auth/setup', json={'username': 'synthetic-admin', 'password': 'safe-password-123', 'display_name': '合成管理员'}).status_code == 200
-        result = client.post('/api/customer-orders', json={'order_number': 'SYNTHETIC-MIGRATION', 'generation_limit': 1,
+        result = client.post('/api/customer-orders', json={'platform': 'pdd', 'order_number': 'SYNTHETIC-MIGRATION', 'generation_limit': 1,
                                                           'final_count': 1, 'rerun_limit': 0, 'client_token': 'create'})
         assert result.status_code == 200
         with app.state.db.transaction() as tx:

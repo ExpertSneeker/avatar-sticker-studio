@@ -130,7 +130,7 @@ def test_expected_account_header_blocks_cross_tab_cookie_switch_before_mutations
         assert init.status_code == 401
         assert init.json()['detail'] == '登录账号已变化，请重新登录'
         assert client.put('/api/uploads/' + pending['id'], headers={**stale, 'Upload-Offset': '0'}, content=raw).status_code == 401
-        assert client.post('/api/customer-orders', headers=stale, json={'order_number':'不得创建','generation_limit':12,'final_count':12,'rerun_limit':1,'client_token':'blocked'}).status_code == 401
+        assert client.post('/api/customer-orders', headers=stale, json={'platform':'pdd','order_number':'不得创建','generation_limit':12,'final_count':12,'rerun_limit':1,'client_token':'blocked'}).status_code == 401
         assert client.patch('/api/admin/settings', headers=stale, json={'max_inflight': 9}).status_code == 401
         assert client.patch('/api/account', headers=stale, json={'display_name': '不得修改'}).status_code == 401
         assert client.post('/api/auth/logout', headers=stale).status_code == 401

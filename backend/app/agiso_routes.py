@@ -12,6 +12,9 @@ from . import agiso_protocol as protocol
 from .agiso_service import account_active, executable, integration_id, order_allowed
 from .auth import token_hash
 from .db import uid
+from .platforms import PLATFORMS, from_push, platform_of
+from .media_cache import watermark_of
+from pydantic import BaseModel, ConfigDict, Field
 
 
 def register_agiso(app,db,user):
@@ -29,7 +32,8 @@ def register_agiso(app,db,user):
 
     def shop_dto(tx,shop,actor):
         owner=tx.get('users',shop['owner']) or {}
-        return {k:shop.get(k) for k in ('id','shop_id','shop_name','owner','organization_id','enabled','expires_at','last_event_at')} | {
+        return {k:shop.get(k) for k in ('id','shop_id','shop_name','owner','organization_id','enabled','expires_at','last_event_at','watermark')} | {
+            'platform':platform_of(shop),'platform_label':PLATFORMS[platform_of(shop)]['label'],
             'owner_name':owner.get('display_name',''),'authorized':bool(shop.get('token') and shop.get('expires_at',0)>now()),'can_manage':can_manage(actor,shop)}
 
     def require_config():
@@ -41,7 +45,9 @@ def register_agiso(app,db,user):
     def status(request:Request):
         with db.transaction() as tx:user(tx,request)
         config=protocol.settings();origin=config['origin'] if 'STUDIO_AGISO_PUBLIC_URL' not in config['missing'] else None
-        return {k:config[k] for k in ('configured','missing','aftersales_enabled')} | {
+        return {k:config[k] for k in ('configured','missing')} | {
+            'aftersales_enabled':'pdd' in config['aftersales_platforms'],'aftersales_platforms':sorted(config['aftersales_platforms']),
+            'platforms':[{'key':k,'label':v['label'],'connectable':v['connectable'],'remark_sync':v['remark_sync']} for k,v in PLATFORMS.items()],
             'authorization_callback_url':origin+'/api/agiso/callback' if origin else None,'webhook_url':origin+'/api/agiso/webhook' if origin else None}
 
     @app.get('/api/agiso/shops')
@@ -50,8 +56,18 @@ def register_agiso(app,db,user):
             actor=user(tx,request)
             return [shop_dto(tx,s,actor) for s in tx.all('agiso_shops') if s['organization_id']==actor.get('organization_id')]
 
+    class AuthorizeRequest(BaseModel):
+        model_config=ConfigDict(extra='forbid')
+        platform:str='pdd'
+
+    class ShopWatermark(BaseModel):
+        model_config=ConfigDict(extra='forbid')
+        watermark:str=Field(min_length=1,max_length=100)
+
     @app.post('/api/agiso/authorize')
-    def authorize(request:Request,response:Response):
+    def authorize(request:Request,response:Response,data:AuthorizeRequest|None=None):
+        platform=(data or AuthorizeRequest()).platform
+        if platform not in PLATFORMS or not PLATFORMS[platform]['connectable']:raise HTTPException(409,'该平台暂未接入')
         config=require_config()
         with db.transaction() as tx:
             actor=user(tx,request)
@@ -59,8 +75,18 @@ def register_agiso(app,db,user):
             state=secrets.token_urlsafe(32)
             browser_nonce=secrets.token_urlsafe(32)
             response.set_cookie('studio_agiso_oauth',browser_nonce,max_age=900,httponly=True,samesite='lax',secure=os.environ.get('STUDIO_SECURE_COOKIE')=='1',path='/api/agiso/callback')
-            tx.put('agiso_oauth',{'id':token_hash(state),'owner':actor['id'],'organization_id':actor['organization_id'],'expires':now()+900,'used':False,'nonce_hash':token_hash(browser_nonce),'session_id':token_hash(request.cookies.get('studio_session',''))})
-        return {'url':'https://aldspdd.agiso.com/#/authorize?'+urlencode({'appId':config['app_id'],'state':state})}
+            tx.put('agiso_oauth',{'id':token_hash(state),'owner':actor['id'],'organization_id':actor['organization_id'],'expires':now()+900,'used':False,'nonce_hash':token_hash(browser_nonce),'session_id':token_hash(request.cookies.get('studio_session','')),'platform':platform})
+        return {'url':PLATFORMS[platform]['host']+'/#/authorize?'+urlencode({'appId':config['app_id'],'state':state})}
+
+    @app.put('/api/agiso/shops/{id}/watermark')
+    def shop_watermark(id:str,data:ShopWatermark,request:Request):
+        """New orders of this shop copy its watermark; existing orders change only through the batch update."""
+        mark=data.watermark.strip()
+        if not mark:raise HTTPException(422,'水印不能为空')
+        with db.transaction() as tx:
+            actor,shop=scoped(tx,request,id,True)
+            shop['watermark']=mark;tx.put('agiso_shops',shop)
+            return shop_dto(tx,shop,actor)
 
     @app.get('/api/agiso/callback')
     async def callback(request:Request,code:str='',state:str=''):
@@ -77,14 +103,16 @@ def register_agiso(app,db,user):
                 if request.cookies.get('studio_session') and user(tx,request)['id']!=actor['id']:raise ValueError()
                 entry['used']=True;tx.put('agiso_oauth',entry)
             stage='exchange'
-            authorization=await protocol.exchange(code,config,app.state.agiso_worker.transport,now())
+            platform=entry.get('platform','pdd')
+            authorization=await protocol.exchange(code,config,app.state.agiso_worker.transport,now(),platform)
             stage='bind'
             with db.transaction() as tx:
                 current=tx.get('users',actor['id']);org=tx.get('organizations',entry['organization_id'])
                 if not current or not current['active'] or current.get('organization_id')!=entry['organization_id'] or not org or not org['active']:raise ValueError()
-                existing=next((s for s in tx.all('agiso_shops') if s['shop_id']==authorization['shop_id']),None)
+                existing=next((s for s in tx.all('agiso_shops') if s['shop_id']==authorization['shop_id'] and platform_of(s)==platform),None)
                 if existing and (existing['owner']!=actor['id'] or existing['organization_id']!=actor['organization_id']):raise ValueError()
-                shop=existing or {'id':uid(),'owner':actor['id'],'organization_id':actor['organization_id'],'enabled':False,'rules':[],'last_event_at':None}
+                shop=existing or {'id':uid(),'owner':actor['id'],'organization_id':actor['organization_id'],'enabled':False,'rules':[],'last_event_at':None,
+                                  'platform':platform,'watermark':watermark_of(current)}
                 shop.update(authorization);tx.put('agiso_shops',shop)
             response=RedirectResponse('/?agiso=connected',status_code=303)
             response.delete_cookie('studio_agiso_oauth',path='/api/agiso/callback')
@@ -125,14 +153,15 @@ def register_agiso(app,db,user):
             _,shop=scoped(tx,request,id,True)
             if not account_active(tx,shop):raise HTTPException(409,'店铺所属账号不可用')
         config=protocol.settings()
-        failure={'available':False,'goods':[],'total':0,'page':page,'message':'商品读取暂不可用，请从拼多多后台核对商品ID和规格ID后手动填写'}
+        label=PLATFORMS[platform_of(shop)]['label']
+        failure={'available':False,'goods':[],'total':0,'page':page,'message':f'商品读取暂不可用，请从{label}后台核对商品ID和规格ID后手动填写'}
         if not config['configured'] or not shop.get('token') or shop.get('expires_at',0)<=now():return failure
         try:
             fields={'page':str(page),'pageSize':'100'}
             if goods_name:fields['goodsName']=goods_name
             result=await protocol.api('Goods/List',fields,shop,config,app.state.agiso_worker.transport,now())
             if result['IsSuccess'] is False and result.get('Error_Code')==17:
-                return {**failure,'message':'阿奇索已禁用此应用的拼多多接口（错误码 17）。请联系阿奇索客服开通商品查询等接口权限；开通前可手动填写已核实的商品 ID 和 SKU ID。'}
+                return {**failure,'message':f'阿奇索已禁用此应用的{label}接口（错误码 17）。请联系阿奇索客服开通商品查询等接口权限；开通前可手动填写已核实的商品 ID 和 SKU ID。'}
             data=result.get('Data')
             if result['IsSuccess'] is not True or not isinstance(data,dict) or type(data.get('total_count')) is not int or data['total_count']<0 or not isinstance(data.get('goods_list'),list) or len(data['goods_list'])>100:raise ValueError()
             rows=[]
@@ -196,7 +225,9 @@ def register_agiso(app,db,user):
         config=require_config()
         query=request.query_params
         if any(len(query.getlist(k))!=1 for k in ('timestamp','sign','aopic','fromPlatform')):raise HTTPException(422,'通知参数无效')
-        if query['fromPlatform']!='PddAlds':raise HTTPException(422,'通知平台无效')
+        platform=from_push(query['fromPlatform'])
+        # Pushes are parsed per platform; a platform without an adapter yet is refused like an unknown one.
+        if not platform or not PLATFORMS[platform]['connectable']:raise HTTPException(422,'通知平台无效')
         if request.headers.get('content-type','').split(';')[0].lower()!='application/x-www-form-urlencoded':raise HTTPException(422,'通知格式无效')
         try:
             fields=parse_qs(body.decode('utf-8'),strict_parsing=True,max_num_fields=2)
@@ -244,10 +275,11 @@ def register_agiso(app,db,user):
         except (ValueError,ValidationError,TypeError):raise HTTPException(422,'通知内容无效')
         # Topic is not signed; derive identity from the validated signed payload and family.
         prefix={'trade':'trade:','refund':'refund:','shipping':'shipping:','memo':'memo:','other':'topic'+topic+':'}[family]
-        event_id=token_hash(prefix+json.dumps(payload,sort_keys=True,ensure_ascii=False))
+        # Pinduoduo keeps its original ids so pushes repeated across the upgrade still deduplicate.
+        event_id=token_hash(('' if platform=='pdd' else platform+':')+prefix+json.dumps(payload,sort_keys=True,ensure_ascii=False))
         with db.transaction() as tx:
             if not tx.get('agiso_events',event_id):
-                shop=next((s for s in tx.all('agiso_shops') if s['shop_id']==mall),None)
+                shop=next((s for s in tx.all('agiso_shops') if s['shop_id']==mall and platform_of(s)==platform),None)
                 if not shop:logging.getLogger(__name__).warning('Agiso push for unknown shop topic=%s',topic)
                 if family=='other':
                     status,error='ignored','unsupported_topic'
@@ -257,7 +289,7 @@ def register_agiso(app,db,user):
                     status,error='pending',None
                 else:
                     status,error='disabled','shop_disabled'
-                tx.put('agiso_events',{'id':event_id,'shop_id':shop['id'] if shop else '', 'topic':topic,'payload':payload,
+                tx.put('agiso_events',{'id':event_id,'shop_id':shop['id'] if shop else '','platform':platform,'topic':topic,'payload':payload,
                        'order_number':number,'status':status,'error':error,
                        'received_at':now(),'lease_until':0})
                 if shop:shop['last_event_at']=now();tx.put('agiso_shops',shop)

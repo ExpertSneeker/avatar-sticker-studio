@@ -1,7 +1,8 @@
-"""卖家备注只来自拼多多：开户推送带入，提交拼图前和后台手动获取时经阿奇索订单查询（Trade/Detail）更新。站内不可编辑。"""
+"""卖家备注只来自销售平台：开户推送带入，提交拼图前和后台手动获取时经阿奇索订单查询更新（目前接入拼多多 Trade/Detail）。站内不可编辑。"""
 import asyncio
 import logging
 from . import agiso_protocol as protocol
+from .platforms import PLATFORMS, platform_of
 
 log = logging.getLogger(__name__)
 
@@ -11,6 +12,8 @@ def remark_source(tx, order, now):
     link = tx.get('agiso_orders', order.get('agiso_id') or '') if order.get('agiso_id') else None
     shop = tx.get('agiso_shops', link.get('shop_id', '')) if link else None
     if not link or not link.get('tid') or not shop or shop.get('organization_id') != order.get('organization_id'):
+        return 'no_link'
+    if not PLATFORMS[platform_of(shop)]['remark_sync']:
         return 'no_link'
     if not shop.get('token') or shop.get('expires_at', 0) <= now:
         return 'unavailable'

@@ -252,3 +252,7 @@
     min-width: 640px;
   }
 }
+
+.shop-watermark { margin-top: 14px; display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px; }
+.shop-watermark .field { flex: 1 1 220px; margin: 0; }
+.shop-watermark .hint, .shop-watermark .error-banner, .shop-watermark [role=status] { flex-basis: 100%; margin: 0; }

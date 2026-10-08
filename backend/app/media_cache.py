@@ -206,12 +206,15 @@ def _unlink(path):
 
 
 def marks_in_use(tx):
-    """Watermark texts customers can currently see per organization: every active member's
-    watermark (new orders copy it) plus the snapshot watermark of every open order."""
+    """Watermark texts customers can currently see per organization: every shop watermark and
+    active member's watermark (new orders copy one of them) plus the snapshot of every open order."""
     result = {}
     for member in tx.all('users'):
         if member.get('active') and member.get('organization_id'):
             result.setdefault(member['organization_id'], set()).add(watermark_of(member))
+    for shop in tx.all('agiso_shops'):
+        if (shop.get('watermark') or '').strip():
+            result.setdefault(shop['organization_id'], set()).add(shop['watermark'].strip())
     for order in tx.all('orders'):
         if order.get('state') in {'draft', 'review'} and order.get('organization_id'):
             result.setdefault(order['organization_id'], set()).add(order['watermark'])

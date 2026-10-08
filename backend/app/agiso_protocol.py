@@ -9,6 +9,7 @@ import httpx
 from cryptography.fernet import Fernet
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from .schemas import safe_name
+from .platforms import PLATFORMS, platform_of
 
 MAX_BODY = 256 * 1024
 ENV = ('STUDIO_AGISO_APP_ID', 'STUDIO_AGISO_APP_SECRET', 'STUDIO_AGISO_ENCRYPTION_KEY', 'STUDIO_AGISO_PUBLIC_URL')
@@ -27,7 +28,20 @@ def settings():
         cipher = None
         if ENV[2] not in missing: missing.append(ENV[2])
     return {'configured':not missing, 'missing':missing, 'origin':origin, 'app_id':values[ENV[0]], 'secret':values[ENV[1]], 'cipher':cipher,
-            'aftersales_enabled':os.environ.get('STUDIO_AGISO_AFTERSALES_VERIFIED') == '1'}
+            'aftersales_platforms':aftersales_platforms()}
+
+
+def aftersales_platforms():
+    """Platforms whose refund handling passed a real refund check. STUDIO_AGISO_AFTERSALES_PLATFORMS
+    lists them (e.g. "pdd,douyin"); the older STUDIO_AGISO_AFTERSALES_VERIFIED=1 meant Pinduoduo only."""
+    listed=os.environ.get('STUDIO_AGISO_AFTERSALES_PLATFORMS')
+    if listed is not None:
+        return frozenset(p for p in (x.strip() for x in listed.split(',')) if p in PLATFORMS)
+    return frozenset({'pdd'}) if os.environ.get('STUDIO_AGISO_AFTERSALES_VERIFIED')=='1' else frozenset()
+
+
+def aftersales_for(config,shop):
+    return bool(shop) and platform_of(shop) in config['aftersales_platforms']
 
 
 def sign(secret, fields):
@@ -204,13 +218,13 @@ async def request_json(method,url,transport=None,token_response=False,**kwargs):
     return result
 
 
-async def exchange(code,config,transport,now):
+async def exchange(code,config,transport,now,platform='pdd'):
     fields={'appId':config['app_id'],'code':code}
-    result=await request_json('GET','https://aldspdd.agiso.com/auth/token',transport,token_response=True,params={**fields,'sign':sign(config['secret'],fields)})
+    result=await request_json('GET',PLATFORMS[platform]['host']+'/auth/token',transport,token_response=True,params={**fields,'sign':sign(config['secret'],fields)})
     data=result.get('Data')
     if isinstance(data,dict):
         data=token_aliases(data,('FromPlatform','ShopId','UserId','ShopName','Token','ExpiresIn'))
-    if result['IsSuccess'] is not True or not isinstance(data,dict) or data.get('FromPlatform') not in ('PddAlds','AldsPdd'):
+    if result['IsSuccess'] is not True or not isinstance(data,dict) or data.get('FromPlatform') not in PLATFORMS[platform]['token_platforms']:
         platform=data.get('FromPlatform') if isinstance(data,dict) else None
         logging.getLogger(__name__).warning('Agiso platform mismatch: %s',platform if isinstance(platform,str) and platform.isalnum() and len(platform)<32 else 'invalid')
         raise ProtocolError()
@@ -226,5 +240,5 @@ async def exchange(code,config,transport,now):
 async def api(path,fields,shop,config,transport,now):
     fields={**fields,'timestamp':str(int(now))}
     token=config['cipher'].decrypt(shop['token'].encode()).decode()
-    return await request_json('POST','https://gw-api.agiso.com/aldsPdd/'+path,transport,
+    return await request_json('POST','https://gw-api.agiso.com/'+PLATFORMS[platform_of(shop)]['gateway']+'/'+path,transport,
                               data={**fields,'sign':sign(config['secret'],fields)},headers={'Authorization':'Bearer '+token,'ApiVersion':'1'})

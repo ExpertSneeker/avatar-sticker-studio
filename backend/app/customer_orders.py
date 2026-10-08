@@ -20,6 +20,8 @@ from .db import uid
 from .schemas import Model, PrintSettings, UploadInit, safe_name
 from .storage import asset_bytes, normalize_image, save_asset
 from . import oss_delivery
+from .media_cache import watermark_of
+from .platforms import PLATFORMS, platform_of, shop_watermark
 
 COOKIE = 'studio_guest'
 # Free first-generation retries a guest may start per slot; staff retries are not limited.
@@ -30,8 +32,14 @@ def digest(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
 
+Platform = Literal['pdd', 'douyin', 'xhs']
+
+
 class OpenOrder(Model):
     order_number: str = Field(min_length=1, max_length=100)
+    # Required for every order source; a shop (optional for manual orders) must be on the same platform.
+    platform: Platform
+    shop_id: str | None = Field(None, max_length=64)
     generation_limit: int = Field(ge=1, le=360, strict=True)
     final_count: int = Field(ge=1, le=360, strict=True)
     rerun_limit: int = Field(ge=0, strict=True)
@@ -49,6 +57,11 @@ class OpenOrder(Model):
 class Mutation(Model):
     client_token: str = Field(min_length=1, max_length=120)
     expected_version: int = Field(ge=1, strict=True)
+
+
+class PlatformChange(Mutation):
+    platform: Platform
+    shop_id: str | None = Field(None, max_length=64)
 
 
 class AvatarSelection(Model):
@@ -233,14 +246,20 @@ def dto(tx, order, guest=False, summary=False):
         owner = tx.get('users', order['owner']) or {}
         result.update({k: order[k] for k in ('owner', 'notes', 'organization_id', 'watermark', 'print_settings', 'delivery_version')})
         result['owner_name'] = owner.get('display_name', '')
-        linked = tx.get('agiso_orders', order.get('agiso_id', '')) or {}
-        shop = tx.get('agiso_shops', linked.get('shop_id', '')) or {}
+        shop = tx.get('agiso_shops', order.get('shop_id') or '') if order.get('shop_id') else None
+        if not shop:
+            linked = tx.get('agiso_orders', order.get('agiso_id', '')) or {}
+            shop = tx.get('agiso_shops', linked.get('shop_id', '')) or {}
         if shop.get('organization_id') != order.get('organization_id'):
             shop = {}
+        result['platform'] = platform_of(order)
         result['shop_id'] = shop.get('id')
         result['shop_name'] = shop.get('shop_name', '')
+        # Only Agiso-opened orders are bound to their platform; manual orders may change platform/shop.
+        result['platform_editable'] = not order.get('agiso_id')
+        result['remark_supported'] = bool(order.get('agiso_id')) and PLATFORMS[platform_of(order)]['remark_sync']
         result['processing_error'] = order.get('processing_error')
-        # Seller remark comes only from Pinduoduo; it is printed after the order number on each page.
+        # Seller remark comes from the sales platform via Agiso; it is printed after the order number on each page.
         result['platform_remark'] = order.get('platform_remark', '')
         result['remark_sync'] = order.get('remark_sync')
     return result
@@ -359,12 +378,28 @@ def delivery_folder(order):
     return label
 
 
-def create_customer_order(tx, actor, data, at):
-    """Shared creation path snapshots owner defaults for every order source."""
+def order_shop(tx, organization_id, platform, shop_id):
+    """The shop an order belongs to: same organization and platform, or 422."""
+    if not shop_id:
+        return None
+    shop = tx.get('agiso_shops', shop_id)
+    if not shop or shop['organization_id'] != organization_id or platform_of(shop) != platform:
+        raise HTTPException(422, '店铺不存在或不属于所选平台')
+    return shop
+
+
+def order_watermark(tx, order, opener):
+    """Shop watermark when the order has a shop; manual orders without one use the opener's account watermark."""
+    shop = tx.get('agiso_shops', order.get('shop_id') or '') if order.get('shop_id') else None
+    return shop_watermark(tx, shop) if shop else watermark_of(opener)
+
+
+def create_customer_order(tx, actor, data, at, shop=None):
+    """Shared creation path snapshots shop/owner defaults for every order source."""
     config = tx.get('config', 'settings')
     order = {'id': uid(), **data.model_dump(exclude={'client_token'}),
              'owner': actor['id'], 'organization_id': actor['organization_id'], 'state': 'draft', 'version': 1,
-             'name': data.order_number, 'watermark': actor.get('watermark', '').strip() or actor['display_name'],
+             'name': data.order_number, 'watermark': shop_watermark(tx, shop) if shop else watermark_of(actor),
              'watermark_version': 1, 'print_settings': actor['print_defaults'],
              'avatars': [], 'slots': [], 'created_at': datetime.fromtimestamp(at, timezone.utc).isoformat(),
              'prompt': config['prompt'], 'prompt_version': config.get('prompt_version', 1), 'paused': False,
@@ -416,7 +451,8 @@ def register_customer_orders(app, db, user):
                 return dto(tx, customer(tx, prior['order_id']))
             if any(o.get('order_number') == data.order_number for o in tx.where('orders', 'order_number', data.order_number)):
                 raise HTTPException(409, '订单号已使用')
-            order = create_customer_order(tx, actor, data, now())
+            shop = order_shop(tx, actor['organization_id'], data.platform, data.shop_id)
+            order = create_customer_order(tx, actor, data, now(), shop)
             remember(tx, key, fingerprint, order['id'])
             audit(tx, order, 'open', actor['id'], now())
             return dto(tx, order)
@@ -443,8 +479,7 @@ def register_customer_orders(app, db, user):
             raise HTTPException(404, '订单不存在')
         rows = []
         for order in orders:
-            opener = tx.get('users', order['owner'])
-            mark = opener.get('watermark', '').strip() or opener['display_name']
+            mark = order_watermark(tx, order, tx.get('users', order['owner']))
             rows.append({'id': order['id'], 'order_number': order['order_number'], 'watermark': mark})
         fingerprint = digest([[o['id'], o['version'], row['watermark']] for o, row in zip(orders, rows)])
         return orders, rows, fingerprint
@@ -477,6 +512,25 @@ def register_customer_orders(app, db, user):
                 audit(tx, order, 'watermark', actor['id'], now())
             remember(tx, key, fingerprint, None)
         return {'updated': len(data.ids)}
+
+    @app.post('/api/customer-orders/{id}/platform')
+    def change_platform(id: str, data: PlatformChange, request: Request):
+        """Manual orders only. The watermark snapshot stays; use the batch watermark update to apply the new shop's."""
+        with db.transaction() as tx:
+            order, scope = access(tx, request, id)
+            key, fingerprint, prior = operation(tx, scope, data, 'platform')
+            if prior:
+                return dto(tx, order)
+            if order.get('agiso_id'):
+                raise HTTPException(409, '平台订单的平台和店铺由阿奇索推送决定，不能修改')
+            if order['version'] != data.expected_version:
+                raise HTTPException(409, '订单已变化，请刷新后重试')
+            shop = order_shop(tx, order['organization_id'], data.platform, data.shop_id)
+            order.update(platform=data.platform, shop_id=shop['id'] if shop else None, version=order['version'] + 1)
+            tx.put('orders', order)
+            remember(tx, key, fingerprint, order['id'])
+            audit(tx, order, 'platform', scope, now())
+            return dto(tx, order)
 
     @app.get('/api/customer-orders/{id}')
     def get_order(id: str, request: Request):

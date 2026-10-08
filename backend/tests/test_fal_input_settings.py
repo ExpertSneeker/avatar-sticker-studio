@@ -85,7 +85,7 @@ def test_only_active_superadmin_can_read_or_change_input_mode(orgs, monkeypatch)
     app, root, org_admin, _, _ = orgs
     monkeypatch.setenv('STUDIO_OSS_BUCKET', 'synthetic-test-bucket')
     staff, _ = member(org_admin, app, 'mode-staff')
-    order = org_admin.post('/api/customer-orders', json={'order_number':'MODE-TEST','generation_limit':1,'final_count':1,'rerun_limit':0,'client_token':'mode'}).json()
+    order = org_admin.post('/api/customer-orders', json={'platform':'pdd','order_number':'MODE-TEST','generation_limit':1,'final_count':1,'rerun_limit':0,'client_token':'mode'}).json()
     guest = TestClient(app)
     assert guest.post('/api/guest/login', json={'order_number':order['order_number']}).status_code == 200
     anonymous = TestClient(app)

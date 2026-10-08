@@ -11,7 +11,7 @@ test('seller remark is read-only, fetched from Pinduoduo per order or in bulk; b
   const manual=await createCustomer(page.request,{order_number:`RMK-${tag}-B`})
   // The test backend has no Pinduoduo shop: present the first order as linked, as the API does for Agiso orders.
   let remark='开户时备注'
-  const decorate=(order:any)=>order.id===linked.id?{...order,shop_id:'shop-1',shop_name:'草木造物',platform_remark:remark,buyer_memo:undefined}:order
+  const decorate=(order:any)=>order.id===linked.id?{...order,shop_id:'shop-1',shop_name:'草木造物',platform:'pdd',platform_editable:false,remark_supported:true,platform_remark:remark,buyer_memo:undefined}:order
   await page.route('**/api/customer-orders?summary=1*',async route=>{const response=await route.fetch({headers:fresh(route)});route.fulfill({response,json:(await response.json()).map(decorate)})})
   await page.route(`**/api/customer-orders/${linked.id}`,async route=>{const response=await route.fetch({headers:fresh(route)});route.fulfill({response,json:decorate(await response.json())})})
   const requested:string[][]=[]

@@ -183,7 +183,7 @@ def test_guest_library_lists_only_own_organization_categories(orgs):
     app,root,one,two,_=orgs
     custom=one.post('/api/library/categories',json={'name':'节日'}).json()
     two.post('/api/library/categories',json={'name':'别家分类'})
-    order=one.post('/api/customer-orders',json={'order_number':'CAT-ORDER','generation_limit':2,'final_count':1,'rerun_limit':0,'client_token':'cat'}).json()
+    order=one.post('/api/customer-orders',json={'platform':'pdd','order_number':'CAT-ORDER','generation_limit':2,'final_count':1,'rerun_limit':0,'client_token':'cat'}).json()
     with TestClient(app) as guest:
         assert guest.post('/api/guest/login',json={'order_number':order['order_number']}).status_code==200
         categories=guest.get('/api/guest/library').json()['categories']

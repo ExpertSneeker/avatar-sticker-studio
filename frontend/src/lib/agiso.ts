@@ -4,11 +4,25 @@ export interface AgisoStatus {
   authorization_callback_url: string | null
   webhook_url: string | null
   aftersales_enabled: boolean
+  aftersales_platforms: PlatformKey[]
+  platforms: PlatformInfo[]
+}
+export type PlatformKey = 'pdd' | 'douyin' | 'xhs'
+export interface PlatformInfo { key: PlatformKey; label: string; connectable: boolean; remark_sync: boolean }
+// Labels for orders and filters; the authorization switch per platform comes from /agiso/status.
+export const PLATFORM_LABELS: Record<PlatformKey, string> = { pdd: '拼多多', douyin: '抖店', xhs: '小红书' }
+export const PLATFORM_KEYS = Object.keys(PLATFORM_LABELS) as PlatformKey[]
+// Hosts the authorization redirect may point to (docs/agiso-reference/README.md).
+const AUTHORIZE_HOSTS: Record<PlatformKey, string> = { pdd: 'aldspdd.agiso.com', douyin: 'aldsdoudian.agiso.com', xhs: 'aldsxhs.agiso.com' }
+export function validAuthorizeUrl(platform: PlatformKey, value: string) {
+  const url = new URL(value)
+  return url.protocol === 'https:' && url.hostname === AUTHORIZE_HOSTS[platform]
 }
 export interface Shop {
   id: string; shop_id: string; shop_name: string; owner: string; owner_name: string
   organization_id: string; enabled: boolean; authorized: boolean; expires_at: number | null
   last_event_at: number | null; can_manage: boolean
+  platform: PlatformKey; platform_label: string; watermark: string
 }
 export interface SkuRule {
   goods_id: string; sku_id: string; goods_name: string; sku_name: string

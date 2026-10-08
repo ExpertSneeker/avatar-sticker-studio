@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Copy, Plus, RefreshCw, Store, Trash2 } from 'lucide-react'
 import { api, patch, post } from '../lib/api'
-import { integrationLabel, integrationError, ruleError, newSkuRule, withSpecDefaults } from '../lib/agiso'
-import type { AgisoStatus, GoodsPage, Shop, ShopEvent, ShopOrder, SkuRule } from '../lib/agiso'
+import { integrationLabel, integrationError, ruleError, newSkuRule, validAuthorizeUrl, withSpecDefaults } from '../lib/agiso'
+import type { AgisoStatus, GoodsPage, PlatformKey, Shop, ShopEvent, ShopOrder, SkuRule } from '../lib/agiso'
 import { Modal, Spinner } from '../components/UI'
 import './Shops.css'
 
@@ -37,19 +37,18 @@ export function Shops() {
     void reload().catch(e => { if (!controller.signal.aborted) setError(e.message) }).finally(() => { if (!controller.signal.aborted) setLoading(false) })
     return () => controller.abort()
   }, [reload])
-  async function connect() {
+  async function connect(platform: PlatformKey) {
     setConnecting(true); setError(''); setAuthorizationError('')
     try {
-      const result = await post<{ url: string }>('/agiso/authorize', {}, lifetime.current.signal)
-      const url = new URL(result.url)
-      if (url.protocol !== 'https:' || url.hostname !== 'aldspdd.agiso.com') throw new Error('授权地址无效，请联系管理员')
-      if (!lifetime.current.signal.aborted) window.location.assign(url.toString())
+      const result = await post<{ url: string }>('/agiso/authorize', { platform }, lifetime.current.signal)
+      if (!validAuthorizeUrl(platform, result.url)) throw new Error('授权地址无效，请联系管理员')
+      if (!lifetime.current.signal.aborted) window.location.assign(result.url)
     } catch (e) { if (!lifetime.current.signal.aborted) setError((e as Error).message) }
     finally { if (!lifetime.current.signal.aborted) setConnecting(false) }
   }
   const selectedShop = shops.find(shop => shop.id === selected)
   return <>
-    <div className="page-heading"><div><h1>店铺接入</h1><p>连接拼多多店铺，按购买规格自动开通客户选图。</p></div><div className="button-group"><button className="button" disabled={loading || connecting} onClick={() => { setError(''); void reload().catch(e => setError(e.message)) }}><RefreshCw size={16}/>刷新</button><button className="button primary" disabled={!status?.configured || connecting} onClick={() => void connect()}>{connecting ? <Spinner/> : <Plus size={16}/>}连接拼多多店铺</button></div></div>
+    <div className="page-heading"><div><h1>店铺接入</h1><p>连接拼多多、抖店、小红书店铺，按购买规格自动开通客户选图；每个店铺单独设置水印。</p></div><div className="button-group"><button className="button" disabled={loading || connecting} onClick={() => { setError(''); void reload().catch(e => setError(e.message)) }}><RefreshCw size={16}/>刷新</button>{(status?.platforms || []).map(platform => <button key={platform.key} className={'button ' + (platform.connectable ? 'primary' : '')} disabled={!status?.configured || connecting || !platform.connectable} title={platform.connectable ? undefined : '该平台正在接入，暂不能授权'} onClick={() => void connect(platform.key)}>{connecting ? <Spinner/> : <Plus size={16}/>}连接{platform.label}店铺{platform.connectable ? '' : '（接入中）'}</button>)}</div></div>
     {(authorizationError || error) && <div className="error-banner" role="alert">{authorizationError || error}</div>}
     {notice && <p role="status">{notice}</p>}
     {status && <section className="settings-section shop-config">
@@ -59,7 +58,7 @@ export function Shops() {
       <details><summary>接入配置详情</summary><dl>{status.missing.length > 0 && <><dt>待配置项目</dt><dd><code>{status.missing.join('、')}</code></dd></>}{status.authorization_callback_url && <><dt>店铺授权回调</dt><dd><code>{status.authorization_callback_url}</code></dd></>}{status.webhook_url && <><dt>订单通知地址</dt><dd><code>{status.webhook_url}</code></dd></>}</dl><a href="https://www.yuque.com/agiso/open/owplxcrlyxpzw1cq" target="_blank" rel="noreferrer">查看阿奇索授权说明</a></details>
     </section>}
     {loading ? <div className="shop-empty"><Spinner/>正在读取店铺</div> : !shops.length ? <div className="settings-section shop-empty"><Store size={28}/><h3>还没有连接店铺</h3><p>连接店铺后，按真实商品和规格配置生成、提交及重做额度。</p></div> :
-      <div className="shops-layout"><aside className="shop-list" aria-label="已连接店铺">{shops.map(shop => <button className={'shop-card ' + (shop.id === selected ? 'active' : '')} key={shop.id} onClick={() => setSelected(shop.id)} aria-pressed={shop.id === selected}><strong>{shop.shop_name}</strong><small>负责账户：{shop.owner_name}</small><small>{shop.enabled ? '自动开户已开启' : '自动开户已关闭'} · {shop.authorized ? '已授权' : '需要重新授权'}</small></button>)}</aside>{selectedShop && <ShopDetail key={selectedShop.id} shop={selectedShop} configured={!!status?.configured} onUpdate={reload}/>}</div>}
+      <div className="shops-layout"><aside className="shop-list" aria-label="已连接店铺">{shops.map(shop => <button className={'shop-card ' + (shop.id === selected ? 'active' : '')} key={shop.id} onClick={() => setSelected(shop.id)} aria-pressed={shop.id === selected}><span className={'platform-badge ' + shop.platform}>{shop.platform_label}</span><strong>{shop.shop_name}</strong><small>水印：{shop.watermark || '未设置'}</small><small>负责账户：{shop.owner_name}</small><small>{shop.enabled ? '自动开户已开启' : '自动开户已关闭'} · {shop.authorized ? '已授权' : '需要重新授权'}</small></button>)}</aside>{selectedShop && <ShopDetail key={selectedShop.id} shop={selectedShop} configured={!!status?.configured} onUpdate={reload}/>}</div>}
   </>
 }
 
@@ -115,7 +114,7 @@ function ShopDetail({ shop, configured, onUpdate }: { shop: Shop; configured: bo
     catch { setCopiedLink(value) }
   }
   return <section className="shop-detail">
-    <div className="settings-section"><div className="shop-toolbar"><div><h2>{shop.shop_name}</h2><p className="hint">店铺 ID：{shop.shop_id} · 负责账户：{shop.owner_name}</p></div><span className={'shop-status ' + (shop.enabled ? '' : 'off')}>{shop.enabled ? '自动开户已开启' : '自动开户已关闭'}</span></div><p className="hint">授权到期：{date(shop.expires_at)}<br/>最近收到订单：{date(shop.last_event_at)}</p>{shop.can_manage && <button className="button" disabled={busy || loading || (!shop.enabled && (!configured || dirty || !shop.authorized || !rules.some(rule => rule.enabled)))} onClick={() => void action(async () => { await patch(base, { enabled: !shop.enabled }); await onUpdate() }, shop.enabled ? '已关闭自动开户，已有订单保留。' : '已开启自动开户，仅处理已启用的 SKU。')}>{shop.enabled ? '关闭自动开户' : '开启自动开户'}</button>}{dirty && <p className="hint">套餐有未保存的修改，保存后才能开启自动开户。</p>}</div>
+    <div className="settings-section"><div className="shop-toolbar"><div><h2>{shop.shop_name}</h2><p className="hint">{shop.platform_label} · 店铺 ID：{shop.shop_id} · 负责账户：{shop.owner_name}</p></div><span className={'shop-status ' + (shop.enabled ? '' : 'off')}>{shop.enabled ? '自动开户已开启' : '自动开户已关闭'}</span></div><p className="hint">授权到期：{date(shop.expires_at)}<br/>最近收到订单：{date(shop.last_event_at)}</p>{shop.can_manage && <button className="button" disabled={busy || loading || (!shop.enabled && (!configured || dirty || !shop.authorized || !rules.some(rule => rule.enabled)))} onClick={() => void action(async () => { await patch(base, { enabled: !shop.enabled }); await onUpdate() }, shop.enabled ? '已关闭自动开户，已有订单保留。' : '已开启自动开户，仅处理已启用的 SKU。')}>{shop.enabled ? '关闭自动开户' : '开启自动开户'}</button>}{dirty && <p className="hint">套餐有未保存的修改，保存后才能开启自动开户。</p>}<ShopWatermark shop={shop} onSaved={onUpdate}/></div>
     <div className="shop-tabs" role="group" aria-label="店铺信息"><button className={'button ' + (tab === 'rules' ? 'primary' : '')} onClick={() => setTab('rules')}>商品套餐</button><button className={'button ' + (tab === 'orders' ? 'primary' : '')} onClick={() => setTab('orders')}>接入订单</button><button className={'button ' + (tab === 'events' ? 'primary' : '')} onClick={() => setTab('events')}>通知记录</button></div>
     {error && <div className="error-banner" role="alert">{error}</div>}{notice && <p role="status">{notice}</p>}
     {tab === 'rules' && <>
@@ -136,4 +135,23 @@ function ShopDetail({ shop, configured, onUpdate }: { shop: Shop; configured: bo
     }}>{sku.sku_name} · {sku.sku_id}</button>)}</div></article>)}</div>{source?.available && !source.goods.length && <p className="shop-empty">未找到商品，请确认已审核上架或调整搜索词。</p>}<div className="modal-footer"><button className="button" disabled={busy || page <= 1} onClick={() => void findGoods(page - 1)}>上一页</button><span>第 {page} 页</span><button className="button" disabled={busy || !source?.available || page * 100 >= (source.total || 0)} onClick={() => void findGoods(page + 1)}>下一页</button><button className="button primary" onClick={() => setSourceOpen(false)}>完成选择</button></div></Modal>}
     {copiedLink && <Modal title="复制选图链接" onClose={() => setCopiedLink(null)}><p>浏览器未允许自动复制，请选中下方链接复制。</p><input aria-label="选图链接" className="full" readOnly value={copiedLink} onFocus={e => e.target.select()}/></Modal>}
   </section>
+}
+
+// New orders of the shop copy this watermark; existing orders change only through the order list's batch update.
+function ShopWatermark({ shop, onSaved }: { shop: Shop; onSaved: () => Promise<void> }) {
+  const current = shop.watermark || ''
+  const [value, setValue] = useState(current), [busy, setBusy] = useState(false), [message, setMessage] = useState(''), [failure, setFailure] = useState('')
+  useEffect(() => setValue(current), [current])
+  const trimmed = value.trim(), changed = trimmed !== current
+  async function save() {
+    setBusy(true); setMessage(''); setFailure('')
+    try { await api(`/agiso/shops/${encodeURIComponent(shop.id)}/watermark`, { method: 'PUT', body: JSON.stringify({ watermark: trimmed }) }); await onSaved(); setMessage('已保存。之后开的订单使用新水印；已有订单可在订单列表中批量更新水印。') }
+    catch (e) { setFailure((e as Error).message) } finally { setBusy(false) }
+  }
+  return <div className="shop-watermark">
+    <label className="field">店铺水印<input value={value} maxLength={100} disabled={!shop.can_manage || busy} onChange={e => { setValue(e.target.value); setMessage('') }} aria-label={`${shop.shop_name} 店铺水印`}/></label>
+    {shop.can_manage && <button className="button" disabled={busy || !trimmed || !changed} onClick={() => void save()}>{busy && <Spinner/>}保存水印</button>}
+    <p className="hint">本店铺新开的订单（自动开户和选择本店铺的人工开单）使用这个水印。</p>
+    {message && <p role="status" className="hint">{message}</p>}{failure && <div className="error-banner" role="alert">{failure}</div>}
+  </div>
 }

@@ -42,7 +42,7 @@ def member(client, app, name='member'):
 
 
 def create_customer_order(client, name='测试订单', count=12, token=None, **fields):
-    body={'order_number':name+'-'+uuid4().hex[:8], 'generation_limit':count, 'final_count':count,
+    body={'platform':'pdd', 'order_number':name+'-'+uuid4().hex[:8], 'generation_limit':count, 'final_count':count,
           'rerun_limit':count, 'client_token':token or uuid4().hex, **fields}
     response=client.post('/api/customer-orders',json=body)
     assert response.status_code==200,response.text

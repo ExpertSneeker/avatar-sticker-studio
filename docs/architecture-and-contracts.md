@@ -90,8 +90,19 @@
 - 水印媒体三层缓存（`guest_media.py`、`media_cache.py`）：每进程 256MB 内存 LRU → 硬盘缓存（`STUDIO_MEDIA_CACHE_DIR`，生产为 `/var/cache/avatar-sticker-studio/media`，默认 `<数据目录>/media-cache`）→ 现场生成。文件按内容命名，相同贴纸 + 水印文字 + 尺寸在所有订单间共用，生成量与订单数无关。`library/<asset>/` 存在用图库贴纸，在贴纸删除、水印不再被在职账号或未完成订单使用、管线变化时清理；`customer/<org>/<asset>/` 存头像/结果/总览，最后访问满组织设置天数（`organizations.media_cache_days`，默认 15，组织管理员 1–365 天，`/api/organization/settings`）后清理。不设容量上限，磁盘剩余低于 512MB 时只跳过写入。`MediaWarmer` 后台线程（nice 19，每 10 分钟）先清理再预生成：在用水印 × 在用贴纸的 160/320/640 三档（一次水印绘制），以及未完成订单在保留期内的头像/结果和已就绪总览的 640。资产删除通过 `cleanup_files` 的 `media-cache/<asset>` 记录持久重试清理。超管存储面板分别统计图库水印图与客户图片。
 - 水印分单张预览、访客媒体、已生成总览等路径；水印强度和缓存版本改变要分别核对，避免给已经带水印的总览再次叠加。原图与打印文件不能带预览水印。
 - 默认打印 A4、300 DPI、内容长边 85mm、边距/间距 10mm；亮度与色彩预设默认关闭。透明通道、预乘 alpha 缩放和不可变原图需要保留。
-- 打印标题为订单号加卖家备注（打印最多 60 字）。卖家备注 `platform_remark` 只来自拼多多、站内不可编辑：开户时取交易推送的 `Remark`；提交（`submit`）时为关联阿奇索的订单置 `remark_sync_pending`，Worker 在排版前经 `before_publish` 钩子调用阿奇索 `Trade/Detail` 读取一次（[remark_sync.py](../backend/app/remark_sync.py)），失败保留原值并记 `remark_sync.status=failed`，不阻塞排版；后台 `POST /api/customer-orders/remarks/sync`（最多 200 单，限本组织）手动读取，备注变化时更新，已提交订单 `delivery_version+1` 并重新排版。买家留言 `buyer_memo` 仍随推送保存，但不再出现在任何 API 响应和界面中。内部备注 `notes` 用于下载目录 `订单号_内部备注`。界面中 `final_count` 统一称“可提交印刷数量”。
+- 打印标题为订单号加卖家备注（打印最多 60 字）。卖家备注 `platform_remark` 只来自销售平台（目前仅拼多多接入订单查询）、站内不可编辑：开户时取交易推送的 `Remark`；提交（`submit`）时为关联阿奇索的订单置 `remark_sync_pending`，Worker 在排版前经 `before_publish` 钩子调用阿奇索 `Trade/Detail` 读取一次（[remark_sync.py](../backend/app/remark_sync.py)），失败保留原值并记 `remark_sync.status=failed`，不阻塞排版；后台 `POST /api/customer-orders/remarks/sync`（最多 200 单，限本组织）手动读取，备注变化时更新，已提交订单 `delivery_version+1` 并重新排版。买家留言 `buyer_memo` 仍随推送保存，但不再出现在任何 API 响应和界面中。内部备注 `notes` 用于下载目录 `订单号_内部备注`。界面中 `final_count` 统一称“可提交印刷数量”。
 - 打印文件整批原子发布，失败保留已有有效结果。后台下载清单和 ZIP 只包含最终打印拼图；仅在用户点击后写目录或下载。目录文件通过哈希、清单和归属保护，不能覆盖未经系统管理的同名文件。
+
+## 销售平台、店铺与水印
+
+平台定义集中在 [platforms.py](../backend/app/platforms.py)：`pdd` 拼多多、`douyin` 抖店、`xhs` 小红书，含阿奇索授权域名、推送 `fromPlatform`、接口网关前缀及是否已接入（`connectable`）。协议差异见 [阿奇索资料存档](agiso-reference/README.md)。未接入的平台拒绝授权和推送，但可用于人工订单。
+
+- 订单 `platform` 必填（`POST /api/customer-orders` 的 `platform`），`shop_id` 可选；店铺必须属于本组织且平台一致，否则 422。阿奇索开户的订单继承来源店铺的平台和店铺，`platform_editable=false`；人工订单可经 `POST /api/customer-orders/{id}/platform`（`client_token` + `expected_version`）修改平台和店铺，水印快照不变。订单号全平台唯一，跨平台撞号开户进入人工处理。
+- 店铺（`agiso_shops`）以“平台 + 平台店铺 ID”识别；推送按 `fromPlatform` 定平台后再找店铺。拼多多事件 ID 保持原算法，其他平台加平台前缀去重。
+- 水印按店铺设置：`agiso_shops.watermark` 由店铺负责账号或组织管理员经 `PUT /api/agiso/shops/{id}/watermark` 修改。新订单水印 = 所属店铺水印；无店铺的人工订单用开单账号水印（账号水印留空用显示名称）。“批量更新水印”按同一规则取当前值。水印仍是订单快照，改店铺水印不改已有订单。
+- `remark_supported` = 阿奇索开户且该平台已接入订单查询（目前仅拼多多）；只有此类订单显示和处理“获取卖家备注”。
+- 售后按平台验收：`STUDIO_AGISO_AFTERSALES_PLATFORMS`（逗号分隔，如 `pdd,douyin`）列出已用真实退款验收的平台；未设置时沿用旧变量 `STUDIO_AGISO_AFTERSALES_VERIFIED=1`，仅代表拼多多。
+- 迁移 `platform-v1`：所有既有店铺、阿奇索关联、推送事件和订单（含人工订单）标为 `pdd`；阿奇索订单补 `shop_id`；店铺水印取负责账号迁移时的实际水印，订单水印快照不变。
 
 ## Agiso 接入边界
 
@@ -102,7 +113,7 @@
 - 新增 SKU 默认启用。前端选择或编辑规格名称时按完整数量加“个/张”从 42/36/30/24/18/12/6/1 降序匹配默认 G/F/R，可继续人工调整；无匹配保留原额度。`sku-spec-defaults-v1` 一次性启动迁移启用所有已有 SKU 并按同规则更新命中额度，仅修改 `agiso_shops.rules`，不打开店铺总开关、不改变已有订单快照；标记存在后不覆盖人工调整。规则见 `backend/app/sku_defaults.py` 和 `frontend/src/lib/agiso.ts`。
 - 商品查询不可用时允许人工填写已核实的商品/SKU ID。错误码 17 有专门权限提示，不能把“列表为空”写成“店铺没有商品”。
 - 自动开户依赖应用配置、有效店铺授权、开关和有效所属账号/组织。关闭店铺停止未来自动开户，不直接中断已有正常订单制作。
-- 售后开关为 `STUDIO_AGISO_AFTERSALES_VERIFIED`；启用后可处理此前因开关关闭而存下的退款。已验签的售后事实不因出站授权过期或店铺关闭而丢弃。
+- 售后开关按平台为 `STUDIO_AGISO_AFTERSALES_PLATFORMS`（旧变量 `STUDIO_AGISO_AFTERSALES_VERIFIED=1` 等同仅拼多多）；启用后可处理此前因开关关闭而存下的退款。已验签的售后事实不因出站授权过期或店铺关闭而丢弃。
 - 全额且类型明确的成功退款取消订单并撤销访客访问；部分、异常或未知类型交人工核对。退款撤回/关闭不能复活已经成功退款的订单；解除售后暂停不能清除原有人工暂停。
 - 网站消息发送及补发已停用；历史待发送、失败、未知记录不会重放，不重写其历史状态。核对第一条消息需查看阿奇索自动发货平台和拼多多聊天记录。
 - `STUDIO_AGISO_ENCRYPTION_KEY` 加密店铺凭证，随意更换会导致旧凭证无法解密。账号授权、真实发信、售后和物流均不可用测试模拟冒充验收。

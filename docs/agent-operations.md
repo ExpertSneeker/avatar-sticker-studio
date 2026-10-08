@@ -60,7 +60,8 @@
 | `STUDIO_FONT` | 字体文件路径；未设置时按源码候选检测。 |
 | `FAL_KEY` / `YEZI_API_KEY` | 环境优先，其次数据库 `fal_api_key` / `cutout_api_key`。仅 unset 环境变量不能使正式数据库变安全。 |
 | `STUDIO_AGISO_APP_ID` / `STUDIO_AGISO_APP_SECRET` / `STUDIO_AGISO_ENCRYPTION_KEY` / `STUDIO_AGISO_PUBLIC_URL` | [agiso_protocol.py](../backend/app/agiso_protocol.py) 读取；public URL 要求 HTTPS 根地址。加密密钥必须随配置安全保留，变更会影响旧凭证解密。 |
-| `STUDIO_AGISO_AFTERSALES_VERIFIED` | 仅 `1` 开启售后处理条件；模板为 `0`。不得用旧验收记录认定当前可开启。 |
+| `STUDIO_AGISO_AFTERSALES_PLATFORMS` | 已用真实退款验收的平台，逗号分隔（`pdd`、`douyin`、`xhs`）；未设置时看旧变量。新平台不得用拼多多的验收记录开启。 |
+| `STUDIO_AGISO_AFTERSALES_VERIFIED` | 旧变量：`1` 等同 `STUDIO_AGISO_AFTERSALES_PLATFORMS=pdd`；模板为 `0`。不得用旧验收记录认定当前可开启。 |
 | `STUDIO_E2E_FRONTEND_PORT` / `STUDIO_E2E_BACKEND_PORT` | Playwright 默认 5174/8001；存在下文所述的部分端口硬编码。 |
 | `STUDIO_TEST_BROWSER` | Playwright 浏览器通道，不是模型开关。 |
 

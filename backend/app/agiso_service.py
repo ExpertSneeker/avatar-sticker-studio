@@ -4,6 +4,7 @@ from urllib.parse import urlencode
 from .auth import token_hash
 from .customer_orders import OpenOrder, create_customer_order, audit
 from .db import uid
+from .platforms import platform_of
 
 RELEASE_OPS = {1300,1302,1303,1314}
 
@@ -30,7 +31,8 @@ def order_allowed(tx,order):
         linked=tx.get('agiso_orders',order['agiso_id'])
         shop=tx.get('agiso_shops',linked['shop_id']) if linked else None
         from .agiso_protocol import settings
-        if linked and settings()['aftersales_enabled'] and any(e['shop_id']==linked['shop_id'] and e['topic']!='1' and e['status'] in {'pending','blocked'} and e['payload'].get('tid')==linked['tid'] for e in tx.where('agiso_events','status','pending','blocked')):
+        from .agiso_protocol import aftersales_for
+        if linked and aftersales_for(settings(),shop) and any(e['shop_id']==linked['shop_id'] and e['topic']!='1' and e['status'] in {'pending','blocked'} and e['payload'].get('tid')==linked['tid'] for e in tx.where('agiso_events','status','pending','blocked')):
             return False
         # Disabling future shop automation does not stop work on an existing order.
         return bool(shop and account_active(tx,shop) and not order.get('paused'))
@@ -113,8 +115,8 @@ def apply_trade(tx,shop,payload,config,now):
                 link.update(open_status='manual',error='order_number_conflict')
             else:
                 owner=tx.get('users',shop['owner'])
-                body=OpenOrder(order_number=payload['OrderSn'],generation_limit=generation,final_count=final,rerun_limit=matched[0]['rerun_limit'],client_token='agiso:'+key)
-                order=create_customer_order(tx,owner,body,now)
+                body=OpenOrder(order_number=payload['OrderSn'],platform=platform_of(shop),shop_id=shop['id'],generation_limit=generation,final_count=final,rerun_limit=matched[0]['rerun_limit'],client_token='agiso:'+key)
+                order=create_customer_order(tx,owner,body,now,shop)
                 order['agiso_id']=key
                 order['agiso_rule_snapshot']=[dict(r) for r in matched]
                 if (payload.get('BuyerMemo') or '').strip():order['buyer_memo']=payload['BuyerMemo'].strip()[:2000]

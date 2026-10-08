@@ -16,6 +16,7 @@ test('staff opens order; guest uploads two avatars, repeats choices, compares re
   const create=page.getByRole('dialog',{name:'开新订单'})
   const number='Guest-'+randomUUID().slice(0,8)
   await create.getByLabel('订单号',{exact:true}).fill(number)
+  await create.getByLabel('平台',{exact:true}).selectOption('pdd')
   await create.getByLabel('可预览数量').fill('4');await create.getByLabel('可提交印刷数量').fill('2');await create.getByLabel('整单重试次数').fill('1')
   await create.getByLabel('内部备注').fill('仅员工可见的备注')
   await create.getByRole('button',{name:'创建订单',exact:true}).click()

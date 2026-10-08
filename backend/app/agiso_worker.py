@@ -32,7 +32,7 @@ class AgisoWorker:
             def eligible(event):
                 # Signed refund facts do not require an active outbound authorization
                 # or an enabled auto-opening switch. Recover earlier switch-blocked facts.
-                if event['topic']!='1' and config['aftersales_enabled'] and tx.get('agiso_shops',event['shop_id']):
+                if event['topic']!='1' and protocol.aftersales_for(config,tx.get('agiso_shops',event['shop_id'])):
                     if event['status']=='blocked' or event['status']=='disabled' and event.get('error') in {'shop_disabled','aftersales_disabled'}:return True
                 if event['status']=='pending':return True
                 if event['status']!='blocked' or not executable(tx,tx.get('agiso_shops',event['shop_id']),self.clock()):return False
@@ -55,7 +55,7 @@ class AgisoWorker:
             elif row['topic']=='64':
                 apply_memo(tx,shop,row['payload'],self.clock())
                 row.update(status='processed',error=None)
-            elif config['aftersales_enabled']:
+            elif protocol.aftersales_for(config,shop):
                 apply_refund(tx,shop,row['payload'],self.clock())
                 row.update(status='processed',error=None)
             else:row.update(status='disabled',error='aftersales_disabled')

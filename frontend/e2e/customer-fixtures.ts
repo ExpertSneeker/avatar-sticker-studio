@@ -17,7 +17,7 @@ export async function uploadAvatar(request:APIRequestContext,name='头像.png'){
   return upload.id
 }
 export async function createCustomer(request:APIRequestContext,options:Record<string,unknown>={}){
-  const response=await request.post('/api/customer-orders',{data:{order_number:'QA-'+randomUUID().slice(0,10),generation_limit:2,final_count:1,rerun_limit:1,notes:'打印验收',client_token:randomUUID(),...options}})
+  const response=await request.post('/api/customer-orders',{data:{platform:'pdd',order_number:'QA-'+randomUUID().slice(0,10),generation_limit:2,final_count:1,rerun_limit:1,notes:'打印验收',client_token:randomUUID(),...options}})
   expect(response.ok(),await response.text()).toBeTruthy();return response.json()
 }
 export async function mutate(request:APIRequestContext,order:any,path:string,data:Record<string,unknown>={}){

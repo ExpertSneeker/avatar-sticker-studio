@@ -11,7 +11,7 @@ from backend.tests.test_mixed_stickers import sticker
 
 
 def opened(client, number='ORDER-001', **kw):
-    response=client.post('/api/customer-orders',json={'order_number':number,'generation_limit':4,'final_count':2,'rerun_limit':1,'notes':'private note','client_token':number,**kw})
+    response=client.post('/api/customer-orders',json={'platform':'pdd','order_number':number,'generation_limit':4,'final_count':2,'rerun_limit':1,'notes':'private note','client_token':number,**kw})
     assert response.status_code==200,response.text
     return response.json()
 
@@ -42,8 +42,8 @@ def test_open_idempotency_and_validation(context):
     o=opened(c)
     assert o['state']=='draft' and o['version']==1 and o['notes']=='private note'
     assert opened(c)['id']==o['id']
-    assert c.post('/api/customer-orders',json={'order_number':'ORDER-001','generation_limit':4,'final_count':2,'rerun_limit':1,'client_token':'other'}).status_code==409
-    assert c.post('/api/customer-orders',json={'order_number':'bad','generation_limit':1,'final_count':2,'rerun_limit':0,'client_token':'bad'}).status_code==422
+    assert c.post('/api/customer-orders',json={'platform':'pdd','order_number':'ORDER-001','generation_limit':4,'final_count':2,'rerun_limit':1,'client_token':'other'}).status_code==409
+    assert c.post('/api/customer-orders',json={'platform':'pdd','order_number':'bad','generation_limit':1,'final_count':2,'rerun_limit':0,'client_token':'bad'}).status_code==422
 
 
 def test_duplicates_independent_rerun_selection_and_print_only_delivery(context):
