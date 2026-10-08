@@ -41,6 +41,9 @@ def provider(state):
                                   'skuList': [{'skuId': 'sku-a', 'skuName': '头像贴纸', 'skuSpec': '12张', 'skuQuantity': 1, 'totalPaidAmount': 2900, 'skuTag': 0},
                                               {'skuId': 'gift', 'skuName': '赠品', 'skuQuantity': 1, 'totalPaidAmount': 0, 'skuTag': 1}]}})
         if path == '/aldsXhs/Product/GetList':
+            # Real Xiaohongshu shops list nothing unless on_sale=true.
+            if form.get('on_sale') != ['true']:
+                return httpx.Response(200, json={'isSuccess': True, 'data': {'pageNO': 1, 'pageSize': 100, 'total': 0}})
             return httpx.Response(200, json={'isSuccess': True, 'data': {'total': 2, 'data': [
                 {'item': {'id': 'item-1', 'name': '头像贴纸'}, 'sku': {'id': 'sku-a', 'itemId': 'item-1', 'variants': [{'name': '规格', 'value': '12张'}]}},
                 {'item': {'id': 'item-1', 'name': '头像贴纸'}, 'sku': {'id': 'sku-b', 'itemId': 'item-1', 'variants': [{'name': '规格', 'value': '24张'}]}}]}})

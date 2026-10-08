@@ -157,7 +157,9 @@ class Xiaohongshu:
         return None  # Order/Detail has no seller remark field
 
     async def goods(self, shop, page, name, config, transport, now):
-        listing = _ok(await protocol.api('Product/GetList', {'page_no': str(page), 'page_size': '100'}, shop, config, transport, now))
+        # Real shops return nothing unless on_sale=true (2026-10-08: 0 without it or with false, 14 with true),
+        # although the docs say false lists everything. Off-sale SKUs therefore need manual entry.
+        listing = _ok(await protocol.api('Product/GetList', {'page_no': str(page), 'page_size': '100', 'on_sale': 'true'}, shop, config, transport, now))
         by_item = {}
         for row in listing.get('data') or []:
             item, sku = row.get('item') or {}, row.get('sku') or {}
