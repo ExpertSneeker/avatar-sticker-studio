@@ -27,7 +27,7 @@ test('manual orders need a platform, show it in the list and can move to another
   const row=page.locator('.customer-order-row',{hasText:number})
   await expect(row.locator('.platform-badge')).toHaveText('小红书')
   // The order row recolors its spans gray; the badge must keep its own readable color.
-  expect(await row.locator('.platform-badge').evaluate(e=>getComputedStyle(e).color)).toBe('rgb(192, 18, 46)')
+  expect(await row.locator('.platform-badge').evaluate(e=>getComputedStyle(e).color)).toBe('rgb(255, 255, 255)')
   await row.screenshot({path:'/tmp/avatar-studio-fal-qa/platform-badge-row.png'})
   await page.getByLabel('平台',{exact:true}).selectOption('pdd')
   await expect(row).toHaveCount(0)
@@ -46,7 +46,7 @@ test('shops page offers each platform and edits a shop watermark',async({page})=
   await page.getByRole('navigation').getByRole('button',{name:'店铺接入',exact:true}).click()
   for(const label of ['连接拼多多店铺','连接抖店店铺（接入中）','连接小红书店铺（接入中）'])await expect(page.getByRole('button',{name:label})).toBeDisabled()
   await expect(page.locator('.shop-card .platform-badge')).toHaveText('拼多多')
-  expect(await page.locator('.shop-card .platform-badge').evaluate(e=>getComputedStyle(e).color)).toBe('rgb(180, 35, 24)')
+  expect(await page.locator('.shop-card .platform-badge').evaluate(e=>getComputedStyle(e).color)).toBe('rgb(255, 225, 77)')
   await page.locator('.shop-card').screenshot({path:'/tmp/avatar-studio-fal-qa/platform-badge-shop.png'})
   const field=page.getByLabel('草木造物 店铺水印')
   await expect(field).toHaveValue('草木造物')

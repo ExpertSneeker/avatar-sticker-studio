@@ -2825,9 +2825,9 @@ small {
 
 @keyframes backdrop-in {from{opacity:0}to{opacity:1}}
 
-/* Sales platform labels (shops, orders). Tinted chips with dark text; the doubled class outranks
-   list rules such as `.customer-order-open span` that recolor every span. */
-.platform-badge.platform-badge { display: inline-block; width: fit-content; margin-right: 6px; padding: 0 8px; border: 1px solid; border-radius: 999px; font-size: 12px; font-weight: 700; line-height: 20px; vertical-align: 1px; }
-.platform-badge.pdd { color: #b42318; background: #fdecea; border-color: #f5c2bd; }
-.platform-badge.douyin { color: #1f2329; background: #eef0f3; border-color: #cfd4dc; }
-.platform-badge.xhs { color: #c0122e; background: #ffe9ed; border-color: #f8bfca; }
+/* Sales platform labels (shops, orders), in each platform's brand colors. The doubled class
+   outranks list rules such as `.customer-order-open span` that recolor every span gray. */
+.platform-badge.platform-badge { display: inline-block; width: fit-content; margin-right: 6px; padding: 0 8px; border-radius: 999px; font-size: 12px; font-weight: 700; line-height: 20px; vertical-align: 1px; }
+.platform-badge.pdd { color: #ffe14d; background: #e02e24; }
+.platform-badge.douyin { color: #ffffff; background: #161823; }
+.platform-badge.xhs { color: #ffffff; background: #ff2442; }
