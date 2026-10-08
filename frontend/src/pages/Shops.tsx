@@ -95,7 +95,7 @@ function ShopDetail({ shop, configured, onUpdate }: { shop: Shop; configured: bo
   }
   function edit(index: number, change: Partial<SkuRule>) { setRules(previous => previous.map((rule, i) => i === index ? (change.sku_name !== undefined ? withSpecDefaults({ ...rule, ...change }) : { ...rule, ...change }) : rule)); setDirty(true); setNotice('') }
   async function save() {
-    const validation = ruleError(rules)
+    const validation = ruleError(rules, shop.platform)
     if (validation) { setError(validation); return }
     await action(async () => {
       const next = await api<SkuRule[]>(base + '/rules', { method: 'PUT', body: JSON.stringify({ rules }), signal: lifetime.current.signal })

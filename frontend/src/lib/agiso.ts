@@ -61,13 +61,16 @@ export interface GoodsPage {
   available: boolean; goods: { goods_id: string; goods_name: string; skus: { sku_id: string; sku_name: string }[] }[]
   total?: number; page?: number; message: string
 }
-export function ruleError(rules: SkuRule[]): string {
-  const keys = new Set<string>()
+// Pinduoduo and Douyin ids are digits; Xiaohongshu ids are hex strings (e.g. 6ac795ef7dbca2000160f99d)
+// and its rules match on SKU id alone, so one SKU may appear only once.
+const ID_PATTERN: Record<PlatformKey, RegExp> = { pdd: /^\d+$/, douyin: /^\d+$/, xhs: /^[0-9A-Za-z]{1,64}$/ }
+export function ruleError(rules: SkuRule[], platform: PlatformKey = 'pdd'): string {
+  const keys = new Set<string>(), pattern = ID_PATTERN[platform]
   for (const [index, rule] of rules.entries()) {
     const label = `第 ${index + 1} 条规则：`
-    if (!/^\d+$/.test(rule.goods_id) || !/^\d+$/.test(rule.sku_id)) return label + '请填写真实的商品 ID 和 SKU ID'
-    const key = rule.goods_id + ':' + rule.sku_id
-    if (keys.has(key)) return label + '商品和 SKU 重复'
+    if (!pattern.test(rule.goods_id) || !pattern.test(rule.sku_id)) return label + '请填写真实的商品 ID 和 SKU ID'
+    const key = platform === 'xhs' ? rule.sku_id : rule.goods_id + ':' + rule.sku_id
+    if (keys.has(key)) return label + (platform === 'xhs' ? 'SKU 重复' : '商品和 SKU 重复')
     keys.add(key)
     if (![rule.generation_limit, rule.final_count, rule.rerun_limit].every(Number.isSafeInteger)) return label + '数量必须是整数'
     if (rule.generation_limit < 1 || rule.generation_limit > 360 || rule.final_count < 1 || rule.final_count > 360) return label + '生成和提交数量须为 1 至 360'

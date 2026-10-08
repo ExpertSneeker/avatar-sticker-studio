@@ -149,6 +149,8 @@ def register_agiso(app,db,user):
     def save_rules(id:str,data:protocol.Rules,request:Request):
         with db.transaction() as tx:
             _,shop=scoped(tx,request,id,True)
+            # Xiaohongshu rules match on SKU id alone (agiso_service.rule_key), so a SKU may appear once.
+            if platform_of(shop)=='xhs' and len({r.sku_id for r in data.rules})!=len(data.rules):raise HTTPException(422,'SKU 不能重复')
             shop['rules']=[r.model_dump() for r in data.rules]
             if not any(r['enabled'] for r in shop['rules']):shop['enabled']=False
             tx.put('agiso_shops',shop);return shop['rules']

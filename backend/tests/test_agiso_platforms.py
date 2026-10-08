@@ -200,3 +200,13 @@ def test_douyin_virtual_auto_delivery_app_authorizes_and_routes_by_its_own_platf
     assert (order['platform'], order['order_number']) == ('douyin', str(DOUYIN_ORDER))
     assert '/aldsDd/Order/Detail' in state['calls'] and '/aldsDoudian/Order/Detail' not in state['calls']
     assert push(c, 'AldsUnknown', '1', {'p_id': 1, 'shop_id': 1}).status_code == 422
+
+
+def test_xiaohongshu_rules_accept_hex_ids_and_reject_duplicate_skus(configured):
+    app, c, _ = configured
+    shop = connect(configured, 'xhs', {})
+    rule = {'goods_id': '6ac795ef7dbca2000160f981', 'sku_id': '6ac795ef7dbca2000160f99d', 'goods_name': '冰箱贴', 'sku_name': '12个',
+            'generation_limit': 16, 'final_count': 12, 'rerun_limit': 6, 'enabled': True}
+    assert c.put(f"/api/agiso/shops/{shop['id']}/rules", json={'rules': [rule]}).status_code == 200
+    duplicate = {**rule, 'goods_id': '6ac795ef7dbca2000160f982'}
+    assert c.put(f"/api/agiso/shops/{shop['id']}/rules", json={'rules': [rule, duplicate]}).status_code == 422

@@ -35,3 +35,13 @@ it('specification defaults take the largest complete quantity and preserve unmat
     expect(withSpecDefaults({...rule,sku_name})).toEqual({...rule,sku_name})
   }
 })
+
+it('rule ids follow each platform: digits for Pinduoduo/Douyin, hex for Xiaohongshu (SKU unique)',()=>{
+  const base={goods_name:'',sku_name:'',generation_limit:16,final_count:12,rerun_limit:6,enabled:true}
+  const xhs={...base,goods_id:'6ac795ef7dbca2000160f981',sku_id:'6ac795ef7dbca2000160f99d'}
+  expect(ruleError([xhs],'xhs')).toBe('')
+  expect(ruleError([xhs],'pdd')).toContain('真实的商品 ID')
+  expect(ruleError([xhs,{...xhs,goods_id:'other0'}],'xhs')).toContain('SKU 重复')
+  expect(ruleError([{...xhs,sku_id:'bad id'}],'xhs')).toContain('真实的商品 ID')
+  expect(ruleError([{...base,goods_id:'1721288561899563',sku_id:'1721288561899566'}],'douyin')).toBe('')
+})
