@@ -24,6 +24,7 @@ export interface Shop {
   organization_id: string; enabled: boolean; authorized: boolean; expires_at: number | null
   last_event_at: number | null; can_manage: boolean
   platform: PlatformKey; platform_label: string; watermark: string
+  unbound: boolean; unbound_at: number | null
 }
 export interface SkuRule {
   goods_id: string; sku_id: string; goods_name: string; sku_name: string

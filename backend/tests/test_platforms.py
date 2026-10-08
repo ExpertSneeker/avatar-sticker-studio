@@ -136,3 +136,37 @@ def test_platform_migration_marks_everything_pinduoduo_and_copies_owner_watermar
         assert (tx.get('orders', 'o2')['platform'], tx.get('orders', 'o2')['shop_id']) == ('pdd', None)
         # Order watermark snapshots are never rewritten by the migration.
         assert tx.get('orders', 'o1')['watermark'] == 'Magnux'
+
+
+def test_unbinding_revokes_the_token_and_keeps_a_used_shop_for_its_history(configured):
+    import httpx
+    from backend.tests.helpers import member
+    from backend.tests.test_agiso import provider
+    app, c, _ = configured
+    s = shop(configured)
+    push(c, trade('KEPT')); process(app)
+    c.put('/api/agiso/shops/' + s['id'] + '/watermark', json={'watermark': '草木造物'})
+    other, _ = member(c, app)
+    assert other.post('/api/agiso/shops/' + s['id'] + '/unbind').status_code == 403
+    calls = []
+    app.state.agiso_worker.transport = httpx.MockTransport(lambda r: calls.append(r.url.path) or provider(r))
+    result = c.post('/api/agiso/shops/' + s['id'] + '/unbind').json()
+    assert calls == ['/aldsPdd/Sys/TokenDelete'] and result['revoked'] and not result['deleted']
+    row = result['shop']
+    assert row['unbound'] and not row['authorized'] and not row['enabled'] and row['watermark'] == '草木造物'
+    with app.state.db.transaction() as tx:
+        assert 'token' not in tx.get('agiso_shops', s['id'])
+    assert c.get('/api/customer-orders').json()[0]['shop_id'] == s['id']
+    # Re-authorizing the same shop restores it with its rules and watermark.
+    again = shop(configured)
+    assert again['id'] == s['id'] and again['authorized'] and not again['unbound'] and again['watermark'] == '草木造物'
+
+
+def test_unbinding_an_unused_shop_deletes_it_even_when_agiso_refuses(configured):
+    import httpx
+    app, c, _ = configured
+    s = shop(configured)
+    app.state.agiso_worker.transport = httpx.MockTransport(lambda r: httpx.Response(200, json={'IsSuccess': False, 'Error_Code': 1}))
+    result = c.post('/api/agiso/shops/' + s['id'] + '/unbind').json()
+    assert result == {'deleted': True, 'revoked': False, 'shop': None}
+    assert c.get('/api/agiso/shops').json() == []

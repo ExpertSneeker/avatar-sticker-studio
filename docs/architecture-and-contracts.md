@@ -100,6 +100,7 @@
 - 订单 `platform` 必填（`POST /api/customer-orders` 的 `platform`），`shop_id` 可选；店铺必须属于本组织且平台一致，否则 422。阿奇索开户的订单继承来源店铺的平台和店铺，`platform_editable=false`；人工订单可经 `POST /api/customer-orders/{id}/platform`（`client_token` + `expected_version`）修改平台和店铺，水印快照不变。订单号全平台唯一，跨平台撞号开户进入人工处理。
 - 店铺（`agiso_shops`）以“平台 + 平台店铺 ID”识别；推送按 `fromPlatform` 定平台后再找店铺。拼多多事件 ID 保持原算法，其他平台加平台前缀去重。
 - 水印按店铺设置：`agiso_shops.watermark` 由店铺负责账号或组织管理员经 `PUT /api/agiso/shops/{id}/watermark` 修改。新订单水印 = 所属店铺水印；无店铺的人工订单用开单账号水印（账号水印留空用显示名称）。“批量更新水印”按同一规则取当前值。水印仍是订单快照，改店铺水印不改已有订单。
+- 解绑店铺：`POST /api/agiso/shops/{id}/unbind`（负责账号或组织管理员）。先在事务外尽力调用阿奇索 `Sys/TokenDelete` 撤销授权（失败只记日志，响应 `revoked=false`，前端提示到阿奇索后台确认），再在事务内复核 Token 未被并发重授权：没有任何 `agiso_orders`、`agiso_events`、`orders` 引用的店铺直接删除；其余店铺删除 `token`、`enabled=false`、`expires_at=0`、记 `unbound_at`，保留规则、水印、`push_keys` 和历史。重新授权同一平台同一店铺 ID 时沿用原记录并清除 `unbound_at`。
 - `remark_supported` = 阿奇索开户且该平台订单详情含卖家备注（拼多多 `Trade/Detail`、抖店 `seller_words`；小红书没有）；只有此类订单显示和处理“获取卖家备注”。
 - 售后按平台验收：`STUDIO_AGISO_AFTERSALES_PLATFORMS`（逗号分隔，如 `pdd,douyin`）列出已用真实退款验收的平台；未设置时沿用旧变量 `STUDIO_AGISO_AFTERSALES_VERIFIED=1`，仅代表拼多多。
 - 抖店/小红书推送按平台解释 aopic（抖店 1 付款、2 发起售后、4 售后关闭、8 退款成功；小红书 4 付款、16 申请退款、32 退款成功；其余记录为“已忽略”）。付款推送不含商品，事件先以 `fetch` 入库，Agiso worker 在事务外调用 `Order/Detail`（抖店参数 `shop_order_id`，小红书 `tid`）取规格、实付、卖家备注和订单状态，再与拼多多共用 `open_trade` 开户；未付款/已取消订单记为人工（`order_unpaid`/`order_cancelled`），读取 5 次失败记为 `order_lookup_failed`，授权失效时等待重新授权。抖店按父订单号开户，子订单 SKU 合并计算；小红书订单详情只有 SKU ID，规则按 SKU ID 匹配，赠品（`skuTag=1`）不计额度。

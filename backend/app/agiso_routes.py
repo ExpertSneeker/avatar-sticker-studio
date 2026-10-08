@@ -33,9 +33,9 @@ def register_agiso(app,db,user):
 
     def shop_dto(tx,shop,actor):
         owner=tx.get('users',shop['owner']) or {}
-        return {k:shop.get(k) for k in ('id','shop_id','shop_name','owner','organization_id','enabled','expires_at','last_event_at','watermark')} | {
+        return {k:shop.get(k) for k in ('id','shop_id','shop_name','owner','organization_id','enabled','expires_at','last_event_at','watermark','unbound_at')} | {
             'platform':platform_of(shop),'platform_label':PLATFORMS[platform_of(shop)]['label'],
-            'owner_name':owner.get('display_name',''),'authorized':bool(shop.get('token') and shop.get('expires_at',0)>now()),'can_manage':can_manage(actor,shop)}
+            'owner_name':owner.get('display_name',''),'unbound':bool(shop.get('unbound_at')),'authorized':bool(shop.get('token') and shop.get('expires_at',0)>now()),'can_manage':can_manage(actor,shop)}
 
     def require_config():
         config=protocol.settings()
@@ -119,7 +119,7 @@ def register_agiso(app,db,user):
                 if existing and (existing['owner']!=actor['id'] or existing['organization_id']!=actor['organization_id']):raise ValueError()
                 shop=existing or {'id':uid(),'owner':actor['id'],'organization_id':actor['organization_id'],'enabled':False,'rules':[],'last_event_at':None,
                                   'platform':platform,'watermark':watermark_of(current)}
-                shop.update(authorization);tx.put('agiso_shops',shop)
+                shop.pop('unbound_at',None);shop.update(authorization);tx.put('agiso_shops',shop)
             response=RedirectResponse('/?agiso=connected',status_code=303)
             response.delete_cookie('studio_agiso_oauth',path='/api/agiso/callback')
             return response
@@ -139,6 +139,33 @@ def register_agiso(app,db,user):
                     raise HTTPException(409,'请先完成授权并启用至少一条规格规则')
             shop['enabled']=data.enabled;tx.put('agiso_shops',shop)
             return shop_dto(tx,shop,actor)
+
+    @app.post('/api/agiso/shops/{id}/unbind')
+    async def unbind_shop(id:str,request:Request):
+        """Revoke the Agiso token (best effort), then forget it locally. A shop that never received an order
+        or push is deleted; otherwise it stays, marked unbound, so its orders, events, rules and watermark
+        survive and re-authorizing the same shop restores it."""
+        with db.transaction() as tx:
+            actor,shop=scoped(tx,request,id,True)
+            token=shop.get('token')
+        revoked=False;config=protocol.settings()
+        if token and config['configured']:
+            try:
+                result=await protocol.api('Sys/TokenDelete',{},shop,config,app.state.agiso_worker.transport,now())
+                revoked=result.get('IsSuccess') is True
+                if not revoked:logging.getLogger(__name__).warning('Agiso TokenDelete refused code=%s',result.get('Error_Code'))
+            except Exception as exc:
+                logging.getLogger(__name__).warning('Agiso TokenDelete failed type=%s',type(exc).__name__)
+        with db.transaction() as tx:
+            actor,shop=scoped(tx,request,id,True)
+            if shop.get('token')!=token:raise HTTPException(409,'店铺刚刚重新授权，请刷新后再操作')
+            used=any(r.get('shop_id')==id for kind in ('agiso_orders','agiso_events','orders') for r in tx.all(kind))
+            if not used:
+                tx.delete('agiso_shops',id)
+                return {'deleted':True,'revoked':revoked,'shop':None}
+            shop.pop('token',None)
+            shop.update({'enabled':False,'expires_at':0,'unbound_at':now()});tx.put('agiso_shops',shop)
+            return {'deleted':False,'revoked':revoked,'shop':shop_dto(tx,shop,actor)}
 
     @app.get('/api/agiso/shops/{id}/rules')
     def rules(id:str,request:Request):

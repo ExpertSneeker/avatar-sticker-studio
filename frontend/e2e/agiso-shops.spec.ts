@@ -153,3 +153,32 @@ for (const width of [1440,390]) {
     await page.screenshot({path:`/tmp/sticker-sku-${width}.png`,fullPage:true})
   })
 }
+
+test('解除绑定需二次确认，保留有订单的店铺并标为已解绑', async ({ page }) => {
+  await staffLogin(page.request)
+  let shop = { id:'unbind-shop',shop_id:'10002',shop_name:'待解绑店铺',owner:'test-owner',owner_name:'测试账户',organization_id:'org',enabled:true,authorized:true,expires_at:1900000000,last_event_at:null,can_manage:true,platform:'pdd',platform_label:'拼多多',watermark:'草木造物',unbound:false,unbound_at:null as number | null }
+  let unbinds = 0
+  await page.route('**/api/agiso/**', async route => {
+    const path = new URL(route.request().url()).pathname
+    if (path.endsWith('/status')) return route.fulfill({ json: { configured:true,missing:[],authorization_callback_url:null,webhook_url:null,aftersales_enabled:false,platforms:[] } })
+    if (path.endsWith('/shops')) return route.fulfill({ json: [shop] })
+    if (path.endsWith('/rules')) return route.fulfill({ json: [] })
+    if (path.endsWith('/unbind')) {
+      unbinds++
+      shop = { ...shop, enabled:false, authorized:false, unbound:true, unbound_at:1800000000 }
+      return route.fulfill({ json: { deleted:false, revoked:true, shop } })
+    }
+    return route.fulfill({ status:404,json:{detail:'Unexpected test request'} })
+  })
+  await page.goto('/')
+  await page.getByRole('button', { name: '店铺接入', exact: true }).click()
+  await page.getByRole('button', { name: '解除绑定', exact: true }).click()
+  await page.getByRole('button', { name: '取消' }).click()
+  expect(unbinds).toBe(0)
+  await page.getByRole('button', { name: '解除绑定', exact: true }).click()
+  await page.getByRole('button', { name: '确认解除绑定' }).click()
+  await expect(page.getByText('已解绑「待解绑店铺」，订单和通知记录保留')).toBeVisible()
+  await expect(page.getByText('已解绑，历史订单保留')).toBeVisible()
+  await expect(page.getByRole('button', { name: '开启自动开户' })).toBeDisabled()
+  expect(unbinds).toBe(1)
+})

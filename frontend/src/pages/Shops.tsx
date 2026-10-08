@@ -58,17 +58,17 @@ export function Shops() {
       <details><summary>接入配置详情</summary><dl>{status.missing.length > 0 && <><dt>待配置项目</dt><dd><code>{status.missing.join('、')}</code></dd></>}{status.authorization_callback_url && <><dt>店铺授权回调</dt><dd><code>{status.authorization_callback_url}</code></dd></>}{status.webhook_url && <><dt>订单通知地址</dt><dd><code>{status.webhook_url}</code></dd></>}</dl><a href="https://www.yuque.com/agiso/open/owplxcrlyxpzw1cq" target="_blank" rel="noreferrer">查看阿奇索授权说明</a></details>
     </section>}
     {loading ? <div className="shop-empty"><Spinner/>正在读取店铺</div> : !shops.length ? <div className="settings-section shop-empty"><Store size={28}/><h3>还没有连接店铺</h3><p>连接店铺后，按真实商品和规格配置生成、提交及重做额度。</p></div> :
-      <div className="shops-layout"><aside className="shop-list" aria-label="已连接店铺">{shops.map(shop => <button className={'shop-card ' + (shop.id === selected ? 'active' : '')} key={shop.id} onClick={() => setSelected(shop.id)} aria-pressed={shop.id === selected}><span className={'platform-badge ' + shop.platform}>{shop.platform_label}</span><strong>{shop.shop_name}</strong><small>水印：{shop.watermark || '未设置'}</small><small>负责账户：{shop.owner_name}</small><small>{shop.enabled ? '自动开户已开启' : '自动开户已关闭'} · {shop.authorized ? '已授权' : '需要重新授权'}</small></button>)}</aside>{selectedShop && <ShopDetail key={selectedShop.id} shop={selectedShop} configured={!!status?.configured} onUpdate={reload}/>}</div>}
+      <div className="shops-layout"><aside className="shop-list" aria-label="已连接店铺">{shops.map(shop => <button className={'shop-card ' + (shop.id === selected ? 'active' : '')} key={shop.id} onClick={() => setSelected(shop.id)} aria-pressed={shop.id === selected}><span className={'platform-badge ' + shop.platform}>{shop.platform_label}</span><strong>{shop.shop_name}</strong><small>水印：{shop.watermark || '未设置'}</small><small>负责账户：{shop.owner_name}</small><small>{shop.unbound ? '已解绑，历史订单保留' : (shop.enabled ? '自动开户已开启' : '自动开户已关闭') + ' · ' + (shop.authorized ? '已授权' : '需要重新授权')}</small></button>)}</aside>{selectedShop && <ShopDetail key={selectedShop.id} shop={selectedShop} configured={!!status?.configured} onUpdate={reload} onUnbound={message => { setNotice(message); void reload().catch(e => setError(e.message)) }}/>}</div>}
   </>
 }
 
-function ShopDetail({ shop, configured, onUpdate }: { shop: Shop; configured: boolean; onUpdate: () => Promise<void> }) {
+function ShopDetail({ shop, configured, onUpdate, onUnbound }: { shop: Shop; configured: boolean; onUpdate: () => Promise<void>; onUnbound: (message: string) => void }) {
   const base = '/agiso/shops/' + encodeURIComponent(shop.id)
   const [tab, setTab] = useState<'rules' | 'orders' | 'events'>('rules')
   const [rules, setRules] = useState<SkuRule[]>([]), [orders, setOrders] = useState<ShopOrder[]>([]), [events, setEvents] = useState<ShopEvent[]>([])
   const [loading, setLoading] = useState(true), [busy, setBusy] = useState(false), [dirty, setDirty] = useState(false), [error, setError] = useState(''), [notice, setNotice] = useState('')
   const [sourceOpen, setSourceOpen] = useState(false), [source, setSource] = useState<GoodsPage | null>(null), [search, setSearch] = useState(''), [page, setPage] = useState(1)
-  const [copiedLink, setCopiedLink] = useState<string | null>(null)
+  const [copiedLink, setCopiedLink] = useState<string | null>(null), [unbinding, setUnbinding] = useState(false)
   const lifetime = useRef(new AbortController())
   useEffect(() => {
     const controller = new AbortController(); lifetime.current = controller
@@ -109,12 +109,20 @@ function ShopDetail({ shop, configured, onUpdate }: { shop: Shop; configured: bo
       if (!lifetime.current.signal.aborted) { setSource(next); setPage(nextPage) }
     }, '')
   }
+  async function unbind() {
+    await action(async () => {
+      const result = await post<{ deleted: boolean; revoked: boolean }>(base + '/unbind', {}, lifetime.current.signal)
+      setUnbinding(false)
+      onUnbound((result.deleted ? `已解绑并移除「${shop.shop_name}」（该店铺没有任何订单记录）。` : `已解绑「${shop.shop_name}」，订单和通知记录保留；重新授权同一店铺可恢复套餐和水印。`)
+        + (result.revoked ? '' : '阿奇索端授权未能自动撤销，请到阿奇索后台确认已删除授权。'))
+    }, '')
+  }
   async function copyLink(value: string) {
     try { await navigator.clipboard.writeText(value); setNotice('选图链接已复制') }
     catch { setCopiedLink(value) }
   }
   return <section className="shop-detail">
-    <div className="settings-section"><div className="shop-toolbar"><div><h2>{shop.shop_name}</h2><p className="hint">{shop.platform_label} · 店铺 ID：{shop.shop_id} · 负责账户：{shop.owner_name}</p></div><span className={'shop-status ' + (shop.enabled ? '' : 'off')}>{shop.enabled ? '自动开户已开启' : '自动开户已关闭'}</span></div><p className="hint">授权到期：{date(shop.expires_at)}<br/>最近收到订单：{date(shop.last_event_at)}</p>{shop.can_manage && <button className="button" disabled={busy || loading || (!shop.enabled && (!configured || dirty || !shop.authorized || !rules.some(rule => rule.enabled)))} onClick={() => void action(async () => { await patch(base, { enabled: !shop.enabled }); await onUpdate() }, shop.enabled ? '已关闭自动开户，已有订单保留。' : '已开启自动开户，仅处理已启用的 SKU。')}>{shop.enabled ? '关闭自动开户' : '开启自动开户'}</button>}{dirty && <p className="hint">套餐有未保存的修改，保存后才能开启自动开户。</p>}<ShopWatermark shop={shop} onSaved={onUpdate}/></div>
+    <div className="settings-section"><div className="shop-toolbar"><div><h2>{shop.shop_name}</h2><p className="hint">{shop.platform_label} · 店铺 ID：{shop.shop_id} · 负责账户：{shop.owner_name}</p></div><span className={'shop-status ' + (shop.enabled ? '' : 'off')}>{shop.unbound ? '已解绑' : shop.enabled ? '自动开户已开启' : '自动开户已关闭'}</span></div><p className="hint">授权到期：{date(shop.expires_at)}<br/>最近收到订单：{date(shop.last_event_at)}</p>{shop.can_manage && <button className="button" disabled={busy || loading || (!shop.enabled && (!configured || dirty || !shop.authorized || !rules.some(rule => rule.enabled)))} onClick={() => void action(async () => { await patch(base, { enabled: !shop.enabled }); await onUpdate() }, shop.enabled ? '已关闭自动开户，已有订单保留。' : '已开启自动开户，仅处理已启用的 SKU。')}>{shop.enabled ? '关闭自动开户' : '开启自动开户'}</button>}{shop.can_manage && <button className="button danger" disabled={busy} onClick={() => setUnbinding(true)}>解除绑定</button>}{shop.unbound && <p className="hint">店铺已解绑，不再接收新订单。重新点击上方“连接{shop.platform_label}店铺”授权同一店铺即可恢复。</p>}{dirty && <p className="hint">套餐有未保存的修改，保存后才能开启自动开户。</p>}<ShopWatermark shop={shop} onSaved={onUpdate}/></div>
     <div className="shop-tabs" role="group" aria-label="店铺信息"><button className={'button ' + (tab === 'rules' ? 'primary' : '')} onClick={() => setTab('rules')}>商品套餐</button><button className={'button ' + (tab === 'orders' ? 'primary' : '')} onClick={() => setTab('orders')}>接入订单</button><button className={'button ' + (tab === 'events' ? 'primary' : '')} onClick={() => setTab('events')}>通知记录</button></div>
     {error && <div className="error-banner" role="alert">{error}</div>}{notice && <p role="status">{notice}</p>}
     {tab === 'rules' && <>
@@ -133,6 +141,7 @@ function ShopDetail({ shop, configured, onUpdate }: { shop: Shop; configured: bo
     {sourceOpen && <Modal title="选择店铺商品规格" onClose={() => setSourceOpen(false)}><form className="shop-toolbar" onSubmit={e => { e.preventDefault(); void findGoods(1) }}><label className="field">商品名称<input value={search} onChange={e => setSearch(e.target.value)}/></label><button className="button" disabled={busy}>{busy ? <Spinner/> : '查询商品'}</button></form>{error && <div className="error-banner" role="alert">{error}</div>}{source && !source.available && <p>{source.message || '暂时无法读取商品，请核对店铺授权，或手动填写真实 ID。'}</p>}<div className="shop-source-list">{source?.goods.map(goods => <article className="shop-source" key={goods.goods_id}><strong>{goods.goods_name}</strong><p className="hint">商品 ID：{goods.goods_id}</p><div className="button-group">{goods.skus.map(sku => <button className="button" key={sku.sku_id} disabled={rules.some(rule => rule.goods_id === goods.goods_id && rule.sku_id === sku.sku_id)} onClick={() => {
       setRules(previous => { const index = previous.findIndex(rule => !rule.goods_id && !rule.sku_id && rule.sku_name === sku.sku_name); const next = withSpecDefaults({ ...(index >= 0 ? previous[index] : newSkuRule()), goods_id: goods.goods_id, goods_name: goods.goods_name, sku_id: sku.sku_id, sku_name: sku.sku_name }); return index >= 0 ? previous.map((rule, i) => i === index ? next : rule) : [...previous, next] }); setDirty(true); setNotice('已添加规格，请核对额度并保存。')
     }}>{sku.sku_name} · {sku.sku_id}</button>)}</div></article>)}</div>{source?.available && !source.goods.length && <p className="shop-empty">未找到商品，请确认已审核上架或调整搜索词。</p>}<div className="modal-footer"><button className="button" disabled={busy || page <= 1} onClick={() => void findGoods(page - 1)}>上一页</button><span>第 {page} 页</span><button className="button" disabled={busy || !source?.available || page * 100 >= (source.total || 0)} onClick={() => void findGoods(page + 1)}>下一页</button><button className="button primary" onClick={() => setSourceOpen(false)}>完成选择</button></div></Modal>}
+    {unbinding && <Modal title="确认解除绑定" onClose={() => { if (!busy) setUnbinding(false) }}><p>确定解除「{shop.shop_name}」（{shop.platform_label}）的绑定吗？</p><p className="hint">将撤销阿奇索授权并关闭自动开户，之后的新订单不再自动开通。已开通的订单、客户选图链接和通知记录保留；从未收到订单的店铺会直接移除。重新授权同一店铺可恢复套餐和水印。</p>{error && <div className="error-banner" role="alert">{error}</div>}<div className="modal-footer"><button className="button" disabled={busy} onClick={() => setUnbinding(false)}>取消</button><button className="button danger" disabled={busy} onClick={() => void unbind()}>{busy && <Spinner/>}确认解除绑定</button></div></Modal>}
     {copiedLink && <Modal title="复制选图链接" onClose={() => setCopiedLink(null)}><p>浏览器未允许自动复制，请选中下方链接复制。</p><input aria-label="选图链接" className="full" readOnly value={copiedLink} onFocus={e => e.target.select()}/></Modal>}
   </section>
 }
