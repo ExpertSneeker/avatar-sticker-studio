@@ -14,6 +14,20 @@ def png(color=(180, 50, 30, 180), size=(32, 32)):
     return out.getvalue()
 
 
+def gray_edge_png(size=120):
+    """100px synthetic sticker with a gray rim, soft alpha and an enclosed hole."""
+    image = Image.new('RGBA', (size, size))
+    offset = (size - 100) // 2
+    image.paste((210, 210, 210, 254), (offset, offset, offset + 100, offset + 100))
+    image.paste((180, 50, 30, 254), (offset + 7, offset + 7, offset + 93, offset + 93))
+    image.paste((210, 210, 210, 64), (offset, offset, offset + 100, offset + 1))
+    image.paste((120, 120, 120, 254), (offset + 35, offset + 35, offset + 65, offset + 65))
+    image.paste((0, 0, 0, 0), (offset + 40, offset + 40, offset + 60, offset + 60))
+    out = io.BytesIO()
+    image.save(out, 'PNG')
+    return out.getvalue()
+
+
 def upload(client, data=None):
     data = data or png()
     result = client.post('/api/uploads/init', json={'filename': '头像.png', 'size': len(data), 'sha256': hashlib.sha256(data).hexdigest()}).json()

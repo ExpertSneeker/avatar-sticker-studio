@@ -8,9 +8,12 @@ from PIL import Image, ImageDraw, ImageFont, ImageFilter
 from .schemas import PrintSettings
 
 
-def encode(image, dpi=None):
+def encode(image, dpi=None, compress_level=None):
     out = io.BytesIO()
-    image.save(out, 'PNG', **({'dpi': (dpi, dpi)} if dpi else {}))
+    options = {'dpi': (dpi, dpi)} if dpi else {}
+    if compress_level is not None:
+        options['compress_level'] = compress_level
+    image.save(out, 'PNG', **options)
     return out.getvalue()
 
 
@@ -28,23 +31,99 @@ def decode(data, require_transparency=True):
     return image
 
 
+def _run_ids(open_):
+    """Number each horizontal run of open pixels from 1; closed pixels are 0."""
+    starts = open_.copy()
+    starts[:, 1:] &= ~open_[:, :-1]
+    return np.cumsum(starts, dtype=np.int32).reshape(open_.shape) * open_
+
+
+def exterior_mask(solid):
+    """Transparent pixels 4-connected to the canvas edge, identical to a PIL floodfill."""
+    # Padding treats the canvas boundary as exterior even when artwork touches it.
+    open_ = np.pad(~solid, 1, constant_values=True)
+    rows = _run_ids(open_)
+    cols = np.ascontiguousarray(_run_ids(np.ascontiguousarray(open_.T)).T)
+    flat = open_.ravel()
+    # Each open pixel links one row run with one column run. Spreading reach
+    # along those links is vectorized; PIL's floodfill is a per-pixel Python loop.
+    r, c = rows.ravel()[flat], cols.ravel()[flat]
+    row_hit = np.zeros(rows.max() + 1, bool)
+    col_hit = np.zeros(cols.max() + 1, bool)
+    row_hit[rows[0]] = True
+    row_hit[0] = False
+    count = -1
+    while True:
+        col_hit[c[row_hit[r]]] = True
+        row_hit[r[col_hit[c]]] = True
+        total = int(row_hit.sum())
+        if total == count:
+            break
+        count = total
+    result = np.zeros(open_.size, bool)
+    result[flat] = row_hit[r]
+    return result.reshape(open_.shape)[1:-1, 1:-1]
+
+
+def whiten_outer_border(image, width):
+    """Whiten a source-pixel band adjoining exterior transparency, preserving alpha/holes."""
+    if not width:
+        return image, None
+    # Exclude blank padding from the connectivity pass without changing pixel
+    # scale. Everything outside the alpha bounds is already exterior background.
+    bbox = image.getchannel('A').getbbox()
+    array = np.array(image.crop(bbox))
+    solid = array[:, :, 3] > 0
+    exterior = exterior_mask(solid)
+    padded = np.pad(exterior, width, constant_values=True)
+    # Row prefix sums dilate with a circular disk in O(width * image pixels),
+    # without SciPy or a square filter that would overpaint diagonal corners.
+    sums = np.pad(np.cumsum(padded, axis=1, dtype=np.int32), ((0, 0), (1, 0)))
+    height, length = solid.shape
+    band = np.zeros_like(solid)
+    for dy in range(-width, width + 1):
+        dx = math.isqrt(width * width - dy * dy)
+        row = width + dy
+        band |= sums[row:row + height, width + dx + 1:width + dx + 1 + length] != sums[row:row + height, width - dx:width - dx + length]
+    band &= solid
+    array[band, :3] = 255
+    cleaned, white_border = image.copy(), Image.new('L', image.size)
+    cleaned.paste(Image.fromarray(array), bbox[:2])
+    white_border.paste(Image.fromarray(band.astype(np.uint8) * 255), bbox[:2])
+    return cleaned, white_border
+
+
 def prepare_sticker(data, settings):
-    image = decode(data)
-    image = image.crop(image.getchannel('A').getbbox())
+    image, white_border = whiten_outer_border(decode(data), settings.white_border_px)
+    bbox = image.getchannel('A').getbbox()
+    image = image.crop(bbox)
+    if white_border is not None:
+        white_border = white_border.crop(bbox)
     edge = round(settings.long_edge_mm / 25.4 * settings.dpi)
     scale = edge / max(image.size)
     size = tuple(max(1, round(n * scale)) for n in image.size)
-    image = image.convert('RGBa').resize(size, Image.Resampling.LANCZOS).convert('RGBA')
+    if size != image.size:
+        image = image.convert('RGBa').resize(size, Image.Resampling.LANCZOS).convert('RGBA')
+        if white_border is not None:
+            white_border = white_border.resize(size, Image.Resampling.NEAREST)
     if settings.brightness or settings.color_balance:
         array = np.array(image)
         rgb = array[:, :, :3].astype(np.float32)
         rgb *= np.array([1.04, 1.0, 0.97] if settings.color_balance else [1, 1, 1], dtype=np.float32) * (1.15 if settings.brightness else 1)
         array[:, :, :3] = np.clip(rgb, 0, 255).astype(np.uint8)
         image = Image.fromarray(array)
+    if white_border is not None:
+        # Keep the original band white after resampling/color adjustment. Its
+        # width was selected above at source resolution, never at print DPI.
+        array = np.array(image)
+        array[np.array(white_border) > 0, :3] = 255
+        image = Image.fromarray(array)
     return image
 
 
-PRINT_LAYOUT_STYLE = 'order-title-centered-v1'
+PRINT_LAYOUT_STYLE = 'order-title-centered-white-border-v2'
+# Lossless; level 3 halves full-page encode time on the 2-vCPU server for ~10% larger files.
+PRINT_PNG_COMPRESS_LEVEL = 3
 
 
 def print_header(name, settings, width):
@@ -98,7 +177,7 @@ def pack_set(images, name, code, settings):
         draw = ImageDraw.Draw(page)
         for text, position in title:
             draw.text(position, text, font=font, fill=(0, 0, 0, 255))
-        pages.append((f'{name}_{code}_{len(pages) + 1}.png', encode(page, settings.dpi)))
+        pages.append((f'{name}_{code}_{len(pages) + 1}.png', encode(page, settings.dpi, PRINT_PNG_COMPRESS_LEVEL)))
         placements.clear()
 
     for data in images:

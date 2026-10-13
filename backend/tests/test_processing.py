@@ -1,10 +1,99 @@
 import io
+import numpy as np
 import pytest
-from PIL import Image
+from PIL import Image, ImageDraw
 from backend.app import processing
 from backend.app.schemas import PrintSettings
 from backend.tests.test_api import png
+from backend.tests.helpers import gray_edge_png
 
+
+def test_print_white_border_is_seven_source_pixels_and_preserves_alpha_and_holes():
+    source = gray_edge_png()
+    before = Image.open(io.BytesIO(source)).convert('RGBA')
+    image = processing.prepare_sticker(source, PrintSettings(long_edge_mm=10, dpi=254))
+    assert image.size == (100, 100)
+    assert image.getchannel('A').tobytes() == before.crop((10, 10, 110, 110)).getchannel('A').tobytes()
+    assert image.getpixel((50, 0)) == (255, 255, 255, 64)
+    assert image.getpixel((6, 50)) == (255, 255, 255, 254)
+    assert image.getpixel((7, 50)) == (180, 50, 30, 254)
+    assert image.getpixel((93, 50)) == (255, 255, 255, 254)
+    assert image.getpixel((92, 50)) == (180, 50, 30, 254)
+    assert image.getpixel((39, 50)) == (120, 120, 120, 254)
+    assert image.getpixel((40, 50))[3] == 0
+    assert processing.encode(before) == source
+
+
+@pytest.mark.parametrize('long_edge_mm,dpi', [(20, 254), (10, 508)])
+def test_print_white_border_is_applied_before_physical_resize(long_edge_mm, dpi):
+    image = processing.prepare_sticker(gray_edge_png(), PrintSettings(long_edge_mm=long_edge_mm, dpi=dpi))
+    assert image.size == (200, 200)
+    assert image.getpixel((10, 150))[:3] == (255, 255, 255)
+    assert all(abs(actual - expected) <= 1 for actual, expected in zip(image.getpixel((40, 150))[:3], (180, 50, 30)))
+
+
+def test_print_color_balance_keeps_cleaned_white_border_neutral():
+    image = processing.prepare_sticker(gray_edge_png(), PrintSettings(long_edge_mm=10, dpi=254, color_balance=True))
+    assert image.getpixel((3, 75)) == (255, 255, 255, 254)
+    assert image.getpixel((20, 75))[:3] == (187, 50, 29)
+
+
+@pytest.mark.parametrize('width,white_x,unchanged_x', [(3, 2, 3), (9, 8, 9)])
+def test_print_white_border_uses_configured_source_pixel_width(width, white_x, unchanged_x):
+    image = processing.prepare_sticker(gray_edge_png(), PrintSettings(long_edge_mm=10, dpi=254, white_border_px=width))
+    assert image.getpixel((white_x, 75))[:3] == (255, 255, 255)
+    assert image.getpixel((unchanged_x, 75))[:3] != (255, 255, 255)
+
+
+def test_zero_white_border_width_disables_cleaning():
+    image = processing.prepare_sticker(gray_edge_png(), PrintSettings(long_edge_mm=10, dpi=254, white_border_px=0))
+    assert image.getpixel((3, 75))[:3] != (255, 255, 255)
+
+
+def test_print_white_border_follows_euclidean_contour_even_at_canvas_edges():
+    source = Image.new('RGBA', (100, 100), (180, 50, 30, 255))
+    source.paste((0, 0, 0, 0), (0, 0, 40, 40))
+    image = processing.prepare_sticker(processing.encode(source), PrintSettings(long_edge_mm=10, dpi=254))
+    assert image.getpixel((43, 43)) == (255, 255, 255, 255)
+    assert image.getpixel((44, 44)) == (180, 50, 30, 255)
+    assert image.getpixel((99, 60)) == (255, 255, 255, 255)
+    assert image.getpixel((0, 0))[3] == 0
+
+
+
+def floodfill_exterior(solid):
+    outside = Image.fromarray(np.pad(solid.astype(np.uint8) * 255, 1)).copy()
+    ImageDraw.floodfill(outside, (0, 0), 128)
+    return np.array(outside)[1:-1, 1:-1] == 128
+
+
+def spiral_walls():
+    solid = np.ones((301, 301), bool)
+    for k in range(0, 150, 10):
+        solid[k + 5:296 - k, k + 5:296 - k] = False
+        solid[k + 10:291 - k, k + 10:291 - k] = True
+        gap = slice(k + 5, k + 10) if k % 20 == 0 else slice(291 - k, 296 - k)
+        solid[150, gap] = False
+    return solid
+
+
+def test_exterior_mask_matches_pil_floodfill():
+    rng = np.random.default_rng(1)
+    shapes = [rng.random(shape) > p for p in (0.2, 0.5, 0.6, 0.7) for shape in ((1, 1), (1, 50), (50, 1), (97, 131), (300, 300))]
+    holes = np.ones((60, 60), bool)
+    holes[10:20, 10:20] = holes[20:30, 20:30] = False  # touch only diagonally
+    shapes += [spiral_walls(), holes, np.ones((5, 5), bool), np.zeros((5, 5), bool)]
+    for solid in shapes:
+        assert np.array_equal(processing.exterior_mask(solid), floodfill_exterior(solid))
+
+
+def test_print_pages_use_faster_png_compression_and_keep_dpi(monkeypatch):
+    levels = []
+    encode = processing.encode
+    monkeypatch.setattr(processing, 'encode', lambda image, dpi=None, compress_level=None: levels.append(compress_level) or encode(image, dpi, compress_level))
+    (_, data), = processing.pack_set([png()], 'A', 'B', PrintSettings())
+    assert levels == [3]
+    assert round(Image.open(io.BytesIO(data)).info['dpi'][0]) == PrintSettings().dpi
 
 def test_trim_resize_keeps_semtransparent_alpha_and_physical_size():
     assert hasattr(processing, 'prepare_sticker'), 'alpha-safe sticker preparation missing'

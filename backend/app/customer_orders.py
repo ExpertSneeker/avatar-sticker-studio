@@ -244,7 +244,8 @@ def dto(tx, order, guest=False, summary=False):
             result['slots'].append(row)
     if not guest:
         owner = tx.get('users', order['owner']) or {}
-        result.update({k: order[k] for k in ('owner', 'notes', 'organization_id', 'watermark', 'print_settings', 'delivery_version')})
+        result.update({k: order[k] for k in ('owner', 'notes', 'organization_id', 'watermark', 'delivery_version')})
+        result['print_settings'] = PrintSettings(**order['print_settings']).model_dump()
         result['owner_name'] = owner.get('display_name', '')
         shop = tx.get('agiso_shops', order.get('shop_id') or '') if order.get('shop_id') else None
         if not shop:
@@ -400,7 +401,7 @@ def create_customer_order(tx, actor, data, at, shop=None):
     order = {'id': uid(), **data.model_dump(exclude={'client_token'}),
              'owner': actor['id'], 'organization_id': actor['organization_id'], 'state': 'draft', 'version': 1,
              'name': data.order_number, 'watermark': shop_watermark(tx, shop) if shop else watermark_of(actor),
-             'watermark_version': 1, 'print_settings': actor['print_defaults'],
+             'watermark_version': 1, 'print_settings': PrintSettings(**actor['print_defaults']).model_dump(),
              'avatars': [], 'slots': [], 'created_at': datetime.fromtimestamp(at, timezone.utc).isoformat(),
              'prompt': config['prompt'], 'prompt_version': config.get('prompt_version', 1), 'paused': False,
              'content_version': 1, 'artifact_version': 0, 'delivery_version': 0, 'delivery_ready': False,

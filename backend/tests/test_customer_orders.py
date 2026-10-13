@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from backend.tests.test_worker import context
 from backend.tests.test_api import png, upload
 from backend.tests.test_mixed_stickers import sticker
+from backend.tests.helpers import gray_edge_png, order_items, stored_order
 
 
 def opened(client, number='ORDER-001', **kw):
@@ -337,6 +338,91 @@ def test_publication_failure_is_visible_and_can_repack_without_generation(contex
     o=action(c,o,'repack').json();app.state.worker.publish(o['id'])
     assert c.get('/api/customer-orders/'+o['id']).json()['delivery_ready']
     assert len(provider.calls)==before
+
+
+@pytest.mark.parametrize('width,edge_x,edge_rgb,next_x,next_rgb', [
+    (None, 6, (255, 255, 255), 7, (180, 50, 30)),
+    (3, 2, (255, 255, 255), 3, (210, 210, 210)),
+    (0, 0, (210, 210, 210), 7, (180, 50, 30)),
+])
+def test_repack_repairs_legacy_gray_edges_without_changing_originals_or_generation(context, monkeypatch, width, edge_x, edge_rgb, next_x, next_rgb):
+    import numpy as np
+    from PIL import Image
+    from backend.app.processing import encode
+    from backend.app.storage import save_asset
+    app, c, _, provider = context
+    source = gray_edge_png(size=1024)
+    async def generate_edge(template, avatar, prompt):
+        provider.calls.append((template, avatar, prompt))
+        return source
+    monkeypatch.setattr(provider, 'generate', generate_edge)
+    o = generate(c, opened(c, generation_limit=1, final_count=1), sticker(c, 'EDGE')['id'], count=1)
+    run(app)
+    o = c.get('/api/customer-orders/' + o['id']).json()
+    o = action(c, o, 'submit', slot_ids=[o['slots'][0]['id']]).json()
+    # A previously published gray-edged page, without running the new print pipeline.
+    with app.state.db.transaction() as tx:
+        old = save_asset(app.state.db, tx, encode(Image.new('RGBA', (100, 100), (210, 210, 210, 254))), o['owner'], 'print', order_id=o['id'])
+        value = tx.get('orders', o['id'])
+        value['print_settings'].pop('white_border_px', None)
+        value.update(delivery_ready=True, artifacts=[{k: old[k] for k in ('id', 'url', 'sha256', 'size', 'kind')} | {'path': 'page-001.png'}], publish_signatures={'_merged': 'legacy-print'})
+        tx.put('orders', value)
+    before = stored_order(app, o)
+    before_items = order_items(app, o)
+    calls = len(provider.calls)
+    originals = {i[k]: c.get('/api/assets/' + i[k]).content for i in before_items for k in ('raw_result_id', 'result_id')}
+    settings = {'long_edge_mm': 10, 'dpi': 254}
+    if width is not None:
+        settings['white_border_px'] = width
+    response = action(c, o, 'repack', print_settings=settings)
+    assert response.status_code == 200, response.text
+    assert app.state.worker.publish(o['id'])
+    after = stored_order(app, o)
+    assert after['delivery_ready'] and after['delivery_version'] == before['delivery_version'] + 1
+    assert after['artifacts'][0]['id'] != old['id']
+    image = Image.open(io.BytesIO(c.get(after['artifacts'][0]['url']).content)).convert('RGBA')
+    # Find the synthetic soft-alpha top edge independently of page centering/title geometry.
+    alpha = np.array(image.getchannel('A'))
+    rows = np.flatnonzero((alpha == 64).sum(axis=1) == 100)
+    assert len(rows)
+    y = int(rows[-1])
+    x = int(np.flatnonzero(alpha[y] == 64)[0])
+    assert image.getpixel((x + 50, y)) == ((210, 210, 210, 64) if width == 0 else (255, 255, 255, 64))
+    assert image.getpixel((x + edge_x, y + 75)) == (*edge_rgb, 254)
+    assert image.getpixel((x + next_x, y + 75)) == (*next_rgb, 254)
+    assert len(provider.calls) == calls and order_items(app, o) == before_items
+    assert after['final_entries'] == before['final_entries'] and after['slots'] == before['slots']
+    assert all(c.get('/api/assets/' + aid).content == data for aid, data in originals.items())
+
+
+def test_account_white_border_default_is_snapshotted_and_legacy_orders_default_to_seven(context):
+    app, c, _, _ = context
+    # Existing account records predate the new print parameter.
+    user = c.get('/api/auth/me').json()
+    with app.state.db.transaction() as tx:
+        value = tx.get('users', user['id'])
+        value['print_defaults'].pop('white_border_px', None)
+        tx.put('users', value)
+    assert c.get('/api/auth/me').json()['print_defaults']['white_border_px'] == 7
+    legacy = opened(c, number='LEGACY')
+    with app.state.db.transaction() as tx:
+        value = tx.get('orders', legacy['id'])
+        value['print_settings'].pop('white_border_px', None)
+        tx.put('orders', value)
+    response = c.patch('/api/account', json={'print_defaults': {'white_border_px': 3}})
+    assert response.status_code == 200, response.text
+    fresh = opened(c, number='NEW')
+    assert fresh['print_settings']['white_border_px'] == 3
+    assert stored_order(app, fresh)['print_settings']['white_border_px'] == 3
+    assert c.get('/api/customer-orders/' + legacy['id']).json()['print_settings']['white_border_px'] == 7
+    assert c.patch('/api/account', json={'print_defaults': {'white_border_px': 0}}).status_code == 200
+    assert c.get('/api/customer-orders/' + fresh['id']).json()['print_settings']['white_border_px'] == 3
+
+
+@pytest.mark.parametrize('width', [-1, 51, 2.5, True])
+def test_account_rejects_invalid_white_border_width(context, width):
+    _, c, _, _ = context
+    assert c.patch('/api/account', json={'print_defaults': {'white_border_px': width}}).status_code == 422
 
 
 def test_saved_raw_reprocess_never_calls_generation_provider_again(context,monkeypatch):

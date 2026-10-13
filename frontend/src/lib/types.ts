@@ -1,8 +1,8 @@
 export interface PrintSettings {
   paper_width_mm: number; paper_height_mm: number; long_edge_mm: number
-  margin_mm: number; gap_mm: number; dpi: number; brightness: boolean; color_balance: boolean
+  margin_mm: number; gap_mm: number; dpi: number; white_border_px: number; brightness: boolean; color_balance: boolean
 }
-export const defaultPrint: PrintSettings = {paper_width_mm:210,paper_height_mm:297,long_edge_mm:85,margin_mm:10,gap_mm:10,dpi:300,brightness:false,color_balance:false}
+export const defaultPrint: PrintSettings = {paper_width_mm:210,paper_height_mm:297,long_edge_mm:85,margin_mm:10,gap_mm:10,dpi:300,white_border_px:7,brightness:false,color_balance:false}
 export interface User {can_edit_library?:boolean;generation_concurrency?:number;organization_id?:string|null;organization_name?:string|null;id:string;username:string;display_name:string;role:string;watermark:string;print_defaults:PrintSettings;active?:boolean}
 export interface Sticker {id:string;code:string;name:string;category:string;active:boolean;revision:number;image:{id:string;url:string};editable:boolean}
 export interface TemplateImage {sticker_id?:string;code?:string;revision?:number;active?:boolean;id:string;url:string;position:number}

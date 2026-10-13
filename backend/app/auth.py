@@ -27,7 +27,8 @@ def token_hash(token):
 
 
 def public_user(user):
-    return {key: user[key] for key in ('id', 'username', 'display_name', 'role', 'watermark', 'print_defaults')} | {'organization_id':user.get('organization_id'), 'organization_name':user.get('organization_name'), 'generation_concurrency':generation_limit(user), 'can_edit_library':can_edit_library(user)}
+    from .schemas import PrintSettings
+    return {key: user[key] for key in ('id', 'username', 'display_name', 'role', 'watermark')} | {'print_defaults': PrintSettings(**user['print_defaults']).model_dump(), 'organization_id':user.get('organization_id'), 'organization_name':user.get('organization_name'), 'generation_concurrency':generation_limit(user), 'can_edit_library':can_edit_library(user)}
 
 
 def require_user(tx, token, now):

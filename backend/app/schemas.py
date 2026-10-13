@@ -24,6 +24,7 @@ class PrintSettings(Model):
     margin_mm: float = Field(10, ge=0, le=80)
     gap_mm: float = Field(10, ge=0, le=80)
     dpi: int = Field(300, ge=72, le=600)
+    white_border_px: int = Field(7, ge=0, le=50, strict=True)
     brightness: bool = False
     color_balance: bool = False
 
