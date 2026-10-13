@@ -61,6 +61,41 @@ def test_print_white_border_follows_euclidean_contour_even_at_canvas_edges():
 
 
 
+def hazy_edge_image():
+    """Red sticker with a 2px gray rim inside 15px of near-invisible dark haze and a sealed-off haze pocket."""
+    image = Image.new('RGBA', (120, 120))
+    image.paste((40, 40, 40, 5), (15, 15, 105, 105))
+    image.paste((150, 150, 150, 170), (30, 30, 90, 90))
+    image.paste((180, 50, 30, 254), (32, 32, 88, 88))
+    image.paste((0, 0, 0, 0), (20, 50, 28, 60))  # fully transparent, but enclosed by haze
+    return image
+
+
+def test_white_border_starts_at_visible_edge_and_whitens_cutout_haze():
+    image, band = processing.whiten_outer_border(hazy_edge_image(), 3)
+    assert image.getpixel((30, 40)) == (255, 255, 255, 170)  # gray rim behind 15px of haze
+    assert image.getpixel((30, 55)) == (255, 255, 255, 170)  # rim beside the sealed pocket
+    assert image.getpixel((32, 40)) == (255, 255, 255, 254)
+    assert image.getpixel((33, 40)) == (180, 50, 30, 254)
+    assert image.getpixel((20, 40)) == (255, 255, 255, 5)
+    assert image.getpixel((22, 55)) == (0, 0, 0, 0)
+    assert band.getpixel((20, 40)) == 255 and band.getpixel((33, 40)) == 0
+
+
+def test_white_border_alpha_one_measures_from_any_nonzero_alpha():
+    image, _ = processing.whiten_outer_border(hazy_edge_image(), 3, threshold=1)
+    assert image.getpixel((30, 40)) == (150, 150, 150, 170)
+    assert image.getpixel((30, 55)) == (150, 150, 150, 170)
+    assert image.getpixel((15, 40)) == (255, 255, 255, 5)
+    assert image.getpixel((18, 40)) == (40, 40, 40, 5)
+
+
+def test_prepare_sticker_uses_configured_white_border_alpha():
+    data = processing.encode(hazy_edge_image())
+    settings = dict(long_edge_mm=18, dpi=127, white_border_px=3)  # 90px content edge keeps source scale
+    assert processing.prepare_sticker(data, PrintSettings(**settings)).getpixel((15, 25)) == (255, 255, 255, 170)
+    assert processing.prepare_sticker(data, PrintSettings(**settings, white_border_alpha=1)).getpixel((15, 25)) == (150, 150, 150, 170)
+
 def floodfill_exterior(solid):
     outside = Image.fromarray(np.pad(solid.astype(np.uint8) * 255, 1)).copy()
     ImageDraw.floodfill(outside, (0, 0), 128)

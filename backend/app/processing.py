@@ -65,8 +65,13 @@ def exterior_mask(solid):
     return result.reshape(open_.shape)[1:-1, 1:-1]
 
 
-def whiten_outer_border(image, width):
-    """Whiten a source-pixel band adjoining exterior transparency, preserving alpha/holes."""
+def whiten_outer_border(image, width, threshold=128):
+    """Whiten a source-pixel band inside the visible outer edge, preserving alpha/holes.
+
+    Pixels below `threshold` alpha that connect to the outside are background, so
+    near-invisible cutout haze neither moves the edge outward nor seals off
+    pockets as fake interior holes. Those haze pixels are whitened too.
+    """
     if not width:
         return image, None
     # Exclude blank padding from the connectivity pass without changing pixel
@@ -74,7 +79,7 @@ def whiten_outer_border(image, width):
     bbox = image.getchannel('A').getbbox()
     array = np.array(image.crop(bbox))
     solid = array[:, :, 3] > 0
-    exterior = exterior_mask(solid)
+    exterior = exterior_mask(array[:, :, 3] >= threshold)
     padded = np.pad(exterior, width, constant_values=True)
     # Row prefix sums dilate with a circular disk in O(width * image pixels),
     # without SciPy or a square filter that would overpaint diagonal corners.
@@ -94,7 +99,7 @@ def whiten_outer_border(image, width):
 
 
 def prepare_sticker(data, settings):
-    image, white_border = whiten_outer_border(decode(data), settings.white_border_px)
+    image, white_border = whiten_outer_border(decode(data), settings.white_border_px, settings.white_border_alpha)
     bbox = image.getchannel('A').getbbox()
     image = image.crop(bbox)
     if white_border is not None:
@@ -121,7 +126,7 @@ def prepare_sticker(data, settings):
     return image
 
 
-PRINT_LAYOUT_STYLE = 'order-title-centered-white-border-v2'
+PRINT_LAYOUT_STYLE = 'order-title-centered-white-border-v3'
 # Lossless; level 3 halves full-page encode time on the 2-vCPU server for ~10% larger files.
 PRINT_PNG_COMPRESS_LEVEL = 3
 

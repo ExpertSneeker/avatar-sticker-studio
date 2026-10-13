@@ -402,19 +402,24 @@ def test_account_white_border_default_is_snapshotted_and_legacy_orders_default_t
     with app.state.db.transaction() as tx:
         value = tx.get('users', user['id'])
         value['print_defaults'].pop('white_border_px', None)
+        value['print_defaults'].pop('white_border_alpha', None)
         tx.put('users', value)
     assert c.get('/api/auth/me').json()['print_defaults']['white_border_px'] == 7
+    assert c.get('/api/auth/me').json()['print_defaults']['white_border_alpha'] == 128
     legacy = opened(c, number='LEGACY')
     with app.state.db.transaction() as tx:
         value = tx.get('orders', legacy['id'])
         value['print_settings'].pop('white_border_px', None)
+        value['print_settings'].pop('white_border_alpha', None)
         tx.put('orders', value)
-    response = c.patch('/api/account', json={'print_defaults': {'white_border_px': 3}})
+    response = c.patch('/api/account', json={'print_defaults': {'white_border_px': 3, 'white_border_alpha': 64}})
     assert response.status_code == 200, response.text
     fresh = opened(c, number='NEW')
     assert fresh['print_settings']['white_border_px'] == 3
     assert stored_order(app, fresh)['print_settings']['white_border_px'] == 3
+    assert stored_order(app, fresh)['print_settings']['white_border_alpha'] == 64
     assert c.get('/api/customer-orders/' + legacy['id']).json()['print_settings']['white_border_px'] == 7
+    assert c.get('/api/customer-orders/' + legacy['id']).json()['print_settings']['white_border_alpha'] == 128
     assert c.patch('/api/account', json={'print_defaults': {'white_border_px': 0}}).status_code == 200
     assert c.get('/api/customer-orders/' + fresh['id']).json()['print_settings']['white_border_px'] == 3
 
@@ -423,6 +428,12 @@ def test_account_white_border_default_is_snapshotted_and_legacy_orders_default_t
 def test_account_rejects_invalid_white_border_width(context, width):
     _, c, _, _ = context
     assert c.patch('/api/account', json={'print_defaults': {'white_border_px': width}}).status_code == 422
+
+
+@pytest.mark.parametrize('alpha', [0, 256, 127.5, True])
+def test_account_rejects_invalid_white_border_alpha(context, alpha):
+    _, c, _, _ = context
+    assert c.patch('/api/account', json={'print_defaults': {'white_border_alpha': alpha}}).status_code == 422
 
 
 def test_saved_raw_reprocess_never_calls_generation_provider_again(context,monkeypatch):

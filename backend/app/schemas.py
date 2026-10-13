@@ -25,6 +25,8 @@ class PrintSettings(Model):
     gap_mm: float = Field(10, ge=0, le=80)
     dpi: int = Field(300, ge=72, le=600)
     white_border_px: int = Field(7, ge=0, le=50, strict=True)
+    # Alpha below this, connected to the outside, is background: cutout haze no longer hides the visible edge.
+    white_border_alpha: int = Field(128, ge=1, le=255, strict=True)
     brightness: bool = False
     color_balance: bool = False
 
