@@ -83,6 +83,7 @@
 - 点数功能及其接口已下线；实际生图记录、原图、旧请求 ID 和占用继续保留。全站 `max_inflight` 默认 2（1–40）和账号并发同时约束；访客任务计入开户账号。没有旧 RPM 门槛。
 - 提交阶段（尚无 request ID，包含 OSS 暂存及发送 FAL 请求）另受全站 `max_uploads`（默认 3，1–40）约束，已拿到 ID 在 FAL 排队的任务不占用；提交 POST 的写超时为全站 `fal_upload_timeout`（默认 300 秒，30–1800），其他 FAL 请求仍为 60 秒。整个 JSON 请求体是一次写入，写超时即上传上限。
 - 请求 ID 和队列 URL 持久化；超时或下载失败优先查原请求，不重新提交。提交时连接失败（ConnectError/ConnectTimeout）或请求体未写完（WriteError/WriteTimeout）FAL 不可能接单，记为 `failed` 并释放占用；其余无 ID 的未知提交（如请求体已发出后读响应中断）仍保留占用，人工核对后再确认结束。不要通过清空队列、改状态或重置租约绕过重复计费保护。
+- 同组位置（同一 `avatar_id` + 贴纸 `id` + `revision`，`slot_group`）共享生成：`rerun` 要求组内每个位置都空闲且无待确认版本，只新建一个任务并把全组 `active_item_id`/`reservation_item_id` 指向它；只有操作的位置记 `reruns_reserved`/`reruns_used`，其余位置带 `reservation_shared`，`reconcile` 对它们只设 `pending_version_id`/释放占用、不动计数，因此整单只扣一次。`select` 把版本应用到全组（缺该版本的旧分歧位置会补入），组内有进行中的重跑时返回 409。`reprocess` 只对正显示同一任务的组内位置生效。DTO 带 `group_size`。
 - 客户订单的首次生成明确失败（`failed`、无占用、无原图、仍是该位置的首次任务）时，DTO 给出 `can_retry`；访客可调用 `POST /api/guest/order/slots/{slot}/retry`，每个位置最多 3 次（`slot.guest_retries`，同一首次任务的重复位置一起计数），后台重试不限且都不占 `rerun_limit`。访客的 `error` 是按状态生成的安全文案，不含供应商原始错误。
 - 贴纸（模板）图片按长边缩放到 1024 像素后入库，头像短边超过 1024 像素时缩小（`storage.normalize_image` 的 `fit`）；启动迁移 `template-1024-v1` 为既有非 1024 像素贴纸生成新资产和新修订，旧资产/修订保留给历史订单。
 - 原始付费结果先保留，再做可选 Yezi 抠图；抠图有独立凭证和并发/速率控制。存在原图时用“仅重试后处理”，不能误当作重新生图。生产没有 mock 开关，测试通过显式 provider/transport 注入。

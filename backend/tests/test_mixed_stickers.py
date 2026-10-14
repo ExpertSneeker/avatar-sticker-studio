@@ -27,15 +27,16 @@ def test_mixed_generation_once_exports_every_occurrence(context):
     assert before['slots'][0]['selected_version_id']==before['slots'][2]['selected_version_id']
     assert customer_action(staff,o,'slots/'+before['slots'][0]['id']+'/rerun').status_code==200
     run_all(app);changed=staff.get('/api/customer-orders/'+o['id']).json()
-    assert len(provider.calls)==3 and changed['slots'][2]==before['slots'][2]
+    # The template copy and the direct pick of A1-01 are one group: one rerun, both copies get the new version.
     first=changed['slots'][0]
+    assert len(provider.calls)==3 and changed['slots'][2]['pending_version_id']==first['pending_version_id'] and changed['slots'][1]==before['slots'][1]
     assert customer_action(staff,o,'slots/'+first['id']+'/select',version_id=first['pending_version_id']).status_code==200
     result=submit_and_publish(app,staff,o)
     manifest=staff.get('/api/customer-orders/'+o['id']+'/manifest').json()
     assert all(f['kind']=='print' for f in manifest['files'])
     assert Image.open(io.BytesIO(staff.get('/api/assets/'+stored_order(app,o)['overview_id']).content)).size==(1024,256)
     saved=stored_order(app,o)
-    assert len(saved['final_entries'])==3 and saved['final_entries'][0]['asset_id']!=saved['final_entries'][2]['asset_id']
+    assert len(saved['final_entries'])==3 and saved['final_entries'][0]['asset_id']==saved['final_entries'][2]['asset_id']!=saved['final_entries'][1]['asset_id']
 
 
 def test_sticker_only_empty_unavailable_and_snapshot(context):

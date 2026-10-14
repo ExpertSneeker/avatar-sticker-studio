@@ -47,25 +47,30 @@ def test_open_idempotency_and_validation(context):
     assert c.post('/api/customer-orders',json={'platform':'pdd','order_number':'bad','generation_limit':1,'final_count':2,'rerun_limit':0,'client_token':'bad'}).status_code==422
 
 
-def test_duplicates_independent_rerun_selection_and_print_only_delivery(context):
+def test_duplicates_rerun_and_select_together_and_print_only_delivery(context):
     app,c,_,provider=context
-    o=generate(c,opened(c),sticker(c,'ONE')['id'])
-    assert len(o['slots'])==2
+    o=generate(c,opened(c,generation_limit=4,final_count=3,rerun_limit=2),sticker(c,'ONE')['id'],count=3)
+    assert len(o['slots'])==3 and all(s['group_size']==3 for s in o['slots'])
     run(app)
     o=c.get('/api/customer-orders/'+o['id']).json()
-    a,b=o['slots']; assert a['selected_version_id']==b['selected_version_id']
+    a,b,d=o['slots']; assert a['selected_version_id']==b['selected_version_id']==d['selected_version_id']
     initial=a['selected_version_id']
-    result=action(c,o,'slots/'+a['id']+'/rerun'); assert result.status_code==200,result.text
-    o=result.json(); assert o['slots'][0]['reruns_reserved']==1
+    # Rerunning one copy reruns the group once: every copy shows the new generation, one rerun is charged.
+    result=action(c,o,'slots/'+b['id']+'/rerun'); assert result.status_code==200,result.text
+    o=result.json()
+    assert [s['reruns_reserved'] for s in o['slots']]==[0,1,0] and all(s['status']=='queued' for s in o['slots'])
+    assert action(c,o,'slots/'+a['id']+'/rerun').status_code==409
     run(app)
     o=c.get('/api/customer-orders/'+o['id']).json()
     assert len(provider.calls)==2
-    a,b=o['slots']; assert a['pending_version_id'] and b['selected_version_id']==initial and len(b['versions'])==1
-    assert action(c,o,'submit',slot_ids=[a['id'],b['id']]).status_code==409
-    o=action(c,o,'slots/'+a['id']+'/select',version_id=initial).json()
-    assert o['slots'][0]['reruns_used']==1
-    assert action(c,o,'slots/'+a['id']+'/rerun').status_code==409
-    o=action(c,o,'submit',slot_ids=[b['id'],a['id']]).json()
+    pending={s['pending_version_id'] for s in o['slots']}
+    assert len(pending)==1 and None not in pending and all(len(s['versions'])==2 for s in o['slots'])
+    assert sum(s['reruns_used']+s['reruns_reserved'] for s in o['slots'])==1
+    assert action(c,o,'submit',slot_ids=[s['id'] for s in o['slots']]).status_code==409
+    # Keeping a version on any copy keeps it on all of them.
+    o=action(c,o,'slots/'+d['id']+'/select',version_id=initial).json()
+    assert all(s['selected_version_id']==initial and not s['pending_version_id'] for s in o['slots'])
+    o=action(c,o,'submit',slot_ids=[d['id'],a['id'],b['id']]).json()
     app.state.worker.publish(o['id'])
     o=c.get('/api/customer-orders/'+o['id']).json(); assert o['delivery_ready']
     manifest=c.get('/api/customer-orders/'+o['id']+'/manifest').json()
@@ -75,9 +80,41 @@ def test_duplicates_independent_rerun_selection_and_print_only_delivery(context)
     with zipfile.ZipFile(io.BytesIO(data.content)) as z: assert z.namelist()==[manifest['folder_name']+'/'+f['path'] for f in manifest['files']]
 
 
-def test_rerun_budget_is_shared_across_slots(context):
+def test_a_failed_group_rerun_releases_every_copy_without_charging(context):
+    app,c,_,provider=context
+    o=generate(c,opened(c),sticker(c,'ONE')['id']); run(app)
+    o=c.get('/api/customer-orders/'+o['id']).json()
+    o=action(c,o,'slots/'+o['slots'][0]['id']+'/rerun').json()
+    from backend.app.providers import ProviderFailure
+    provider.error=ProviderFailure('failed','failed')
+    run(app)
+    o=c.get('/api/customer-orders/'+o['id']).json()
+    assert all(s['status']=='failed' and not s['reruns_reserved'] and s['reruns_used']==0 for s in o['slots'])
+    stored=stored_order(app,o)
+    assert all(not s.get('reservation_item_id') and not s.get('reservation_shared') for s in stored['slots'])
+
+
+def test_orders_with_diverged_copies_converge_on_the_next_choice(context):
     app,c,_,_=context
     o=generate(c,opened(c),sticker(c,'ONE')['id']); run(app)
+    o=c.get('/api/customer-orders/'+o['id']).json()
+    a,b=o['slots']
+    # Before grouping, a copy could be rerun alone and keep a version the other copy never had.
+    with app.state.db.transaction() as tx:
+        order=tx.get('orders',o['id'])
+        order['slots'][0]['versions'].append({'id':'legacy','asset_id':order['slots'][0]['versions'][0]['asset_id'],'item_id':'legacy'})
+        order['slots'][0]['selected_version_id']='legacy'; order['version']+=1
+        tx.put('orders',order)
+    o=c.get('/api/customer-orders/'+o['id']).json()
+    o=action(c,o,'slots/'+a['id']+'/select',version_id='legacy').json()
+    assert all(s['selected_version_id']=='legacy' and len(s['versions'])==2 for s in o['slots'])
+
+
+def test_rerun_budget_is_shared_across_slots(context):
+    app,c,_,_=context
+    o=opened(c)
+    body={'avatars':[{'upload_id':upload(c)['id'],'template_ids':[],'sticker_ids':[sticker(c,'ONE')['id'],sticker(c,'TWO')['id']]}]}
+    o=action(c,o,'generate',**body).json(); run(app); run(app)
     o=c.get('/api/customer-orders/'+o['id']).json()
     first,second=o['slots']
     assert action(c,o,'slots/'+first['id']+'/rerun').status_code==200

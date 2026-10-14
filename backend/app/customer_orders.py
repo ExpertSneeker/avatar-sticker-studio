@@ -155,15 +155,17 @@ def reconcile(tx, order):
             if not any(v['id'] == version['id'] for v in slot['versions']):
                 slot['versions'].append(version)
                 if slot.get('reservation_item_id') == item['id']:
-                    slot['reruns_reserved'] -= 1
-                    slot['reruns_used'] += 1
+                    if not slot.pop('reservation_shared', False):
+                        slot['reruns_reserved'] -= 1
+                        slot['reruns_used'] += 1
                     slot['reservation_item_id'] = None
                     slot['pending_version_id'] = version['id']
                 else:
                     slot['selected_version_id'] = version['id']
                 changed = True
         elif item['status'] == 'failed' and not item.get('remote_reserved') and not item.get('cutout_inflight') and slot.get('reservation_item_id') == item['id']:
-            slot['reruns_reserved'] -= 1
+            if not slot.pop('reservation_shared', False):
+                slot['reruns_reserved'] -= 1
             slot['reservation_item_id'] = None
             changed = True
     if changed:
@@ -171,6 +173,26 @@ def reconcile(tx, order):
         order['content_version'] += 1
         tx.put('orders', order)
     return order
+
+
+def slot_group(order, slot):
+    """Copies of one sticker for one avatar: they share every generation, rerun and kept version."""
+    key = lambda s: (s['avatar_id'], s['sticker'].get('id'), s['sticker'].get('revision'))
+    return [s for s in order['slots'] if key(s) == key(slot)]
+
+
+def reserve_group(order, slot, item_id, sharing_only=False):
+    """Point the group at one rerun item. Only the acting slot carries the rerun counters, so the shared
+    budget is charged once; the others hold a `reservation_shared` marker for reconcile. `sharing_only`
+    limits it to copies already showing that item (reprocessing an existing result)."""
+    for member in slot_group(order, slot):
+        if sharing_only and member['active_item_id'] != item_id:
+            continue
+        member.update(active_item_id=item_id, reservation_item_id=item_id)
+        if member is slot:
+            member['reruns_reserved'] += 1
+        else:
+            member['reservation_shared'] = True
 
 
 def retryable(item, slot):
@@ -234,6 +256,7 @@ def dto(tx, order, guest=False, summary=False):
             item = tx.get('items', slot.get('active_item_id', ''))
             row = {k: slot[k] for k in ('id', 'avatar_id', 'sticker_code', 'reruns_used', 'reruns_reserved', 'selected_version_id', 'pending_version_id')}
             row['status'] = item['status'] if item else 'queued'
+            row['group_size'] = len(slot_group(order, slot))
             row['versions'] = [{'id': v['id'], 'preview_url': media_url(order, v['asset_id'], guest)} for v in slot['versions']]
             if item and item.get('error'):
                 row['error'] = guest_error(item, slot) if guest else item['error']
@@ -649,7 +672,7 @@ def register_customer_orders(app, db, user):
                         if rerun_budget(order) >= order['rerun_limit'] and item['id'] != slot['initial_item_id']:
                             raise HTTPException(409, '整单重试次数已用完')
                         if item['id'] != slot['initial_item_id'] and not slot.get('reservation_item_id'):
-                            slot.update(reservation_item_id=item['id'], reruns_reserved=slot['reruns_reserved']+1)
+                            reserve_group(order, slot, item['id'], sharing_only=True)
                         item.update(status='queued', processing_stage='postprocess', next_at=0, error=None)
                         tx.put('items', item)
                     else:
@@ -664,17 +687,29 @@ def register_customer_orders(app, db, user):
                                 if guest:
                                     linked['guest_retries'] = linked.get('guest_retries', 0) + 1
                 elif action == 'rerun':
-                    if item['status'] not in {'completed', 'failed'} or item.get('remote_reserved') or item.get('cutout_inflight') or slot['pending_version_id']:
-                        raise HTTPException(409, '请等待生成并选择待确认结果')
+                    # One generation for every copy of this sticker; all copies show it and keep one version.
+                    for member in slot_group(order, slot):
+                        current = tx.get('items', member['active_item_id'])
+                        if (current['status'] not in {'completed', 'failed'} or current.get('remote_reserved') or current.get('cutout_inflight')
+                                or member['pending_version_id'] or member.get('reservation_item_id')):
+                            raise HTTPException(409, '请等待生成并选择待确认结果')
                     if rerun_budget(order) >= order['rerun_limit']:
                         raise HTTPException(409, '整单重试次数已用完')
                     avatar = next(a for a in order['avatars'] if a['id'] == slot['avatar_id'])
                     item = new_item(tx, order, uid(), avatar['asset_id'], slot['sticker'], now(), tx.count('items'))
-                    slot.update(active_item_id=item['id'], reservation_item_id=item['id'], reruns_reserved=slot['reruns_reserved']+1)
+                    reserve_group(order, slot, item['id'])
                 else:
-                    if not any(v['id'] == data.version_id for v in slot['versions']):
+                    version = next((v for v in slot['versions'] if v['id'] == data.version_id), None)
+                    if not version:
                         raise HTTPException(422, '所选版本不可用')
-                    slot.update(selected_version_id=data.version_id, pending_version_id=None)
+                    group = slot_group(order, slot)
+                    if any(member.get('reservation_item_id') for member in group):
+                        raise HTTPException(409, '同款贴纸正在重新生成，请稍后再选')
+                    # Orders from before grouping may hold a version in one copy only; copy it so all agree.
+                    for member in group:
+                        if not any(v['id'] == version['id'] for v in member['versions']):
+                            member['versions'].append(deepcopy(version))
+                        member.update(selected_version_id=version['id'], pending_version_id=None)
             elif action == 'submit':
                 if state != 'review':
                     raise HTTPException(409, '当前订单不能提交')
