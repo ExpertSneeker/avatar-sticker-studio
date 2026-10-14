@@ -107,7 +107,8 @@ class FalProvider:
         payload = dict(prompt=prompt, image_urls=image_urls if image_urls is not None else [
             'data:image/png;base64,' + base64.b64encode(x).decode() for x in (template, avatar)],
             image_size={'width': 1024, 'height': 1024}, quality='low', num_images=1,
-            background='transparent', output_format='png', sync_mode=False)
+            background='transparent', output_format='png', sync_mode=False,
+            enable_safety_checker=False)
         # Use HTTPX's own encoder once; metrics count precisely the bytes sent,
         # including UTF-8 prompt text, while preserving the old inline wire body.
         content = httpx.Request('POST', self.endpoint, json=payload).content

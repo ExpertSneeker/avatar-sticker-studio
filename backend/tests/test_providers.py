@@ -21,7 +21,7 @@ def test_queue_contract_and_media_isolation(monkeypatch):
     def receive(r):
         seen.append(r)
         if r.method == 'POST':
-            assert json.loads(r.content) == dict(prompt='固定提示词', image_urls=['data:image/png;base64,'+base64.b64encode(x).decode() for x in [b'template', b'portrait']], image_size={'width':1024,'height':1024}, quality='low', num_images=1, background='transparent', output_format='png', sync_mode=False)
+            assert json.loads(r.content) == dict(prompt='固定提示词', image_urls=['data:image/png;base64,'+base64.b64encode(x).decode() for x in [b'template', b'portrait']], image_size={'width':1024,'height':1024}, quality='low', num_images=1, background='transparent', output_format='png', sync_mode=False, enable_safety_checker=False)
             return httpx.Response(200, json=dict(request_id='job-1', status_url=base+'/status', response_url=base))
         if r.url.path.endswith('/status'): return httpx.Response(200, json={'status':next(states), 'queue_position':2})
         if r.url.host == 'queue.fal.run': return httpx.Response(200, json={'images':[{'url':'https://v3.fal.media/files/image.png'}]})

@@ -118,7 +118,7 @@ def test_provider_exact_body_bytes_and_metrics(monkeypatch, mode):
     expected = dict(prompt='固定提示词', image_urls=images if mode == 'oss' else [
         'data:image/png;base64,' + base64.b64encode(x).decode() for x in (b'template', b'avatar')],
         image_size={'width':1024,'height':1024}, quality='low', num_images=1,
-        background='transparent', output_format='png', sync_mode=False)
+        background='transparent', output_format='png', sync_mode=False, enable_safety_checker=False)
     assert seen[0].content == httpx.Request('POST', providers.FalProvider.endpoint, json=expected).content
     assert job['fal_input'] == mode
     assert job['fal_submit_metrics']['request_bytes'] == len(seen[0].content)

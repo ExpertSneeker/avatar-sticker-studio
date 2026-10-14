@@ -79,7 +79,7 @@
 
 ## 图片、队列与打印
 
-- 当前 provider 源码使用 FAL `openai/gpt-image-2.5/flare/edit`；凭证是 `FAL_KEY` 或后台私有设置，环境变量优先。这描述仓库实现，不保证第三方服务未来仍可用。变更 provider 前核对其当时官方契约。
+- 当前 provider 源码使用 FAL `openai/gpt-image-2.5/flare/edit`；全站提交都带 `enable_safety_checker: false`（FAL 支持确认这是该端点唯一的审核开关，关闭后在上游允许范围内放宽；`model_moderated` 未开放，OpenAI 侧的拒绝仍可能以 422 `content_policy_violation` 返回）；凭证是 `FAL_KEY` 或后台私有设置，环境变量优先。这描述仓库实现，不保证第三方服务未来仍可用。变更 provider 前核对其当时官方契约。
 - 点数功能及其接口已下线；实际生图记录、原图、旧请求 ID 和占用继续保留。全站 `max_inflight` 默认 2（1–40）和账号并发同时约束；访客任务计入开户账号。没有旧 RPM 门槛。
 - 提交阶段（尚无 request ID，包含 OSS 暂存及发送 FAL 请求）另受全站 `max_uploads`（默认 3，1–40）约束，已拿到 ID 在 FAL 排队的任务不占用；提交 POST 的写超时为全站 `fal_upload_timeout`（默认 300 秒，30–1800），其他 FAL 请求仍为 60 秒。整个 JSON 请求体是一次写入，写超时即上传上限。
 - 请求 ID 和队列 URL 持久化；超时或下载失败优先查原请求，不重新提交。提交时连接失败（ConnectError/ConnectTimeout）或请求体未写完（WriteError/WriteTimeout）FAL 不可能接单，记为 `failed` 并释放占用；其余无 ID 的未知提交（如请求体已发出后读响应中断）仍保留占用，人工核对后再确认结束。不要通过清空队列、改状态或重置租约绕过重复计费保护。
