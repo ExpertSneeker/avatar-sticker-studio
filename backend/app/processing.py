@@ -234,18 +234,18 @@ def overview(images, watermark, group_sizes=None):
     ascent, descent = font.getmetrics()
     line_height = ascent + descent + 5
     text_tile = Image.new('RGBA', (400, max(95, len(lines) * line_height + 30)))
+    # Opacity: text 10% (26/255), white outline 16% (41/255), black shadow 10% (26/255).
     shadow = Image.new('RGBA', text_tile.size)
     shadow_draw = ImageDraw.Draw(shadow)
     for index, text in enumerate(lines):
-        shadow_draw.text((23, 18 + index * line_height), text, font=font, fill=(0, 0, 0, 105), stroke_width=4, stroke_fill=(0, 0, 0, 105))
+        shadow_draw.text((23, 18 + index * line_height), text, font=font, fill=(0, 0, 0, 26), stroke_width=4, stroke_fill=(0, 0, 0, 26))
     text_tile = Image.alpha_composite(text_tile, shadow.filter(ImageFilter.GaussianBlur(2)))
     draw = ImageDraw.Draw(text_tile)
     for index, text in enumerate(lines):
         position = (20, 14 + index * line_height)
         # Two strokes make even fallback CJK fonts visibly bold with a separate white outline.
-        draw.text(position, text, font=font, fill=(55, 55, 55, 110), stroke_width=4, stroke_fill=(255, 255, 255, 205))
-        draw.text(position, text, font=font, fill=(55, 55, 55, 110), stroke_width=1, stroke_fill=(55, 55, 55, 110))
-    text_tile.putalpha(text_tile.getchannel('A').point(lambda alpha: round(alpha * .65)))
+        draw.text(position, text, font=font, fill=(55, 55, 55, 26), stroke_width=4, stroke_fill=(255, 255, 255, 41))
+        draw.text(position, text, font=font, fill=(55, 55, 55, 26), stroke_width=1, stroke_fill=(55, 55, 55, 26))
     bbox = text_tile.getbbox()
     if bbox:
         text_tile = text_tile.crop(bbox)

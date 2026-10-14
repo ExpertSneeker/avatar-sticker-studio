@@ -11,7 +11,7 @@ from PIL import Image, ImageDraw
 from .processing import watermark_font
 from .storage import asset_bytes
 
-PIPELINE = 'guest-light-diagonal-flat-webp-v4'
+PIPELINE = 'guest-light-diagonal-flat-webp-v5'
 # Fixed derivative tiers: any requested size snaps up to one, so arbitrary sizes cannot multiply renders or fragment the cache.
 TIERS = (160, 320, 640, 1024)
 # Thumbnail tiers are downscaled from a 640 render, so their watermark looks exactly like the 640 preview shrunk by the browser.
@@ -107,7 +107,8 @@ def watermarked(data, mark, size, already_watermarked=False):
     tile = Image.new('RGBA', (width, text_height * max(1, len(lines)) + 10))
     draw = ImageDraw.Draw(tile)
     for row, line in enumerate(lines):
-        draw.text((8, row*text_height), line, font=font, fill=(50, 50, 50, 70), stroke_width=2, stroke_fill=(255, 255, 255, 84))
+        # Opacity: text 10% (26/255), white outline 16% (41/255).
+        draw.text((8, row*text_height), line, font=font, fill=(50, 50, 50, 26), stroke_width=2, stroke_fill=(255, 255, 255, 41))
     tile = tile.rotate(35, resample=Image.Resampling.BICUBIC, expand=True)
     layer = Image.new('RGBA', canvas.size)
     step_x = max(70, tile.width - 10)
