@@ -9,7 +9,7 @@ from fastapi import HTTPException, Request, Response, Query
 from fastapi.responses import RedirectResponse
 from pydantic import ValidationError
 from . import agiso_protocol as protocol
-from .agiso_service import account_active, event_family, event_tid, executable, integration_id, order_allowed
+from .agiso_service import account_active, event_family, rule_key, event_tid, executable, integration_id, order_allowed
 from .agiso_platforms import ADAPTERS
 from .auth import token_hash
 from .db import uid
@@ -33,7 +33,7 @@ def register_agiso(app,db,user):
 
     def shop_dto(tx,shop,actor):
         owner=tx.get('users',shop['owner']) or {}
-        return {k:shop.get(k) for k in ('id','shop_id','shop_name','owner','organization_id','enabled','expires_at','last_event_at','watermark','unbound_at')} | {
+        return {k:shop.get(k) for k in ('id','shop_id','shop_name','owner','organization_id','enabled','expires_at','last_event_at','watermark','unbound_at','rule_check')} | {
             'platform':platform_of(shop),'platform_label':PLATFORMS[platform_of(shop)]['label'],
             'owner_name':owner.get('display_name',''),'unbound':bool(shop.get('unbound_at')),'authorized':bool(shop.get('token') and shop.get('expires_at',0)>now()),'can_manage':can_manage(actor,shop)}
 
@@ -182,19 +182,17 @@ def register_agiso(app,db,user):
             if not any(r['enabled'] for r in shop['rules']):shop['enabled']=False
             tx.put('agiso_shops',shop);return shop['rules']
 
-    @app.get('/api/agiso/shops/{id}/goods')
-    async def goods(id:str,request:Request,page:int=Query(1,ge=1,le=10000),goods_name:str=Query('',max_length=200)):
-        with db.transaction() as tx:
-            _,shop=scoped(tx,request,id,True)
-            if not account_active(tx,shop):raise HTTPException(409,'店铺所属账号不可用')
-        config=protocol.settings()
+    async def read_goods(shop,page,goods_name,config):
+        """One page of the shop's goods: {available, goods, total, page, message, page_size, listed}.
+        Each SKU carries `onsale`; `listed` counts raw rows so callers can tell the last page."""
         label=PLATFORMS[platform_of(shop)]['label']
         failure={'available':False,'goods':[],'total':0,'page':page,'message':f'商品读取暂不可用，请从{label}后台核对商品ID和规格ID后手动填写'}
         if not config['configured'] or not shop.get('token') or shop.get('expires_at',0)<=now():return failure
         if platform_of(shop)!='pdd':
+            adapter=ADAPTERS[platform_of(shop)]
             try:
-                result=await ADAPTERS[platform_of(shop)].goods(shop,page,goods_name,config,app.state.agiso_worker.transport,now())
-                return {'available':True,'goods':result['goods'],'total':result['total'],'page':page,'message':''}
+                result=await adapter.goods(shop,page,goods_name,config,app.state.agiso_worker.transport,now())
+                return {'available':True,'goods':result['goods'],'total':result['total'],'page':page,'message':'','page_size':adapter.page_size,'listed':result['listed']}
             except Exception as error:
                 logging.getLogger(__name__).warning('Agiso %s goods lookup failed: %s',platform_of(shop),type(error).__name__)
                 return failure
@@ -212,10 +210,65 @@ def register_agiso(app,db,user):
                 skus=[]
                 for sku in row['sku_list']:
                     if not isinstance(sku,dict) or not isinstance(sku.get('spec'),str):raise ValueError()
-                    skus.append({'sku_id':protocol.identifier(sku['sku_id']),'sku_name':sku['spec']})
+                    skus.append({'sku_id':protocol.identifier(sku['sku_id']),'sku_name':sku['spec'],'onsale':row.get('is_onsale')!=0 and sku.get('is_sku_onsale')!=0})
                 rows.append({'goods_id':protocol.identifier(row['goods_id']),'goods_name':row['goods_name'],'skus':skus})
-            return {'available':True,'goods':rows,'total':data['total_count'],'page':page,'message':''}
+            return {'available':True,'goods':rows,'total':data['total_count'],'page':page,'message':'','page_size':100,'listed':len(data['goods_list'])}
         except Exception:return failure
+
+    @app.get('/api/agiso/shops/{id}/goods')
+    async def goods(id:str,request:Request,page:int=Query(1,ge=1,le=10000),goods_name:str=Query('',max_length=200)):
+        with db.transaction() as tx:
+            _,shop=scoped(tx,request,id,True)
+            if not account_active(tx,shop):raise HTTPException(409,'店铺所属账号不可用')
+        result=await read_goods(shop,page,goods_name,protocol.settings())
+        return {k:result[k] for k in ('available','goods','total','page','message')}
+
+    CHECK_PAGES=100
+
+    def rule_ref(rule):
+        return {'goods_id':rule['goods_id'],'sku_id':rule['sku_id']}
+
+    @app.post('/api/agiso/shops/{id}/rules/check')
+    async def check_rules(id:str,request:Request):
+        """Manual only: read every goods page and mark saved rules whose SKU the shop no longer lists
+        (`missing`) or lists off sale (`offsale`). Any failed page aborts without touching the last result."""
+        with db.transaction() as tx:
+            _,shop=scoped(tx,request,id,True)
+            if not account_active(tx,shop):raise HTTPException(409,'店铺所属账号不可用')
+        config=protocol.settings();found={}
+        for page in range(1,CHECK_PAGES+1):
+            result=await read_goods(shop,page,'',config)
+            if not result['available']:raise HTTPException(409,result['message'] or '商品读取失败，请稍后重试')
+            for goods_row in result['goods']:
+                for sku in goods_row['skus']:
+                    key=rule_key(shop,{'goods_id':goods_row['goods_id'],'sku_id':sku['sku_id']})
+                    found[key]=found.get(key,False) or sku.get('onsale',True)
+            # A short page is the last one; totals are not trusted (Xiaohongshu counts SKU rows, not goods).
+            if result['listed']<result['page_size']:break
+        else:raise HTTPException(409,f'店铺商品超过 {CHECK_PAGES} 页，无法完整检测')
+        with db.transaction() as tx:
+            actor,shop=scoped(tx,request,id,True)
+            missing=[rule_ref(r) for r in shop['rules'] if rule_key(shop,r) not in found]
+            offsale=[rule_ref(r) for r in shop['rules'] if found.get(rule_key(shop,r)) is False]
+            shop['rule_check']={'checked_at':now(),'missing':missing,'offsale':offsale,
+                                'offsale_visible':platform_of(shop)=='pdd' or ADAPTERS[platform_of(shop)].lists_offsale}
+            tx.put('agiso_shops',shop)
+            return shop_dto(tx,shop,actor)
+
+    @app.post('/api/agiso/shops/{id}/rules/prune')
+    def prune_rules(id:str,request:Request):
+        """Manual only: delete the rules the last check found missing from the shop."""
+        with db.transaction() as tx:
+            actor,shop=scoped(tx,request,id,True)
+            check=shop.get('rule_check')
+            if not check:raise HTTPException(409,'请先检测失效 SKU')
+            gone={rule_key(shop,r) for r in check['missing']}
+            kept=[r for r in shop['rules'] if rule_key(shop,r) not in gone]
+            removed=len(shop['rules'])-len(kept)
+            shop['rules']=kept;check['missing']=[]
+            if not any(r['enabled'] for r in kept):shop['enabled']=False
+            tx.put('agiso_shops',shop)
+            return {'removed':removed,'rules':kept,'shop':shop_dto(tx,shop,actor)}
 
     def order_dto(tx,link,shop,actor):
         row={k:link.get(k) for k in ('id','order_number','customer_order_id','open_status','message_status','guest_url','error','created_at','entered_at')}

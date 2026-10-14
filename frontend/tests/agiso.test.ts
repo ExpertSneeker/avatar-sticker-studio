@@ -1,5 +1,5 @@
-import { expect, it } from 'vitest'
-import { ruleError, guestLink, integrationError, type SkuRule } from '../src/lib/agiso'
+import { describe, expect, it } from 'vitest'
+import { ruleError, guestLink, integrationError, skuStatus, type SkuRule } from '../src/lib/agiso'
 const rule: SkuRule = { goods_id:'123',sku_id:'456',goods_name:'补差价专用',sku_name:'10张',generation_limit:10,final_count:10,rerun_limit:2,enabled:false }
 it('requires real unique identifiers and valid quotas before saving', () => {
   expect(ruleError([rule])).toBe('')
@@ -44,4 +44,15 @@ it('rule ids follow each platform: digits for Pinduoduo/Douyin, hex for Xiaohong
   expect(ruleError([xhs,{...xhs,goods_id:'other0'}],'xhs')).toContain('SKU 重复')
   expect(ruleError([{...xhs,sku_id:'bad id'}],'xhs')).toContain('真实的商品 ID')
   expect(ruleError([{...base,goods_id:'1721288561899563',sku_id:'1721288561899566'}],'douyin')).toBe('')
+})
+
+describe('skuStatus', () => {
+  const check = { checked_at: 1, missing: [{ goods_id: 'g1', sku_id: 's1' }], offsale: [{ goods_id: 'g1', sku_id: 's2' }], offsale_visible: true }
+  it('matches product and SKU, or SKU alone on Xiaohongshu', () => {
+    expect(skuStatus({ goods_id: 'g1', sku_id: 's1' }, check, 'pdd')).toBe('missing')
+    expect(skuStatus({ goods_id: 'g2', sku_id: 's1' }, check, 'pdd')).toBeNull()
+    expect(skuStatus({ goods_id: 'g2', sku_id: 's1' }, check, 'xhs')).toBe('missing')
+    expect(skuStatus({ goods_id: 'g1', sku_id: 's2' }, check, 'douyin')).toBe('offsale')
+    expect(skuStatus({ goods_id: 'g1', sku_id: 's1' }, null, 'pdd')).toBeNull()
+  })
 })

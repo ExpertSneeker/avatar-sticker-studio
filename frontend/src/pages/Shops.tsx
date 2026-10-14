@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Copy, Plus, RefreshCw, Store, Trash2 } from 'lucide-react'
 import { api, patch, post } from '../lib/api'
-import { integrationLabel, integrationError, ruleError, newSkuRule, validAuthorizeUrl, withSpecDefaults } from '../lib/agiso'
+import { integrationLabel, integrationError, ruleError, newSkuRule, skuStatus, validAuthorizeUrl, withSpecDefaults } from '../lib/agiso'
 import type { AgisoStatus, GoodsPage, PlatformKey, Shop, ShopEvent, ShopOrder, SkuRule } from '../lib/agiso'
 import { Modal, Spinner } from '../components/UI'
 import './Shops.css'
@@ -69,6 +69,8 @@ function ShopDetail({ shop, configured, onUpdate, onUnbound }: { shop: Shop; con
   const [loading, setLoading] = useState(true), [busy, setBusy] = useState(false), [dirty, setDirty] = useState(false), [error, setError] = useState(''), [notice, setNotice] = useState('')
   const [sourceOpen, setSourceOpen] = useState(false), [source, setSource] = useState<GoodsPage | null>(null), [search, setSearch] = useState(''), [page, setPage] = useState(1)
   const [copiedLink, setCopiedLink] = useState<string | null>(null), [unbinding, setUnbinding] = useState(false)
+  const [check, setCheck] = useState(shop.rule_check ?? null), [pruning, setPruning] = useState(false), [checking, setChecking] = useState(false)
+  const missingRules = rules.filter(rule => skuStatus(rule, check, shop.platform) === 'missing')
   const lifetime = useRef(new AbortController())
   useEffect(() => {
     const controller = new AbortController(); lifetime.current = controller
@@ -85,11 +87,11 @@ function ShopDetail({ shop, configured, onUpdate, onUnbound }: { shop: Shop; con
     } catch (error) { if (!signal.aborted && revision === activityRevision.current) throw error }
   }, [base])
   useEffect(() => { if (tab !== 'rules') void refreshActivity().catch(e => { if (!lifetime.current.signal.aborted) setError(e.message) }) }, [tab, refreshActivity])
-  async function action(work: () => Promise<unknown>, message: string) {
+  async function action(work: () => Promise<unknown>, message: string | (() => string)) {
     if (busy) return
     const signal = lifetime.current.signal
     setBusy(true); setError(''); setNotice('')
-    try { await work(); if (!signal.aborted) setNotice(message) }
+    try { await work(); if (!signal.aborted) setNotice(typeof message === 'function' ? message() : message) }
     catch (e) { if (!signal.aborted) setError((e as Error).message) }
     finally { if (!signal.aborted) setBusy(false) }
   }
@@ -109,6 +111,26 @@ function ShopDetail({ shop, configured, onUpdate, onUnbound }: { shop: Shop; con
       if (!lifetime.current.signal.aborted) { setSource(next); setPage(nextPage) }
     }, '')
   }
+  async function checkSkus() {
+    let text = ''
+    setChecking(true)
+    await action(async () => {
+      const result = (await post<Shop>(base + '/rules/check', {}, lifetime.current.signal)).rule_check!
+      if (!lifetime.current.signal.aborted) setCheck(result)
+      text = `检测完成：${result.missing.length ? result.missing.length + ' 个 SKU 已失效（灰色显示）' : '没有失效 SKU'}${result.offsale.length ? '，' + result.offsale.length + ' 个已下架' : ''}。` + (result.offsale_visible ? '' : '小红书只能读取在售商品，已下架的 SKU 也会显示为失效。')
+      await onUpdate()
+    }, () => text)
+    if (!lifetime.current.signal.aborted) setChecking(false)
+  }
+  async function prune() {
+    let text = ''
+    await action(async () => {
+      const result = await post<{ removed: number; rules: SkuRule[]; shop: Shop }>(base + '/rules/prune', {}, lifetime.current.signal)
+      if (!lifetime.current.signal.aborted) { setRules(result.rules); setCheck(result.shop.rule_check ?? null); setPruning(false) }
+      text = `已删除 ${result.removed} 个失效 SKU。` + (shop.enabled && !result.shop.enabled ? '没有启用的 SKU，自动开户已关闭。' : '')
+      await onUpdate()
+    }, () => text)
+  }
   async function unbind() {
     await action(async () => {
       const result = await post<{ deleted: boolean; revoked: boolean }>(base + '/unbind', {}, lifetime.current.signal)
@@ -127,13 +149,14 @@ function ShopDetail({ shop, configured, onUpdate, onUnbound }: { shop: Shop; con
     {error && <div className="error-banner" role="alert">{error}</div>}{notice && <p role="status">{notice}</p>}
     {tab === 'rules' && <>
       <p className="hint">新增 SKU 默认启用，规格中的“个/张”数量从大到小匹配并带入额度，未匹配时保留额度，可手动调整。生成和提交张数按购买件数累加；重试次数为整单共用，不按件数累加。最多 360 张，未配置的 SKU 转人工处理。{shop.platform === 'xhs' ? ' 小红书订单只返回 SKU ID，按 SKU ID 匹配套餐；商品 ID 仅用于显示。' : shop.platform === 'douyin' ? ' 抖店按父订单开户，同一订单的多个商品合并计算额度。' : ''}</p>
-      {shop.can_manage && <div className="button-group"><button className="button" disabled={busy || loading} onClick={() => { setSourceOpen(true); void findGoods() }}>从店铺选择规格</button><button className="button" disabled={busy || loading} onClick={() => { setRules(previous => [...previous, newSkuRule()]); setDirty(true) }}><Plus size={15}/>手动添加</button></div>}
-      {loading ? <div className="shop-empty"><Spinner/></div> : !rules.length ? <p className="shop-empty">尚未配置商品套餐。新增 SKU 默认启用；核对额度并保存后，再开启店铺自动开户。</p> : <div className="shop-rules">{rules.map((rule, index) => <article className="shop-rule" key={index}>
-        <div className="shop-rule-head"><strong>{rule.goods_name || '商品'} · {rule.sku_name || '规格 ' + (index + 1)}</strong>{shop.can_manage && <button className="icon-button" aria-label={'删除规则 ' + (index + 1)} disabled={busy} onClick={() => { setRules(previous => previous.filter((_, i) => i !== index)); setDirty(true) }}><Trash2 size={16}/></button>}</div>
+      {shop.can_manage && <div className="button-group"><button className="button" disabled={busy || loading} onClick={() => { setSourceOpen(true); void findGoods() }}>从店铺选择规格</button><button className="button" disabled={busy || loading} onClick={() => { setRules(previous => [...previous, newSkuRule()]); setDirty(true) }}><Plus size={15}/>手动添加</button><button className="button" disabled={busy || loading || !rules.length || !shop.authorized} title={shop.authorized ? '读取店铺全部商品，对照已保存的套餐' : '店铺授权有效时才能检测'} onClick={() => void checkSkus()}>{checking && <Spinner/>}{checking ? '正在检测' : '检测失效 SKU'}</button>{missingRules.length > 0 && <button className="button danger" disabled={busy || dirty} title={dirty ? '请先保存或撤销当前修改' : undefined} onClick={() => setPruning(true)}><Trash2 size={15}/>删除失效 SKU（{missingRules.length}）</button>}</div>}
+      {check && <p className="hint">上次检测：{date(check.checked_at)}。灰色为店铺中已找不到的 SKU；检测后新增或修改的规则未检测。{check.offsale_visible ? '' : ' 小红书只能读取在售商品，已下架的 SKU 也显示为失效。'}{dirty && missingRules.length > 0 ? ' 删除失效 SKU 前请先保存当前修改。' : ''}</p>}
+      {loading ? <div className="shop-empty"><Spinner/></div> : !rules.length ? <p className="shop-empty">尚未配置商品套餐。新增 SKU 默认启用；核对额度并保存后，再开启店铺自动开户。</p> : <div className="shop-rules">{rules.map((rule, index) => { const status = skuStatus(rule, check, shop.platform); return <article className={'shop-rule' + (status ? ' ' + status : '')} key={index}>
+        <div className="shop-rule-head"><strong>{rule.goods_name || '商品'} · {rule.sku_name || '规格 ' + (index + 1)}{status && <span className={'sku-status ' + status}>{status === 'missing' ? '已失效' : '已下架'}</span>}</strong>{shop.can_manage && <button className="icon-button" aria-label={'删除规则 ' + (index + 1)} disabled={busy} onClick={() => { setRules(previous => previous.filter((_, i) => i !== index)); setDirty(true) }}><Trash2 size={16}/></button>}</div>
         <div className="shop-rule-grid">{(['goods_name', 'sku_name', 'goods_id', 'sku_id'] as const).map((field, i) => <label className="field" key={field}>{['商品名称', '规格名称', '商品 ID', 'SKU ID'][i]}<input aria-label={`${['商品名称', '规格名称', '商品 ID', 'SKU ID'][i]} ${index + 1}`} value={rule[field]} disabled={!shop.can_manage || busy} maxLength={field.endsWith('id') ? 100 : 200} onChange={e => edit(index, { [field]: e.target.value.trim() })}/></label>)}</div>
         <div className="shop-rule-quotas">{(['generation_limit', 'final_count', 'rerun_limit'] as const).map((field, i) => <label className="field" key={field}>{['每件可生成', '每件可提交印刷', '整单重试次数'][i]}<input type="number" aria-label={`${['每件可生成', '每件可提交印刷', '整单重试次数'][i]} ${index + 1}`} min={i === 2 ? 0 : 1} max={i === 2 ? undefined : 360} step="1" value={rule[field]} disabled={!shop.can_manage || busy} onChange={e => edit(index, { [field]: e.target.valueAsNumber })}/></label>)}</div>
         <label className="check-line"><input type="checkbox" checked={rule.enabled} disabled={!shop.can_manage || busy} onChange={e => edit(index, { enabled: e.target.checked })}/>启用此 SKU 自动开户</label>
-      </article>)}</div>}
+      </article> })}</div>}
       {shop.can_manage && <div className="shop-save"><span className="hint">{dirty ? '修改尚未保存' : '已保存的规则用于后续订单'}</span><button className="button primary" disabled={busy || loading || !dirty} onClick={() => void save()}>{busy && <Spinner/>}保存套餐</button></div>}
     </>}
     {tab === 'orders' && <><button className="button" disabled={busy} onClick={() => void action(refreshActivity, '订单状态已刷新')}><RefreshCw size={15}/>刷新订单</button><div className="shop-scroll"><table className="shop-table"><thead><tr><th>订单号</th><th>开户 / 消息</th><th>客户进入</th><th>操作</th></tr></thead><tbody>{orders.map(order => <tr key={order.id}><td>{order.order_number}<small>{date(order.created_at)}</small>{order.error && <small>{integrationError(order.error)}</small>}</td><td>{integrationLabel(order.open_status)}<small>{integrationLabel(order.message_status)}</small></td><td>{order.entered_at ? date(order.entered_at) : '尚未进入'}</td><td><div className="button-group">{order.guest_url && <button className="button" onClick={() => void copyLink(order.guest_url!)}><Copy size={14}/>复制选图链接</button>}{shop.can_manage && order.can_retry && <button className="button" disabled={busy} onClick={() => void action(async () => { await post(base + '/orders/' + encodeURIComponent(order.id) + '/retry-message', {}); await refreshActivity() }, '已安排补发，请稍后刷新状态。')}>重试发送</button>}</div>{order.message_status === 'unknown' && <small>请先在平台聊天记录核对消息，避免重复发送。</small>}</td></tr>)}</tbody></table>{!orders.length && <p className="shop-empty">还没有接入订单</p>}</div></>}
@@ -141,6 +164,7 @@ function ShopDetail({ shop, configured, onUpdate, onUnbound }: { shop: Shop; con
     {sourceOpen && <Modal title="选择店铺商品规格" onClose={() => setSourceOpen(false)}><form className="shop-toolbar" onSubmit={e => { e.preventDefault(); void findGoods(1) }}><label className="field">商品名称<input value={search} onChange={e => setSearch(e.target.value)}/></label><button className="button" disabled={busy}>{busy ? <Spinner/> : '查询商品'}</button></form>{error && <div className="error-banner" role="alert">{error}</div>}{source && !source.available && <p>{source.message || '暂时无法读取商品，请核对店铺授权，或手动填写真实 ID。'}</p>}<div className="shop-source-list">{source?.goods.map(goods => <article className="shop-source" key={goods.goods_id}><strong>{goods.goods_name}</strong><p className="hint">商品 ID：{goods.goods_id}</p><div className="button-group">{goods.skus.map(sku => <button className="button" key={sku.sku_id} disabled={rules.some(rule => rule.goods_id === goods.goods_id && rule.sku_id === sku.sku_id)} onClick={() => {
       setRules(previous => { const index = previous.findIndex(rule => !rule.goods_id && !rule.sku_id && rule.sku_name === sku.sku_name); const next = withSpecDefaults({ ...(index >= 0 ? previous[index] : newSkuRule()), goods_id: goods.goods_id, goods_name: goods.goods_name, sku_id: sku.sku_id, sku_name: sku.sku_name }); return index >= 0 ? previous.map((rule, i) => i === index ? next : rule) : [...previous, next] }); setDirty(true); setNotice('已添加规格，请核对额度并保存。')
     }}>{sku.sku_name} · {sku.sku_id}</button>)}</div></article>)}</div>{source?.available && !source.goods.length && <p className="shop-empty">未找到商品，请确认已审核上架或调整搜索词。</p>}<div className="modal-footer"><button className="button" disabled={busy || page <= 1} onClick={() => void findGoods(page - 1)}>上一页</button><span>第 {page} 页</span><button className="button" disabled={busy || !source?.available || page * 100 >= (source.total || 0)} onClick={() => void findGoods(page + 1)}>下一页</button><button className="button primary" onClick={() => setSourceOpen(false)}>完成选择</button></div></Modal>}
+    {pruning && <Modal title="删除失效 SKU" onClose={() => { if (!busy) setPruning(false) }}><p>将从「{shop.shop_name}」的商品套餐中删除以下 {missingRules.length} 个店铺中已找不到的 SKU：</p><ul className="cleanup-orders">{missingRules.map(rule => <li key={rule.goods_id + '/' + rule.sku_id}><span>{rule.goods_name || '商品'} · {rule.sku_name || '规格'}</span><code>{rule.sku_id}</code></li>)}</ul><p className="hint">已开通的订单不受影响。删除前已付款、尚未推送到网站的订单会因找不到套餐转人工处理。{check?.offsale_visible ? '' : '小红书已下架的 SKU 也在列表中，以后重新上架需重新添加。'}</p>{error && <div className="error-banner" role="alert">{error}</div>}<div className="modal-footer"><button className="button" disabled={busy} onClick={() => setPruning(false)}>取消</button><button className="button danger" disabled={busy} onClick={() => void prune()}>{busy && <Spinner/>}确认删除</button></div></Modal>}
     {unbinding && <Modal title="确认解除绑定" onClose={() => { if (!busy) setUnbinding(false) }}><p>确定解除「{shop.shop_name}」（{shop.platform_label}）的绑定吗？</p><p className="hint">将撤销阿奇索授权并关闭自动开户，之后的新订单不再自动开通。已开通的订单、客户选图链接和通知记录保留；从未收到订单的店铺会直接移除。重新授权同一店铺可恢复套餐和水印。</p>{error && <div className="error-banner" role="alert">{error}</div>}<div className="modal-footer"><button className="button" disabled={busy} onClick={() => setUnbinding(false)}>取消</button><button className="button danger" disabled={busy} onClick={() => void unbind()}>{busy && <Spinner/>}确认解除绑定</button></div></Modal>}
     {copiedLink && <Modal title="复制选图链接" onClose={() => setCopiedLink(null)}><p>浏览器未允许自动复制，请选中下方链接复制。</p><input aria-label="选图链接" className="full" readOnly value={copiedLink} onFocus={e => e.target.select()}/></Modal>}
   </section>

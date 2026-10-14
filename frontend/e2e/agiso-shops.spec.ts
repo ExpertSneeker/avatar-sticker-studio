@@ -182,3 +182,44 @@ test('解除绑定需二次确认，保留有订单的店铺并标为已解绑',
   await expect(page.getByRole('button', { name: '开启自动开户' })).toBeDisabled()
   expect(unbinds).toBe(1)
 })
+
+test('手动检测失效 SKU 后灰色显示，确认后一键删除', async ({ page }) => {
+  await staffLogin(page.request)
+  const keep = { goods_id:'100',sku_id:'101',goods_name:'头像贴纸',sku_name:'12张',generation_limit:16,final_count:12,rerun_limit:6,enabled:true }
+  const gone = { ...keep, sku_id:'102', sku_name:'旧规格' }
+  let rules = [keep, gone]
+  let check: unknown = null
+  const shop = () => ({ id:'check-shop',shop_id:'10003',shop_name:'检测店铺',owner:'test-owner',owner_name:'测试账户',organization_id:'org',enabled:true,authorized:true,expires_at:1900000000,last_event_at:null,can_manage:true,platform:'pdd',platform_label:'拼多多',watermark:'草木造物',unbound:false,unbound_at:null,rule_check:check })
+  let pruned = 0
+  await page.route('**/api/agiso/**', async route => {
+    const path = new URL(route.request().url()).pathname
+    if (path.endsWith('/status')) return route.fulfill({ json: { configured:true,missing:[],authorization_callback_url:null,webhook_url:null,aftersales_enabled:false,platforms:[] } })
+    if (path.endsWith('/shops')) return route.fulfill({ json: [shop()] })
+    if (path.endsWith('/rules')) return route.fulfill({ json: rules })
+    if (path.endsWith('/rules/check')) {
+      check = { checked_at:1800000000, missing:[{ goods_id:'100', sku_id:'102' }], offsale:[], offsale_visible:true }
+      return route.fulfill({ json: shop() })
+    }
+    if (path.endsWith('/rules/prune')) {
+      pruned++; rules = [keep]; check = { checked_at:1800000000, missing:[], offsale:[], offsale_visible:true }
+      return route.fulfill({ json: { removed:1, rules, shop: shop() } })
+    }
+    return route.fulfill({ status:404,json:{detail:'Unexpected test request'} })
+  })
+  await page.goto('/')
+  await page.getByRole('button', { name: '店铺接入', exact: true }).click()
+  await expect(page.getByRole('button', { name: /删除失效 SKU/ })).toHaveCount(0)
+  await page.getByRole('button', { name: '检测失效 SKU' }).click()
+  await expect(page.getByText('检测完成：1 个 SKU 已失效（灰色显示）。')).toBeVisible()
+  await expect(page.locator('.shop-rule.missing')).toHaveCount(1)
+  await expect(page.locator('.shop-rule.missing')).toContainText('旧规格')
+  await page.getByRole('button', { name: '删除失效 SKU（1）' }).click()
+  await expect(page.getByRole('dialog')).toContainText('102')
+  await page.getByRole('button', { name: '取消' }).click()
+  expect(pruned).toBe(0)
+  await page.getByRole('button', { name: '删除失效 SKU（1）' }).click()
+  await page.getByRole('button', { name: '确认删除' }).click()
+  await expect(page.getByText('已删除 1 个失效 SKU。')).toBeVisible()
+  await expect(page.locator('.shop-rule')).toHaveCount(1)
+  expect(pruned).toBe(1)
+})

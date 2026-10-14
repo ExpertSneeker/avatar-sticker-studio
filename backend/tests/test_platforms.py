@@ -170,3 +170,75 @@ def test_unbinding_an_unused_shop_deletes_it_even_when_agiso_refuses(configured)
     result = c.post('/api/agiso/shops/' + s['id'] + '/unbind').json()
     assert result == {'deleted': True, 'revoked': False, 'shop': None}
     assert c.get('/api/agiso/shops').json() == []
+
+
+def pdd_goods(pages):
+    """Goods/List mock: pages[n] is the goods list of page n+1; each SKU is (sku_id, onsale)."""
+    import httpx
+    from backend.tests.test_agiso import provider
+    calls = []
+
+    def handle(request):
+        if not request.url.path.endswith('/Goods/List'):
+            return provider(request)
+        page = int(parse_qs(request.content.decode())['page'][0])
+        calls.append(page)
+        rows = pages[page - 1] if page <= len(pages) else []
+        goods = [{'goods_id': gid, 'goods_name': '商品' + gid, 'is_onsale': 1,
+                  'sku_list': [{'sku_id': sid, 'spec': sid, 'is_sku_onsale': 1 if on else 0} for sid, on in skus]} for gid, skus in rows]
+        return httpx.Response(200, json={'IsSuccess': True, 'Data': {'total_count': sum(map(len, pages)), 'goods_list': goods}})
+    return httpx.MockTransport(handle), calls
+
+
+def rule(goods_id, sku_id, enabled=True):
+    return {'goods_id': goods_id, 'sku_id': sku_id, 'goods_name': '商品', 'sku_name': sku_id, 'generation_limit': 3,
+            'final_count': 1, 'rerun_limit': 1, 'enabled': enabled}
+
+
+def test_sku_check_reads_every_page_and_prunes_only_missing_rules(configured):
+    from backend.tests.helpers import member
+    app, c, _ = configured
+    s = shop(configured)
+    base = '/api/agiso/shops/' + s['id']
+    rules = [rule('111', '222'), rule('300', '301'), rule('300', '302'), rule('900', '901', enabled=False)]
+    assert c.put(base + '/rules', json={'rules': rules}).status_code == 200
+    # Page 1 is full (100 goods), so the check must read page 2 where goods 300 lives.
+    filler = [(str(1000 + n), [(str(5000 + n), True)]) for n in range(99)]
+    transport, calls = pdd_goods([[('111', [('222', True)])] + filler, [('300', [('301', False)])]])
+    app.state.agiso_worker.transport = transport
+    checked = c.post(base + '/rules/check').json()['rule_check']
+    assert calls == [1, 2]
+    assert checked['missing'] == [{'goods_id': '300', 'sku_id': '302'}, {'goods_id': '900', 'sku_id': '901'}]
+    assert checked['offsale'] == [{'goods_id': '300', 'sku_id': '301'}] and checked['offsale_visible']
+    other, _ = member(c, app)
+    assert other.post(base + '/rules/prune').status_code == 403
+    pruned = c.post(base + '/rules/prune').json()
+    assert pruned['removed'] == 2 and [r['sku_id'] for r in pruned['rules']] == ['222', '301']
+    assert pruned['shop']['enabled'] and pruned['shop']['rule_check']['missing'] == []
+    assert c.post(base + '/rules/prune').json()['removed'] == 0
+
+
+def test_a_failed_sku_check_keeps_the_previous_result_and_prune_needs_a_check(configured):
+    import httpx
+    app, c, _ = configured
+    s = shop(configured)
+    base = '/api/agiso/shops/' + s['id']
+    assert c.post(base + '/rules/prune').status_code == 409
+    transport, _ = pdd_goods([[('111', [('222', True)])]])
+    app.state.agiso_worker.transport = transport
+    assert c.post(base + '/rules/check').json()['rule_check']['missing'] == []
+    app.state.agiso_worker.transport = httpx.MockTransport(lambda r: httpx.Response(200, json={'IsSuccess': False, 'Error_Code': 1}))
+    assert c.post(base + '/rules/check').status_code == 409
+    rules = c.get(base + '/rules').json()
+    assert len(rules) == 1 and c.get('/api/agiso/shops').json()[0]['rule_check']['missing'] == []
+
+
+def test_pruning_every_enabled_rule_turns_auto_opening_off(configured):
+    app, c, _ = configured
+    s = shop(configured)
+    base = '/api/agiso/shops/' + s['id']
+    transport, _ = pdd_goods([[('999', [('1', True)])]])
+    app.state.agiso_worker.transport = transport
+    assert c.post(base + '/rules/check').json()['rule_check']['missing'] == [{'goods_id': '111', 'sku_id': '222'}]
+    pruned = c.post(base + '/rules/prune').json()
+    assert pruned['rules'] == [] and not pruned['shop']['enabled']

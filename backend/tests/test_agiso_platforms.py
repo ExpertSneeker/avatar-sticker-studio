@@ -84,7 +84,7 @@ def test_douyin_connects_imports_skus_and_opens_orders_from_order_detail(configu
     shop = connect(configured, 'douyin', state)
     assert (shop['shop_id'], shop['platform_label']) == ('7784061', '抖店')
     goods = c.get(f"/api/agiso/shops/{shop['id']}/goods").json()
-    assert goods['available'] and goods['goods'][0]['skus'] == [{'sku_id': '1721288561899566', 'sku_name': '18张'}, {'sku_id': '1721288561899567', 'sku_name': '6张'}]
+    assert goods['available'] and goods['goods'][0]['skus'] == [{'sku_id': '1721288561899566', 'sku_name': '18张', 'onsale': True}, {'sku_id': '1721288561899567', 'sku_name': '6张', 'onsale': True}]
     rule = {'goods_id': '1721288561899563', 'sku_id': '1721288561899566', 'goods_name': '头像贴纸', 'sku_name': '18张',
             'generation_limit': 24, 'final_count': 18, 'rerun_limit': 7, 'enabled': True}
     assert c.put(f"/api/agiso/shops/{shop['id']}/rules", json={'rules': [rule]}).status_code == 200
@@ -133,7 +133,7 @@ def test_xiaohongshu_matches_skus_only_and_finds_its_shop_by_order(configured):
     shop = connect(configured, 'xhs', state)
     assert shop['shop_id'] == '555'   # token carried only UserId
     goods = c.get(f"/api/agiso/shops/{shop['id']}/goods").json()['goods']
-    assert goods == [{'goods_id': 'item-1', 'goods_name': '头像贴纸', 'skus': [{'sku_id': 'sku-a', 'sku_name': '12张'}, {'sku_id': 'sku-b', 'sku_name': '24张'}]}]
+    assert goods == [{'goods_id': 'item-1', 'goods_name': '头像贴纸', 'skus': [{'sku_id': 'sku-a', 'sku_name': '12张', 'onsale': True}, {'sku_id': 'sku-b', 'sku_name': '24张', 'onsale': True}]}]
     rule = {'goods_id': 'item-1', 'sku_id': 'sku-a', 'goods_name': '头像贴纸', 'sku_name': '12张', 'generation_limit': 16, 'final_count': 12, 'rerun_limit': 6, 'enabled': True}
     c.put(f"/api/agiso/shops/{shop['id']}/rules", json={'rules': [rule]}); c.patch(f"/api/agiso/shops/{shop['id']}", json={'enabled': True})
     # The push names the shop by its Xiaohongshu seller id, which the token did not include.
@@ -210,3 +210,21 @@ def test_xiaohongshu_rules_accept_hex_ids_and_reject_duplicate_skus(configured):
     assert c.put(f"/api/agiso/shops/{shop['id']}/rules", json={'rules': [rule]}).status_code == 200
     duplicate = {**rule, 'goods_id': '6ac795ef7dbca2000160f982'}
     assert c.put(f"/api/agiso/shops/{shop['id']}/rules", json={'rules': [rule, duplicate]}).status_code == 422
+
+
+def test_sku_check_on_new_platforms(configured):
+    app, c, _ = configured
+    state = {}
+    xhs = connect(configured, 'xhs', state)
+    rules = [{'goods_id': 'item-1', 'sku_id': 'sku-a', 'generation_limit': 3, 'final_count': 1, 'rerun_limit': 1, 'enabled': True},
+             {'goods_id': 'item-1', 'sku_id': 'sku-gone', 'generation_limit': 3, 'final_count': 1, 'rerun_limit': 1, 'enabled': True}]
+    assert c.put(f"/api/agiso/shops/{xhs['id']}/rules", json={'rules': rules}).status_code == 200
+    checked = c.post(f"/api/agiso/shops/{xhs['id']}/rules/check").json()['rule_check']
+    # Xiaohongshu lists on-sale goods only, so off-sale cannot be told apart from deleted.
+    assert checked['missing'] == [{'goods_id': 'item-1', 'sku_id': 'sku-gone'}] and not checked['offsale_visible']
+    douyin = connect(configured, 'douyin', state)
+    rules = [{'goods_id': '1721288561899563', 'sku_id': '1721288561899567', 'generation_limit': 3, 'final_count': 1, 'rerun_limit': 1, 'enabled': True},
+             {'goods_id': '1721288561899563', 'sku_id': '1', 'generation_limit': 3, 'final_count': 1, 'rerun_limit': 1, 'enabled': True}]
+    assert c.put(f"/api/agiso/shops/{douyin['id']}/rules", json={'rules': rules}).status_code == 200
+    checked = c.post(f"/api/agiso/shops/{douyin['id']}/rules/check").json()['rule_check']
+    assert checked['missing'] == [{'goods_id': '1721288561899563', 'sku_id': '1'}] and checked['offsale'] == [] and checked['offsale_visible']

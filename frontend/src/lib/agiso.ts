@@ -25,6 +25,24 @@ export interface Shop {
   last_event_at: number | null; can_manage: boolean
   platform: PlatformKey; platform_label: string; watermark: string
   unbound: boolean; unbound_at: number | null
+  rule_check?: RuleCheck | null
+}
+
+export interface SkuRef { goods_id: string; sku_id: string }
+export interface RuleCheck { checked_at: number; missing: SkuRef[]; offsale: SkuRef[]; offsale_visible: boolean }
+
+/** Same key the server matches orders with: Xiaohongshu by SKU id alone, other platforms by product + SKU. */
+export function skuKey(rule: SkuRef, platform: PlatformKey): string {
+  return platform === 'xhs' ? rule.sku_id : rule.goods_id + '\u0000' + rule.sku_id
+}
+
+/** Status of a rule in the last manual SKU check; rules added or edited since then are unchecked. */
+export function skuStatus(rule: SkuRef, check: RuleCheck | null | undefined, platform: PlatformKey): 'missing' | 'offsale' | null {
+  if (!check) return null
+  const key = skuKey(rule, platform)
+  if (check.missing.some(item => skuKey(item, platform) === key)) return 'missing'
+  if (check.offsale.some(item => skuKey(item, platform) === key)) return 'offsale'
+  return null
 }
 export interface SkuRule {
   goods_id: string; sku_id: string; goods_name: string; sku_name: string

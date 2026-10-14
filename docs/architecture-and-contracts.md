@@ -101,6 +101,7 @@
 - 订单 `platform` 必填（`POST /api/customer-orders` 的 `platform`），`shop_id` 可选；店铺必须属于本组织且平台一致，否则 422。阿奇索开户的订单继承来源店铺的平台和店铺，`platform_editable=false`；人工订单可经 `POST /api/customer-orders/{id}/platform`（`client_token` + `expected_version`）修改平台和店铺，水印快照不变。订单号全平台唯一，跨平台撞号开户进入人工处理。
 - 店铺（`agiso_shops`）以“平台 + 平台店铺 ID”识别；推送按 `fromPlatform` 定平台后再找店铺。拼多多事件 ID 保持原算法，其他平台加平台前缀去重。
 - 水印按店铺设置：`agiso_shops.watermark` 由店铺负责账号或组织管理员经 `PUT /api/agiso/shops/{id}/watermark` 修改。新订单水印 = 所属店铺水印；无店铺的人工订单用开单账号水印（账号水印留空用显示名称）。“批量更新水印”按同一规则取当前值。水印仍是订单快照，改店铺水印不改已有订单。
+- 失效 SKU（仅手动触发）：`POST /api/agiso/shops/{id}/rules/check` 逐页读取店铺商品（拼多多 `Goods/List`、抖店 `Product/List`+`Product/Detail`、小红书 `Product/GetList` 在售），短页即末页，最多 100 页；任一页失败返回 409 且不改上次结果。结果存 `agiso_shops.rule_check = {checked_at, missing, offsale, offsale_visible}`，按 `rule_key` 对照（小红书只比 SKU ID）；抖店 status 2 视为已删除。小红书读不到下架商品，`offsale_visible=false`，下架也计入 `missing`。`POST …/rules/prune` 只删除上次检测的 `missing` 规则，删后无启用规则时关闭店铺开关。
 - 解绑店铺：`POST /api/agiso/shops/{id}/unbind`（负责账号或组织管理员）。先在事务外尽力调用阿奇索 `Sys/TokenDelete` 撤销授权（失败只记日志，响应 `revoked=false`，前端提示到阿奇索后台确认），再在事务内复核 Token 未被并发重授权：没有任何 `agiso_orders`、`agiso_events`、`orders` 引用的店铺直接删除；其余店铺删除 `token`、`enabled=false`、`expires_at=0`、记 `unbound_at`，保留规则、水印、`push_keys` 和历史。重新授权同一平台同一店铺 ID 时沿用原记录并清除 `unbound_at`。
 - `remark_supported` = 阿奇索开户且该平台订单详情含卖家备注（拼多多 `Trade/Detail`、抖店 `seller_words`；小红书没有）；只有此类订单显示和处理“获取卖家备注”。
 - 售后按平台验收：`STUDIO_AGISO_AFTERSALES_PLATFORMS`（逗号分隔，如 `pdd,douyin`）列出已用真实退款验收的平台；未设置时沿用旧变量 `STUDIO_AGISO_AFTERSALES_VERIFIED=1`，仅代表拼多多。

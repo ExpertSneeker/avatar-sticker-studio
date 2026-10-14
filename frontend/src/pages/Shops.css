@@ -74,6 +74,34 @@
   box-shadow: var(--shadow-xs);
 }
 
+.shop-rule.missing {
+  background: var(--bg);
+  box-shadow: none;
+}
+
+.shop-rule.missing > :not(.shop-rule-head),
+.shop-rule.missing .shop-rule-head strong {
+  opacity: .5;
+}
+
+.sku-status {
+  margin-left: 8px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  color: var(--muted);
+  background: var(--surface-raised);
+  border: 1px solid var(--line);
+}
+
+.sku-status.offsale {
+  color: var(--warn);
+  background: var(--warn-soft);
+  border-color: transparent;
+}
+
 .shop-rule-head {
   display: flex;
   align-items: center;

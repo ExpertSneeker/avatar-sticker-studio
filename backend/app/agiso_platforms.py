@@ -60,6 +60,7 @@ def _ok(result):
 
 class Douyin:
     platform = 'douyin'
+    lists_offsale = True
     # aopic: 1 付款成功; 2 买家发起售后; 4 售后关闭; 8 退款成功; others are informational.
     families = {'1': 'trade', '2': 'refund', '4': 'refund', '8': 'refund'}
     refund_operation = {'2': PENDING, '4': RELEASED, '8': SUCCESS}
@@ -97,10 +98,15 @@ class Douyin:
         data = _ok(await protocol.api('Order/Detail', {'shop_order_id': tid}, shop, config, transport, now))
         return _text(data.get('seller_words'))
 
+    page_size = 20
+
     async def goods(self, shop, page, name, config, transport, now):
-        """Product/List has no SKUs; each product's Product/Detail lists them (sell_properties = spec)."""
-        listing = _ok(await protocol.api('Product/List', {'page': str(page), 'size': '20'}, shop, config, transport, now))
+        """Product/List has no SKUs; each product's Product/Detail lists them (sell_properties = spec).
+        Status 0 on sale, 1 off sale; Douyin's 2 (deleted) is treated as gone."""
+        listing = _ok(await protocol.api('Product/List', {'page': str(page), 'size': str(self.page_size)}, shop, config, transport, now))
         products = listing.get('data') if isinstance(listing.get('data'), list) else []
+        listed = len(products)
+        products = [p for p in products if isinstance(p, dict) and _int(p.get('status'), 0) in (0, 1)]
         if name:
             products = [p for p in products if name in _text(p.get('name'), 1000)]
         gate = asyncio.Semaphore(5)
@@ -112,11 +118,12 @@ class Douyin:
                 skus = []
                 for sku in data.get('spec_prices') or []:
                     label = ' '.join(_text(p.get('value_name'), 200) for p in sku.get('sell_properties') or [] if isinstance(p, dict))
-                    skus.append({'sku_id': _id(sku['sku_id']), 'sku_name': label or _text(sku.get('code'), 200)})
+                    skus.append({'sku_id': _id(sku['sku_id']), 'sku_name': label or _text(sku.get('code'), 200),
+                                 'onsale': _int(product.get('status'), 0) == 0})
                 return {'goods_id': pid, 'goods_name': _text(data.get('name') or product.get('name'), 1000), 'skus': skus}
 
         rows = await asyncio.gather(*(detail(p) for p in products))
-        return {'goods': list(rows), 'total': _int(listing.get('total'), len(rows))}
+        return {'goods': list(rows), 'total': _int(listing.get('total'), len(rows)), 'listed': listed}
 
 
 class Xiaohongshu:
@@ -156,12 +163,17 @@ class Xiaohongshu:
     async def remark(self, shop, tid, config, transport, now):
         return None  # Order/Detail has no seller remark field
 
+    page_size = 100
+    # Off-sale items are invisible (see goods), so a SKU check cannot tell deleted from off sale.
+    lists_offsale = False
+
     async def goods(self, shop, page, name, config, transport, now):
         # Real shops return nothing unless on_sale=true (2026-10-08: 0 without it or with false, 14 with true),
         # although the docs say false lists everything. Off-sale SKUs therefore need manual entry.
-        listing = _ok(await protocol.api('Product/GetList', {'page_no': str(page), 'page_size': '100', 'on_sale': 'true'}, shop, config, transport, now))
+        listing = _ok(await protocol.api('Product/GetList', {'page_no': str(page), 'page_size': str(self.page_size), 'on_sale': 'true'}, shop, config, transport, now))
         by_item = {}
-        for row in listing.get('data') or []:
+        rows = listing.get('data') if isinstance(listing.get('data'), list) else []
+        for row in rows:
             item, sku = row.get('item') or {}, row.get('sku') or {}
             title = _text(item.get('name') or sku.get('name'), 1000)
             if name and name not in title:
@@ -169,8 +181,8 @@ class Xiaohongshu:
             gid = _id(item.get('id') or sku.get('itemId'))
             spec = ' '.join(_text(v.get('value'), 200) for v in sku.get('variants') or [] if isinstance(v, dict))
             entry = by_item.setdefault(gid, {'goods_id': gid, 'goods_name': title, 'skus': []})
-            entry['skus'].append({'sku_id': _id(sku['id']), 'sku_name': spec or _text(sku.get('name'), 200)})
-        return {'goods': list(by_item.values()), 'total': _int(listing.get('total'), len(by_item))}
+            entry['skus'].append({'sku_id': _id(sku['id']), 'sku_name': spec or _text(sku.get('name'), 200), 'onsale': True})
+        return {'goods': list(by_item.values()), 'total': _int(listing.get('total'), len(by_item)), 'listed': len(rows)}
 
 
 ADAPTERS = {'douyin': Douyin(), 'xhs': Xiaohongshu()}
