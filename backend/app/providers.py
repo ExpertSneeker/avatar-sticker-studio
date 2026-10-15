@@ -210,8 +210,10 @@ class YeziProvider:
                 parsed = urlparse(url)
                 # Provider output is a public OSS image, never an arbitrary internal URL.
                 host = (parsed.hostname or '').lower()
-                if parsed.scheme != 'https' or not host.endswith(('.aliyuncs.com', '.yezisheji.com', '.arrowfty.com')):
+                if parsed.scheme not in {'http', 'https'} or not host.endswith(('.aliyuncs.com', '.yezisheji.com', '.arrowfty.com')):
                     raise ProviderFailure('抠图下载地址不在受信任的HTTPS域名中')
+                # Yezi now links its CDN over plain http; the same object is served over https.
+                url = parsed._replace(scheme='https').geturl()
                 async with client.stream('GET', url) as download:
                     download.raise_for_status()
                     output = bytearray()

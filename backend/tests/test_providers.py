@@ -171,8 +171,9 @@ def test_yezi_cutout_request_and_result_hosts(monkeypatch, tmp_path):
             # Yezi answers HTTP 400 "timeout不支持" when a timeout field is sent.
             assert 'name="sync"' in body and 'name="output_format"' in body and 'name="timeout"' not in body
             assert r.headers['x-api-key'] == 'cut-key'
-            return httpx.Response(200, json={'status': 200, 'data': {'image': 'https://img-coco-bj-rm.arrowfty.com/out.png'}})
-        assert 'x-api-key' not in r.headers
+            return httpx.Response(200, json={'status': 200, 'data': {'image': 'http://img-coco-bj-rm.arrowfty.com/out.png'}})
+        # The plain-http result link is fetched over https.
+        assert r.url.scheme == 'https' and 'x-api-key' not in r.headers
         return httpx.Response(200, content=png())
     install(monkeypatch, receive)
     assert asyncio.run(providers.YeziProvider(Database(tmp_path), 'cut-key').cutout(png())) == png()
@@ -184,3 +185,16 @@ def test_yezi_rejection_carries_provider_reason(monkeypatch, tmp_path):
     install(monkeypatch, lambda r: httpx.Response(400, json={'status': 400, 'message': 'timeout不支持'}))
     with pytest.raises(ProviderFailure, match='HTTP 400：timeout不支持'):
         asyncio.run(providers.YeziProvider(Database(tmp_path), 'cut-key').cutout(png()))
+
+
+@pytest.mark.parametrize('url', ['http://169.254.169.254/out.png', 'ftp://img-coco-bj-rm.arrowfty.com/out.png', 'http://arrowfty.com.evil.example/out.png'])
+def test_yezi_untrusted_result_is_not_downloaded(monkeypatch, tmp_path, url):
+    from backend.app.db import Database
+    seen = []
+    def receive(r):
+        seen.append(r)
+        return httpx.Response(200, json={'status': 200, 'data': {'image': url}})
+    install(monkeypatch, receive)
+    with pytest.raises(ProviderFailure, match='受信任'):
+        asyncio.run(providers.YeziProvider(Database(tmp_path), 'cut-key').cutout(png()))
+    assert len(seen) == 1
