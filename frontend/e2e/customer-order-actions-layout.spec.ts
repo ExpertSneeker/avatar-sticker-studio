@@ -12,7 +12,7 @@ test('order row buttons stack in right-aligned columns of two on wide screens',a
   const submitted=await completedCustomer(page.request,sticker.id,{order_number:`ACT-${tag}-1`})
   await createCustomer(page.request,{order_number:`ACT-${tag}-2`})
   const cancelled=await createCustomer(page.request,{order_number:`ACT-${tag}-3`});await mutate(page.request,cancelled,'cancel')
-  // Present the submitted order as a Pinduoduo order so it shows every button (7).
+  // Present the submitted order as a Pinduoduo order so it shows every button (8).
   await page.route('**/api/customer-orders?summary=1*',async route=>{const response=await route.fetch({headers:fresh(route)});route.fulfill({response,json:(await response.json()).map((o:any)=>o.id===submitted.id?{...o,shop_id:'shop-1',shop_name:'草木造物',platform:'pdd',platform_editable:false,remark_supported:true,platform_remark:'66666666aaaaa [pdd73050906494 10/04 23:52]'}:o)})})
   await page.setViewportSize({width:1440,height:1000})
   await page.goto('/')
@@ -27,7 +27,7 @@ test('order row buttons stack in right-aligned columns of two on wide screens',a
   })
   const order=async(number:string)=>{for(let i=0;i<3;i++)if((await rows.nth(i).textContent())!.includes(number))return i;throw new Error(number)}
   const full=await layout(await order(`ACT-${tag}-1`))
-  expect(full).toMatchObject({count:7,columns:4,maxPerColumn:2})
+  expect(full).toMatchObject({count:8,columns:4,maxPerColumn:2})
   expect(full.rightGap).toBeLessThan(30);expect(full.infoWidth).toBeGreaterThan(280)
   const draft=await layout(await order(`ACT-${tag}-2`))
   expect(draft.columns).toBe(2);expect(draft.maxPerColumn).toBe(2);expect(draft.rightGap).toBeLessThan(30)
