@@ -195,9 +195,14 @@ class YeziProvider:
             await asyncio.sleep(0.25)
         try:
             async with httpx.AsyncClient(timeout=330, follow_redirects=False) as client:
-                response = await client.post('https://coco-openapi.yezisheji.com/api/v1/segment/submit', headers={'X-API-KEY': self.key}, data={'sync': '1', 'output_format': 'png', 'timeout': '300'}, files={'image_file': ('sticker.png', data, 'image/png')})
+                # Yezi rejects a `timeout` field ("timeout不支持", HTTP 400); sync uses its own default wait.
+                response = await client.post('https://coco-openapi.yezisheji.com/api/v1/segment/submit', headers={'X-API-KEY': self.key}, data={'sync': '1', 'output_format': 'png'}, files={'image_file': ('sticker.png', data, 'image/png')})
                 if response.status_code != 200:
-                    raise ProviderFailure(f'抠图失败（HTTP {response.status_code}），原始生成结果已保留')
+                    try:
+                        reason = str(response.json().get('message') or '')[:60]
+                    except ValueError:
+                        reason = ''
+                    raise ProviderFailure(f'抠图失败（HTTP {response.status_code}{"：" + reason if reason else ""}），原始生成结果已保留')
                 body = response.json()
                 url = body.get('data', {}).get('image') if body.get('status') == 200 else None
                 if not url:
@@ -205,7 +210,7 @@ class YeziProvider:
                 parsed = urlparse(url)
                 # Provider output is a public OSS image, never an arbitrary internal URL.
                 host = (parsed.hostname or '').lower()
-                if parsed.scheme != 'https' or not (host.endswith('.aliyuncs.com') or host.endswith('.yezisheji.com')):
+                if parsed.scheme != 'https' or not host.endswith(('.aliyuncs.com', '.yezisheji.com', '.arrowfty.com')):
                     raise ProviderFailure('抠图下载地址不在受信任的HTTPS域名中')
                 async with client.stream('GET', url) as download:
                     download.raise_for_status()

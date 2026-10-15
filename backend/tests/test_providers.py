@@ -159,3 +159,28 @@ def test_retry_after_http_date_and_nonfinite(monkeypatch,retry_after,expected):
     install(monkeypatch,lambda r:httpx.Response(429,headers={'retry-after':retry_after}))
     with pytest.raises(ProviderFailure) as e: asyncio.run(providers.FalProvider('k').submit(b'a',b'b','p'))
     assert e.value.retry_after==expected
+
+
+def test_yezi_cutout_request_and_result_hosts(monkeypatch, tmp_path):
+    from backend.app.db import Database
+    seen = []
+    def receive(r):
+        seen.append(r)
+        if r.method == 'POST':
+            body = r.content.decode('latin-1')
+            # Yezi answers HTTP 400 "timeout不支持" when a timeout field is sent.
+            assert 'name="sync"' in body and 'name="output_format"' in body and 'name="timeout"' not in body
+            assert r.headers['x-api-key'] == 'cut-key'
+            return httpx.Response(200, json={'status': 200, 'data': {'image': 'https://img-coco-bj-rm.arrowfty.com/out.png'}})
+        assert 'x-api-key' not in r.headers
+        return httpx.Response(200, content=png())
+    install(monkeypatch, receive)
+    assert asyncio.run(providers.YeziProvider(Database(tmp_path), 'cut-key').cutout(png())) == png()
+    assert [r.url.host for r in seen] == ['coco-openapi.yezisheji.com', 'img-coco-bj-rm.arrowfty.com']
+
+
+def test_yezi_rejection_carries_provider_reason(monkeypatch, tmp_path):
+    from backend.app.db import Database
+    install(monkeypatch, lambda r: httpx.Response(400, json={'status': 400, 'message': 'timeout不支持'}))
+    with pytest.raises(ProviderFailure, match='HTTP 400：timeout不支持'):
+        asyncio.run(providers.YeziProvider(Database(tmp_path), 'cut-key').cutout(png()))
