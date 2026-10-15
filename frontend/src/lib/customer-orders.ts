@@ -9,13 +9,19 @@ export interface CustomerSlot {
   id:string; avatar_id:string; sticker_code:string; status:string
   reruns_used:number; reruns_reserved:number; selected_version_id:string|null
   pending_version_id:string|null; versions:CustomerVersion[]; group_size?:number; error?:string|null; raw_available?:boolean; needs_resolution?:boolean
+  // 'design' is a finished image the customer made: printed as is, swapped instead of rerun.
+  source?:'sticker'|'design'; cutout?:CutoutMode; design_id?:string
   // A definitely failed first generation that may be retried (guests: within their per-slot limit).
   can_retry?:boolean
 }
 export interface CustomerAvatar {id:string; name:string; preview_url:string}
 export interface AvatarChoice {upload_id:string;template_ids:string[];sticker_ids:string[]}
+// 'cutout' removes an opaque background; 'whole' prints the full square or rectangle.
+export type CutoutMode='cutout'|'whole'
+export interface DesignChoice {upload_id:string;cutout:CutoutMode}
+export type DraftDesign=DesignChoice&{name:string;preview_url:string}
 // Saved pre-generation working list (draft orders only); its revision is independent of the order version.
-export interface OrderDraft {revision:number; avatars:(AvatarChoice&{name:string;preview_url:string|null})[]}
+export interface OrderDraft {revision:number; avatars:(AvatarChoice&{name:string;preview_url:string|null})[]; designs?:(DesignChoice&{name:string;preview_url:string|null})[]}
 // This is the only order shape the guest workbench receives. Submitted/cancelled DTOs
 // deliberately omit avatars and slots; do not fill them from an older response.
 export interface GuestOrder {
@@ -30,11 +36,12 @@ export interface CustomerOrder extends GuestOrder {
   watermark:string; print_settings:PrintSettings; delivery_version:number
   platform_remark?:string; remark_sync?:{status:'ok'|'failed';at:number}|null
   platform?:PlatformKey; platform_editable?:boolean; remark_supported?:boolean
+  design_count?:number
 }
 export interface LibrarySticker {id:string;code:string;name:string;category:string;revision:number;preview_url:string;active?:boolean}
 export interface LibraryTemplate {id:string;code:string;name:string;category:string;sticker_ids:string[];images:{preview_url:string;code?:string}[];active?:boolean;available?:boolean}
 export interface CustomerLibrary {stickers:LibrarySticker[];templates:LibraryTemplate[];categories?:LibraryCategory[]}
-export interface Preflight {avatar_count:number;selection_count:number;generation_count:number}
+export interface Preflight {avatar_count:number;selection_count:number;generation_count:number;design_count?:number}
 export const stateLabels:Record<OrderState,string> = {draft:'待制作',review:'选图中',submitted:'已提交',cancelled:'已取消'}
 export const roleLabel=(role:string)=>({superadmin:'超级管理员',org_admin:'组织管理员',staff:'成员'}[role]||role)
 export const isAdmin=(role:string)=>role==='superadmin'||role==='org_admin'
@@ -72,6 +79,12 @@ export function pruneChoices<T extends AvatarChoice>(avatars:T[],library:Custome
   const stickers=new Set(library.stickers.map(s=>s.id)),templates=new Set(library.templates.map(t=>t.id))
   return avatars.map(a=>({...a,template_ids:a.template_ids.filter(id=>templates.has(id)),sticker_ids:a.sticker_ids.filter(id=>stickers.has(id))}))
 }
+export const draftDesigns=(draft:OrderDraft|undefined):DraftDesign[]=>(draft?.designs||[]).map(d=>({upload_id:d.upload_id,name:d.name,preview_url:d.preview_url||'',cutout:d.cutout}))
+export const designPayload=(designs:DesignChoice[])=>designs.map(({upload_id,cutout})=>({upload_id,cutout}))
+export const cutoutLabels:Record<CutoutMode,string>={cutout:'自动抠图',whole:'整张印'}
+export const WHOLE_PRINT_NOTE='整张印会保留图片背景，印出来是正方形或长方形。'
+// Prints run about 1000px on the long edge; smaller images may print blurry.
+export const DESIGN_MIN_EDGE=1000
 export const draftChoices=(draft:OrderDraft|undefined,library:CustomerLibrary)=>pruneChoices((draft?.avatars||[]).map(a=>({upload_id:a.upload_id,name:a.name,preview_url:a.preview_url||'',template_ids:a.template_ids,sticker_ids:a.sticker_ids})),library)
 export function selectionCounts(avatars:AvatarChoice[],library:CustomerLibrary):Preflight {
   let selection_count=0,generation_count=0
@@ -93,9 +106,13 @@ export function selectionQuantityLimit(avatars:AvatarChoice[],library:CustomerLi
 export function canApplySelection(previousCount:number,nextCount:number,max:number):boolean {
   return nextCount<=max||nextCount<previousCount
 }
-export function selectionError(order:GuestOrder,counts:Preflight):string {
-  if(counts.avatar_count<1||counts.avatar_count>order.final_count)return `请上传 1 至 ${order.final_count} 个头像`
-  if(counts.selection_count<order.final_count||counts.selection_count>order.generation_limit)return `请选择 ${order.final_count} 至 ${order.generation_limit} 张贴纸（含重复份数）`
+// Customer-made images (designs) take one copy each of both the preview and the print budget.
+export function selectionError(order:GuestOrder,counts:Preflight,designs=0):string {
+  if(counts.avatar_count<1&&designs<1)return '请上传头像或做好的图片'
+  if(counts.avatar_count>order.final_count)return `请上传 1 至 ${order.final_count} 个头像`
+  if(designs>order.final_count)return `做好的图片最多 ${order.final_count} 张`
+  const total=counts.selection_count+designs
+  if(total<order.final_count||total>order.generation_limit)return `请选择 ${order.final_count} 至 ${order.generation_limit} 张贴纸（含重复份数${designs?'和做好的图片':''}）`
   return ''
 }
 export const slotBusy=(slot:CustomerSlot)=>slot.reruns_reserved>0||['queued','pending','running','processing','generating','unknown'].includes(slot.status)

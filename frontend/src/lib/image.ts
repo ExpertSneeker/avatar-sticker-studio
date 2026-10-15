@@ -1,6 +1,7 @@
 /** Prepare upload bytes entirely in the browser; never changes the source file on disk.
- * Avatars shrink to a 1024px short edge; templates scale up or down to a 1024px long edge (the server enforces both). */
-export async function prepareUploadImage(file:File, signal?:AbortSignal, fit:'avatar'|'template'='avatar'):Promise<File> {
+ * Avatars shrink to a 1024px short edge; templates scale up or down to a 1024px long edge; customer-made
+ * images only shrink to a 2048px long edge (the server enforces all three). */
+export async function prepareUploadImage(file:File, signal?:AbortSignal, fit:'avatar'|'template'|'design'='avatar'):Promise<File> {
   signal?.throwIfAborted()
   const header=new Uint8Array(await file.slice(0,12).arrayBuffer())
   const type=header[0]===0xff&&header[1]===0xd8&&header[2]===0xff?'image/jpeg'
@@ -14,9 +15,9 @@ export async function prepareUploadImage(file:File, signal?:AbortSignal, fit:'av
   let canvas:HTMLCanvasElement|undefined
   try {
     signal?.throwIfAborted()
-    const edge=fit==='template'?Math.max(bitmap.width,bitmap.height):Math.min(bitmap.width,bitmap.height)
-    if(fit==='template'?edge===1024:edge<=1024)return file
-    const scale=1024/edge
+    const edge=fit==='avatar'?Math.min(bitmap.width,bitmap.height):Math.max(bitmap.width,bitmap.height),target=fit==='design'?2048:1024
+    if(fit==='template'?edge===target:edge<=target)return file
+    const scale=target/edge
     canvas=document.createElement('canvas')
     canvas.width=Math.round(bitmap.width*scale)
     canvas.height=Math.round(bitmap.height*scale)

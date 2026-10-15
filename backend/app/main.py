@@ -448,7 +448,7 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
             raise HTTPException(422, '只支持JPG、PNG和WebP')
         with db.transaction() as tx:
             actor = user(tx, request)
-            existing = next((u for u in tx.all('uploads') if not u.get('guest_order_id') and same_organization(u, actor) and u['sha256'] == data.sha256.lower() and u['size'] == data.size and u['filename'] == data.filename), None)
+            existing = next((u for u in tx.all('uploads') if not u.get('guest_order_id') and same_organization(u, actor) and u['sha256'] == data.sha256.lower() and u['size'] == data.size and u['filename'] == data.filename and u.get('purpose', 'avatar') == data.purpose), None)
             if existing:
                 return upload_public(existing)
             value = {'id': uid(), 'owner': actor['id'], **data.model_dump(), 'sha256': data.sha256.lower(), 'offset': 0, 'complete': False}
@@ -509,7 +509,7 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
                     value['offset'] = 0
                     tx.put('uploads', value)
                     return JSONResponse({'detail': 'SHA256校验失败，上传进度已重置，请重新上传源文件'}, status_code=400)
-                asset = save_asset(db, tx, normalize_image(data, 'avatar'), value['owner'], 'avatar')
+                asset = save_asset(db, tx, normalize_image(data, value.get('purpose', 'avatar')), value['owner'], 'avatar')
                 value.update(complete=True, asset_id=asset['id'], url=asset['url'])
                 tx.put('uploads', value)
             return {k: value[k] for k in ('id', 'filename', 'url')}

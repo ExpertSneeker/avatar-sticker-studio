@@ -9,6 +9,8 @@ Image.MAX_IMAGE_PIXELS = 30_000_000
 # Generation inputs: templates scale (up or down) to a 1024px long edge; avatars only shrink to a 1024px short edge.
 TEMPLATE_EDGE = 1024
 AVATAR_SHORT_EDGE = 1024
+# Customer-made images are printed directly: keep detail for prints up to ~170mm at 300dpi, only shrinking larger files.
+DESIGN_LONG_EDGE = 2048
 
 
 def fitted_size(width, height, fit=None):
@@ -16,6 +18,8 @@ def fitted_size(width, height, fit=None):
         scale = TEMPLATE_EDGE / max(width, height)
     elif fit == 'avatar':
         scale = min(1, AVATAR_SHORT_EDGE / min(width, height))
+    elif fit == 'design':
+        scale = min(1, DESIGN_LONG_EDGE / max(width, height))
     else:
         return width, height
     return max(1, round(width * scale)), max(1, round(height * scale))

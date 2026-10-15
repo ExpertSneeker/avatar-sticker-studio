@@ -1170,3 +1170,32 @@
   .guide-examples.large .guide-mark { width: 48px; height: 48px; }
 }
 @media (prefers-reduced-motion: reduce) { .guide-ring { animation: none; } }
+
+/* Customer-made images ("做好的图片"): a hint at step 1 and their own list under the avatars. */
+.customer-design-hint {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  margin-bottom: 12px;
+  border: 1px dashed var(--brand-line);
+  border-radius: var(--r-lg);
+  background: var(--brand-tint);
+}
+.customer-design-hint>div { display: grid; gap: 4px; min-width: 0; }
+.customer-design-hint span { font-size: 12px; line-height: 1.6; color: var(--muted); }
+.customer-design-list { margin-top: 8px; }
+.customer-design-list h3 { margin: 8px 0 0; font-size: 14px; }
+.customer-design-thumb { width: 64px; height: 64px; flex-shrink: 0; border-radius: var(--r-lg); overflow: hidden; display: grid; place-items: center; }
+.customer-design-thumb img { width: 100%; height: 100%; object-fit: contain; }
+.customer-design-row select { max-width: 220px; }
+.customer-design-rules { margin: 0 0 12px; padding-left: 20px; line-height: 1.8; }
+.customer-design-mode { border: 0; padding: 0; margin: 0 0 8px; display: grid; gap: 6px; }
+.customer-design-mode legend { font-weight: 600; margin-bottom: 4px; }
+.design-tag { font-weight: 600; color: var(--brand-strong); }
+@media (max-width: 720px) {
+  .customer-design-hint { flex-direction: column; align-items: stretch; }
+  .customer-design-hint>.button { justify-content: center; }
+  .customer-design-row select { max-width: none; flex: 1; }
+}

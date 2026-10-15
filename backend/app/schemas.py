@@ -60,6 +60,8 @@ class UploadInit(Model):
     filename: str
     size: int = Field(gt=0, le=25 * 1024 * 1024)
     sha256: str = Field(pattern=r'^[0-9a-fA-F]{64}$')
+    # 'design' is a finished image the customer made themselves, printed instead of a generated sticker.
+    purpose: Literal['avatar', 'design'] = 'avatar'
     _filename = field_validator('filename')(safe_name)
 
 

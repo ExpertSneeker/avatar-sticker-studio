@@ -50,6 +50,15 @@ describe('customer selection contract',()=>{
     expect(selectionError(order,{avatar_count:1,selection_count:7,generation_count:1})).toContain('2 至 6')
     expect(selectionError(order,{avatar_count:1,selection_count:2,generation_count:1})).toBe('')
   })
+  it('counts finished customer images in both the preview and the print budget',()=>{
+    const none={avatar_count:0,selection_count:0,generation_count:0}
+    expect(selectionError(order,none)).toBe('请上传头像或做好的图片')
+    expect(selectionError(order,none,2)).toBe('')
+    expect(selectionError(order,none,1)).toContain('和做好的图片')
+    expect(selectionError(order,none,3)).toContain('最多 2 张')
+    expect(selectionError(order,{avatar_count:1,selection_count:5,generation_count:1},2)).toContain('2 至 6')
+    expect(selectionError(order,{avatar_count:1,selection_count:4,generation_count:1},2)).toBe('')
+  })
   it('requires exact count, unique slots, completed versions and all pending choices resolved',()=>{
     expect(submissionError(order,['s1','s0'])).toBe('')
     expect(submissionError(order,['s0','s0'])).toContain('准确')

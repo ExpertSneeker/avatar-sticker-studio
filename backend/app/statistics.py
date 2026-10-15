@@ -18,7 +18,8 @@ def summarize(tx, actor, now, days=30, offset=480, global_scope=False):
     selected = {o['id'] for o in orders}
     by_order = defaultdict(list)
     for item in tx.all('items'):
-        if item['order_id'] in selected:
+        # Generation work only: customer-made images are printed without generating.
+        if item['order_id'] in selected and item.get('source') != 'design':
             by_order[item['order_id']].append(item)
     total = Counter(orders=len(orders))
     statuses = Counter()

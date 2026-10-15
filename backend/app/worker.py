@@ -144,8 +144,11 @@ class Worker:
                     tx.put('items', current)
                     return
                 config = tx.get('config', 'settings')
-                template = asset_bytes(self.db, tx.get('assets', item['template_id']))
-                avatar = asset_bytes(self.db, tx.get('assets', item.get('avatar_id') or order['avatar_id']))
+                template = avatar = None
+                # Customer-made images have no generation inputs; they only pass through post-processing.
+                if item.get('source') != 'design':
+                    template = asset_bytes(self.db, tx.get('assets', item['template_id']))
+                    avatar = asset_bytes(self.db, tx.get('assets', item.get('avatar_id') or order['avatar_id']))
             if item.get('processing_stage') == 'postprocess':
                 with self.db.transaction() as tx:
                     raw_asset = tx.get('assets', item.get('raw_result_id', ''))
@@ -206,7 +209,9 @@ class Worker:
                         tx.put('items', latest)
                         return
                     tx.put('items', latest)
-            if image.getchannel('A').getextrema()[0] == 255:
+            # Customer-made images chosen to print whole keep their opaque background.
+            whole = item.get('cutout_mode') == 'whole'
+            if not whole and image.getchannel('A').getextrema()[0] == 255:
                 key = os.environ.get('YEZI_API_KEY') or config.get('cutout_api_key')
                 if not key:
                     raise ProviderFailure('图片缺少透明背景；请管理员配置抠图API。原始生成图片已保留')
@@ -230,7 +235,7 @@ class Worker:
                 data = await cutout.cutout(data)
                 image = decode(data)
             else:
-                image = decode(data)
+                image = decode(data, require_transparency=not whole)
             with self.db.transaction() as tx:
                 latest = tx.get('items', item['id'])
                 if latest['status'] != 'running' or latest.get('worker_id') != self.id or latest.get('run_id') != item.get('run_id'):

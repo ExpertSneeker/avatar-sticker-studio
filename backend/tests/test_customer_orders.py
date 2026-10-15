@@ -25,7 +25,7 @@ def generate(client, order, sid, count=2):
     body={'avatars':[{'upload_id':upload(client)['id'],'template_ids':[],'sticker_ids':[sid]*count}]}
     pre=action(client,order,'preflight',**body)
     assert pre.status_code==200,pre.text
-    assert pre.json()=={'avatar_count':1,'selection_count':count,'generation_count':1}
+    assert pre.json()=={'avatar_count':1,'selection_count':count,'generation_count':1,'design_count':0}
     result=action(client,order,'generate',**body)
     assert result.status_code==200,result.text
     return result.json()
@@ -338,7 +338,7 @@ def test_multiple_avatars_use_separate_provider_references_and_repeated_template
     b=c.post('/api/uploads/'+init['id']+'/complete').json()
     o=opened(c)
     avatars=[{'upload_id':a['id'],'template_ids':[t['id'],t['id']],'sticker_ids':[]},{'upload_id':b['id'],'template_ids':[],'sticker_ids':[s['id']]}]
-    assert action(c,o,'preflight',avatars=avatars).json()=={'avatar_count':2,'selection_count':3,'generation_count':2}
+    assert action(c,o,'preflight',avatars=avatars).json()=={'avatar_count':2,'selection_count':3,'generation_count':2,'design_count':0}
     response=action(c,o,'generate',avatars=avatars); assert response.status_code==200,response.text
     run(app);run(app)
     assert provider.calls[0][1]!=provider.calls[1][1]

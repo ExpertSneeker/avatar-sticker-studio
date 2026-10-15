@@ -70,13 +70,37 @@ class AvatarSelection(Model):
     sticker_ids: list[str] = Field(default_factory=list, max_length=360)
 
 
+# A finished image the customer made themselves: printed as is, skipping generation. 'cutout' removes an
+# opaque background with the cutout service; 'whole' prints the full rectangle.
+CutoutMode = Literal['cutout', 'whole']
+DESIGN_CODE = '自备图'
+
+
+class DesignSelection(Model):
+    upload_id: str
+    cutout: CutoutMode = 'cutout'
+
+
 class Generate(Mutation):
-    avatars: list[AvatarSelection] = Field(min_length=1, max_length=360)
+    avatars: list[AvatarSelection] = Field(default_factory=list, max_length=360)
+    designs: list[DesignSelection] = Field(default_factory=list, max_length=360)
+
+    @model_validator(mode='after')
+    def some_work(self):
+        if not self.avatars and not self.designs:
+            raise ValueError('请上传头像或做好的图片')
+        return self
 
 
 class DraftSave(Model):
     """Full replacement of the pre-generation working list; last save wins."""
     avatars: list[AvatarSelection] = Field(default_factory=list, max_length=360)
+    designs: list[DesignSelection] = Field(default_factory=list, max_length=360)
+
+
+class Replace(Mutation):
+    upload_id: str
+    cutout: CutoutMode = 'cutout'
 
 
 class Select(Mutation):
@@ -175,10 +199,17 @@ def reconcile(tx, order):
     return order
 
 
+def is_design(slot):
+    return slot.get('source') == 'design'
+
+
 def slot_group(order, slot):
-    """Copies of one sticker for one avatar: they share every generation, rerun and kept version."""
+    """Copies of one sticker for one avatar: they share every generation, rerun and kept version.
+    Each customer-made image stands alone."""
+    if is_design(slot):
+        return [slot]
     key = lambda s: (s['avatar_id'], s['sticker'].get('id'), s['sticker'].get('revision'))
-    return [s for s in order['slots'] if key(s) == key(slot)]
+    return [s for s in order['slots'] if not is_design(s) and key(s) == key(slot)]
 
 
 def reserve_group(order, slot, item_id, sharing_only=False):
@@ -208,6 +239,8 @@ def guest_error(item, slot):
         return '生成结果待确认，请联系工作人员处理'
     if item['status'] != 'failed':
         return '生成服务繁忙，正在自动重试'
+    if item.get('source') == 'design':
+        return '图片处理失败，可点击“查看 / 更换”换一张图片或改为整张印，也可联系工作人员处理'
     reason = ('生成服务未接受这张图片，可能触发了内容限制' if 'HTTP 422' in error or '内容限制' in error
               else '连接生成服务失败' if '未送达' in error else '生成失败')
     if retryable(item, slot):
@@ -224,6 +257,25 @@ def draft_avatars(order):
     return (order.get('draft') or {}).get('avatars', []) if order['state'] == 'draft' else []
 
 
+def draft_designs(order):
+    return (order.get('draft') or {}).get('designs', []) if order['state'] == 'draft' else []
+
+
+def design_assets(order):
+    """Customer-made source images this order may show: draft list, generated slots and replacements."""
+    return {d['asset_id'] for d in draft_designs(order)} | {d['asset_id'] for d in order.get('designs') or []}
+
+
+def design_upload(tx, order, upload_id, is_guest, saved_ids):
+    """A finished upload marked as a customer-made image; guests use their own or ones staff already placed."""
+    upload = tx.get('uploads', upload_id)
+    if (not upload or not upload.get('complete') or upload.get('purpose') != 'design'
+            or upload.get('organization_id') != order['organization_id'] or upload.get('guest_order_id') not in {None, order['id']}
+            or is_guest and upload.get('guest_order_id') != order['id'] and upload['id'] not in saved_ids):
+        raise HTTPException(422, '做好的图片尚未上传完成或不可用')
+    return upload
+
+
 def draft_view(tx, order, guest):
     """Saved avatars and choices before generation; uploads removed since saving are skipped."""
     avatars = []
@@ -232,7 +284,12 @@ def draft_view(tx, order, guest):
         if upload and upload.get('asset_id') == a['asset_id']:
             avatars.append({'upload_id': a['upload_id'], 'name': a['name'], 'preview_url': media_url(order, a['asset_id'], guest),
                             'template_ids': a['template_ids'], 'sticker_ids': a['sticker_ids']})
-    return {'revision': (order.get('draft') or {}).get('revision', 0), 'avatars': avatars}
+    designs = []
+    for d in draft_designs(order):
+        upload = tx.get('uploads', d['upload_id'])
+        if upload and upload.get('asset_id') == d['asset_id']:
+            designs.append({'upload_id': d['upload_id'], 'name': d['name'], 'preview_url': media_url(order, d['asset_id'], guest), 'cutout': d['cutout']})
+    return {'revision': (order.get('draft') or {}).get('revision', 0), 'avatars': avatars, 'designs': designs}
 
 
 def dto(tx, order, guest=False, summary=False):
@@ -255,6 +312,9 @@ def dto(tx, order, guest=False, summary=False):
         for slot in order['slots']:
             item = tx.get('items', slot.get('active_item_id', ''))
             row = {k: slot[k] for k in ('id', 'avatar_id', 'sticker_code', 'reruns_used', 'reruns_reserved', 'selected_version_id', 'pending_version_id')}
+            row['source'] = slot.get('source', 'sticker')
+            if is_design(slot):
+                row.update(cutout=slot['cutout'], design_id=slot['design_id'])
             row['status'] = item['status'] if item else 'queued'
             row['group_size'] = len(slot_group(order, slot))
             row['versions'] = [{'id': v['id'], 'preview_url': media_url(order, v['asset_id'], guest)} for v in slot['versions']]
@@ -286,6 +346,8 @@ def dto(tx, order, guest=False, summary=False):
         # Seller remark comes from the sales platform via Agiso; it is printed after the order number on each page.
         result['platform_remark'] = order.get('platform_remark', '')
         result['remark_sync'] = order.get('remark_sync')
+        # Flags orders holding customer-made images so staff can spot-check what will be printed.
+        result['design_count'] = len(draft_designs(order)) if order['state'] == 'draft' else sum(map(is_design, order['slots']))
     return result
 
 
@@ -315,12 +377,19 @@ def library_records(tx, order):
 def expand(tx, order, body, is_guest):
     if len(body.avatars) > order['final_count'] or len({a.upload_id for a in body.avatars}) != len(body.avatars):
         raise HTTPException(422, '头像数量须为1至可提交印刷数量，且不能重复使用同一头像记录')
+    if len(body.designs) > order['final_count'] or len({d.upload_id for d in body.designs}) != len(body.designs):
+        raise HTTPException(422, '做好的图片不能超过可提交印刷数量，且不能重复')
+    saved = {d['upload_id'] for d in draft_designs(order)}
+    designs = []
+    for choice in body.designs:
+        upload = design_upload(tx, order, choice.upload_id, is_guest, saved)
+        designs.append({'id': upload['id'], 'asset_id': upload['asset_id'], 'name': upload['filename'], 'cutout': choice.cutout})
     stickers, templates = library_records(tx, order)
     by_sticker, by_template = {s['id']: s for s in stickers}, {t['id']: t for t in templates}
     avatars, occurrences, unique = [], [], {}
     for selection in body.avatars:
         upload = tx.get('uploads', selection.upload_id)
-        if not upload or not upload.get('complete') or upload.get('organization_id') != order['organization_id'] or (upload.get('guest_order_id') and upload['guest_order_id'] != order['id']) or (is_guest and upload.get('guest_order_id') != order['id'] and upload['id'] not in {a['upload_id'] for a in draft_avatars(order)}):
+        if not upload or not upload.get('complete') or upload.get('purpose', 'avatar') != 'avatar' or upload.get('organization_id') != order['organization_id'] or (upload.get('guest_order_id') and upload['guest_order_id'] != order['id']) or (is_guest and upload.get('guest_order_id') != order['id'] and upload['id'] not in {a['upload_id'] for a in draft_avatars(order)}):
             raise HTTPException(422, '头像尚未上传完成或不可用')
         avatar = {'id': upload['id'], 'asset_id': upload['asset_id'], 'name': upload['filename']}
         avatars.append(avatar)
@@ -340,11 +409,11 @@ def expand(tx, order, body, is_guest):
             key = (avatar['id'], s['id'], s['revision'])
             unique.setdefault(key, {'id': uid(), 'avatar': avatar, 'sticker': deepcopy(s)})
             occurrences.append((avatar, s, unique[key]['id']))
-            if len(occurrences) > order['generation_limit']:
+            if len(occurrences) + len(designs) > order['generation_limit']:
                 raise HTTPException(422, '选择数量超过订单生成上限')
-    if len(occurrences) < order['final_count']:
+    if len(occurrences) + len(designs) < order['final_count']:
         raise HTTPException(422, '选择数量不能少于可提交印刷数量')
-    return avatars, occurrences, list(unique.values())
+    return avatars, occurrences, list(unique.values()), designs
 
 
 def save_draft(tx, order, data, is_guest, now):
@@ -369,10 +438,19 @@ def save_draft(tx, order, data, is_guest, now):
         avatars.append({'upload_id': upload['id'], 'asset_id': upload['asset_id'], 'name': upload['filename'],
                         'template_ids': [t for t in selection.template_ids if t in by_template],
                         'sticker_ids': [i for i in selection.sticker_ids if i in by_sticker]})
-    if count(avatars) > order['generation_limit'] and count(avatars) >= count(saved):
+    saved_designs = draft_designs(order)
+    if len(data.designs) > order['final_count'] or len({d.upload_id for d in data.designs}) != len(data.designs):
+        raise HTTPException(422, '做好的图片不能超过可提交印刷数量，且不能重复')
+    designs = []
+    for choice in data.designs:
+        upload = design_upload(tx, order, choice.upload_id, is_guest, {d['upload_id'] for d in saved_designs})
+        designs.append({'upload_id': upload['id'], 'asset_id': upload['asset_id'], 'name': upload['filename'], 'cutout': choice.cutout})
+    # Each customer-made image takes one copy of the preview budget, like one chosen sticker.
+    total = count(avatars) + len(designs)
+    if total > order['generation_limit'] and total >= count(saved) + len(saved_designs):
         raise HTTPException(422, '选择数量超过订单生成上限')
-    if avatars != saved:
-        order['draft'] = {'revision': (order.get('draft') or {}).get('revision', 0) + 1, 'avatars': avatars,
+    if avatars != saved or designs != saved_designs:
+        order['draft'] = {'revision': (order.get('draft') or {}).get('revision', 0) + 1, 'avatars': avatars, 'designs': designs,
                           'updated_by': 'guest' if is_guest else 'staff', 'updated_at': now}
         tx.put('orders', order)
 
@@ -389,6 +467,23 @@ def new_item(tx, order, id, avatar_id, sticker, now, position):
     tx.put('generations', generation)
     tx.put('items', item)
     return item
+
+
+def new_design_item(tx, order, design, now, position):
+    """A customer-made image skips generation: it starts at post-processing with the upload as its raw image."""
+    item = {'id': uid(), 'order_id': order['id'], 'owner': order['owner'], 'organization_id': order['organization_id'],
+            'source': 'design', 'cutout_mode': design['cutout'], 'avatar_id': None, 'sticker_id': None, 'sticker_revision': None,
+            'set_index': 0, 'set_code': 'customer', 'position': position, 'status': 'queued', 'attempt': 0,
+            'processing_stage': 'postprocess', 'raw_result_id': design['asset_id'],
+            'next_at': 0, 'remote_reserved': False, 'result_id': None, 'error': None}
+    tx.put('items', item)
+    return item
+
+
+def design_slot(design, item):
+    return {'id': uid(), 'source': 'design', 'avatar_id': None, 'design_id': design['id'], 'cutout': design['cutout'],
+            'sticker_code': DESIGN_CODE, 'sticker': {}, 'active_item_id': item['id'], 'initial_item_id': item['id'], 'versions': [],
+            'reruns_used': 0, 'reruns_reserved': 0, 'selected_version_id': None, 'pending_version_id': None}
 
 
 def delivery_folder(order):
@@ -634,19 +729,22 @@ def register_customer_orders(app, db, user):
             if action in {'generate', 'preflight'}:
                 if state != 'draft':
                     raise HTTPException(409, '订单选择已冻结')
-                avatars, occurrences, unique = expand(tx, order, data, guest)
+                avatars, occurrences, unique, designs = expand(tx, order, data, guest)
                 if action == 'preflight':
-                    return {'avatar_count': len(avatars), 'selection_count': len(occurrences), 'generation_count': len(unique)}
+                    return {'avatar_count': len(avatars), 'selection_count': len(occurrences) + len(designs),
+                            'generation_count': len(unique), 'design_count': len(designs)}
                 order['avatars'] = avatars
+                order['designs'] = designs
                 for position, entry in enumerate(unique):
                     new_item(tx, order, entry['id'], entry['avatar']['asset_id'], entry['sticker'], now(), position)
                 order['slots'] = [{'id': uid(), 'avatar_id': a['id'], 'sticker_code': s['code'], 'sticker': deepcopy(s),
                                    'active_item_id': item_id, 'initial_item_id': item_id, 'versions': [], 'reruns_used': 0,
                                    'reruns_reserved': 0, 'selected_version_id': None, 'pending_version_id': None}
                                   for a, s, item_id in occurrences]
-                order.update(state='review', generation_count=len(unique), selection_count=len(occurrences))
+                order['slots'] += [design_slot(d, new_design_item(tx, order, d, now(), len(unique) + i)) for i, d in enumerate(designs)]
+                order.update(state='review', generation_count=len(unique), selection_count=len(occurrences) + len(designs))
                 order.pop('draft', None)
-            elif action in {'rerun', 'select', 'retry', 'resolve', 'reprocess'}:
+            elif action in {'rerun', 'select', 'retry', 'resolve', 'reprocess', 'replace'}:
                 if state != 'review':
                     raise HTTPException(409, '当前订单不能修改结果')
                 slot = next((s for s in order['slots'] if s['id'] == slot_id), None)
@@ -686,7 +784,23 @@ def register_customer_orders(app, db, user):
                                 linked.update(initial_item_id=replacement['id'], active_item_id=replacement['id'])
                                 if guest:
                                     linked['guest_retries'] = linked.get('guest_retries', 0) + 1
+                elif action == 'replace':
+                    # A customer-made image is swapped (or switched between cutout and whole) instead of rerun:
+                    # free of the rerun budget; earlier versions stay in the slot's history.
+                    if not is_design(slot):
+                        raise HTTPException(409, '只有自备图可以更换图片')
+                    if item['status'] not in {'completed', 'failed'} or item.get('remote_reserved') or item.get('cutout_inflight'):
+                        raise HTTPException(409, '图片正在处理，请稍后再更换')
+                    known = {d['id'] for d in order.get('designs') or []}
+                    upload = design_upload(tx, order, data.upload_id, guest, known)
+                    design = {'id': upload['id'], 'asset_id': upload['asset_id'], 'name': upload['filename'], 'cutout': data.cutout}
+                    order['designs'] = [d for d in order.get('designs') or [] if d['id'] != design['id'] or d['cutout'] != design['cutout']] + [design]
+                    replacement = new_design_item(tx, order, design, now(), tx.count('items'))
+                    slot.update(design_id=design['id'], cutout=design['cutout'], active_item_id=replacement['id'],
+                                initial_item_id=replacement['id'], pending_version_id=None)
                 elif action == 'rerun':
+                    if is_design(slot):
+                        raise HTTPException(409, '自备图不能重新生成，可以更换图片')
                     # One generation for every copy of this sticker; all copies show it and keep one version.
                     for member in slot_group(order, slot):
                         current = tx.get('items', member['active_item_id'])
@@ -768,7 +882,9 @@ def register_customer_orders(app, db, user):
             def rerun(slot_id: str, data: Mutation, request: Request, id: str | None = None): return mutate(request, data, 'rerun', id, is_guest, slot_id)
             def select(slot_id: str, data: Select, request: Request, id: str | None = None): return mutate(request, data, 'select', id, is_guest, slot_id)
             def submit(data: Submit, request: Request, id: str | None = None): return mutate(request, data, 'submit', id, is_guest)
-            return [('generate', generate), ('preflight', preflight), ('slots/{slot_id}/rerun', rerun), ('slots/{slot_id}/select', select), ('submit', submit)]
+            def replace(slot_id: str, data: Replace, request: Request, id: str | None = None): return mutate(request, data, 'replace', id, is_guest, slot_id)
+            return [('generate', generate), ('preflight', preflight), ('slots/{slot_id}/rerun', rerun), ('slots/{slot_id}/select', select),
+                    ('slots/{slot_id}/replace', replace), ('submit', submit)]
         for suffix, endpoint in endpoints(guest):
             app.add_api_route(prefix+'/'+suffix, endpoint, methods=['POST'])
     def draft(request, data, id=None, guest=False):
@@ -851,14 +967,17 @@ def register_customer_orders(app, db, user):
             'Content-Disposition': "attachment; filename*=UTF-8''" + quote(folder+'.zip', safe=''),
             'Cache-Control': 'private, no-store'})
 
-    def guest_upload(tx, request, id=None, writable=False):
+    def guest_upload(tx, request, id=None, writable=False, purpose=None):
         order = guest_order(tx, request, now())
         require_active_order(order, tx)
-        if order['state'] not in {'draft', 'review'} or writable and order['state'] != 'draft':
-            raise HTTPException(409, '当前订单不能上传头像')
         value = tx.get('uploads', id) if id else None
         if id and (not value or value.get('guest_order_id') != order['id']):
             raise HTTPException(404, '上传记录不存在')
+        purpose = purpose or (value or {}).get('purpose', 'avatar')
+        # Customer-made images can still be swapped while choosing results; avatars are fixed once generation starts.
+        writable_states = {'draft', 'review'} if purpose == 'design' else {'draft'}
+        if order['state'] not in {'draft', 'review'} or writable and order['state'] not in writable_states:
+            raise HTTPException(409, '当前订单不能上传图片')
         return order, value
 
     def upload_dto(order, value):
@@ -869,13 +988,14 @@ def register_customer_orders(app, db, user):
         if Path(data.filename).suffix.lower() not in {'.png', '.jpg', '.jpeg', '.webp'}:
             raise HTTPException(422, '只支持JPG、PNG和WebP')
         with db.transaction() as tx:
-            order, _ = guest_upload(tx, request, writable=True)
+            order, _ = guest_upload(tx, request, writable=True, purpose=data.purpose)
             uploads = tx.where('uploads', 'guest_order_id', order['id'])
-            existing = next((u for u in uploads if u.get('guest_order_id') == order['id'] and u['sha256'] == data.sha256.lower() and u['size'] == data.size and u['filename'] == data.filename), None)
+            existing = next((u for u in uploads if u.get('guest_order_id') == order['id'] and u['sha256'] == data.sha256.lower() and u['size'] == data.size and u['filename'] == data.filename
+                             and u.get('purpose', 'avatar') == data.purpose), None)
             if existing:
                 return upload_dto(order, existing)
             if sum(u.get('guest_order_id') == order['id'] for u in uploads) >= 360:
-                raise HTTPException(422, '头像上传数量已达上限')
+                raise HTTPException(422, '图片上传数量已达上限')
             value = {'id': uid(), 'owner': order['owner'], 'organization_id': order['organization_id'], 'guest_order_id': order['id'],
                      **data.model_dump(), 'sha256': data.sha256.lower(), 'offset': 0, 'complete': False}
             tx.put('uploads', value)
@@ -932,7 +1052,7 @@ def register_customer_orders(app, db, user):
                     value['offset'] = 0
                     tx.put('uploads', value)
                     return JSONResponse({'detail': '文件校验失败，请重新上传'}, status_code=400)
-                asset = save_asset(db, tx, normalize_image(data, 'avatar'), order['owner'], 'avatar', order_id=order['id'])
+                asset = save_asset(db, tx, normalize_image(data, value.get('purpose', 'avatar')), order['owner'], 'avatar', order_id=order['id'])
                 value.update(complete=True, asset_id=asset['id'])
                 tx.put('uploads', value)
             return upload_dto(order, value)

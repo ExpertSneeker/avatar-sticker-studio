@@ -99,7 +99,8 @@ def whiten_outer_border(image, width, threshold=128):
 
 
 def prepare_sticker(data, settings):
-    image, white_border = whiten_outer_border(decode(data), settings.white_border_px, settings.white_border_alpha)
+    # Results are checked when produced; an opaque one is a customer-made image printed whole.
+    image, white_border = whiten_outer_border(decode(data, require_transparency=False), settings.white_border_px, settings.white_border_alpha)
     bbox = image.getchannel('A').getbbox()
     image = image.crop(bbox)
     if white_border is not None:
@@ -216,9 +217,12 @@ def overview(images, watermark, group_sizes=None):
     offset, row = 0, 0
     for size in group_sizes:
         for index, data in enumerate(images[offset:offset + size]):
-            image = decode(data)
-            image = image.convert('RGBa').resize((256, 256), Image.Resampling.LANCZOS).convert('RGBA')
-            canvas.alpha_composite(image, ((index % 4) * 256, (row + index // 4) * 256))
+            image = decode(data, require_transparency=False)
+            # Fit inside the 256px cell; generated squares fill it, customer-made images keep their shape.
+            scale = 256 / max(image.size)
+            fitted = tuple(max(1, round(n * scale)) for n in image.size)
+            image = image.convert('RGBa').resize(fitted, Image.Resampling.LANCZOS).convert('RGBA')
+            canvas.alpha_composite(image, ((index % 4) * 256 + (256 - fitted[0]) // 2, (row + index // 4) * 256 + (256 - fitted[1]) // 2))
         offset += size
         row += (size + 3) // 4
     font = watermark_font(watermark)

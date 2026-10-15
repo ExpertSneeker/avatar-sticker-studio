@@ -139,7 +139,7 @@ def catalog_url(secret, asset_id, mark):
 
 
 def register_guest_media(app, db, user):
-    from .customer_orders import customer, digest, draft_avatars, guest_order, scoped
+    from .customer_orders import customer, design_assets, digest, draft_avatars, guest_order, scoped
     from .media_cache import library_owner
     cache = app.state.media_cache
     # Per app (one per process in production) so separate apps never share renders.
@@ -164,6 +164,7 @@ def register_guest_media(app, db, user):
         if not is_guest or order['state'] != 'submitted':
             if (asset_id in {a['asset_id'] for a in order['avatars']}
                     or asset_id in {a['asset_id'] for a in draft_avatars(order)}
+                    or asset_id in design_assets(order)
                     or asset_id in {v['asset_id'] for s in order['slots'] for v in s['versions']}
                     or any(u.get('guest_order_id') == order_id and u.get('asset_id') == asset_id
                            for u in tx.where('uploads', 'guest_order_id', order_id))):
