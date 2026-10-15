@@ -13,6 +13,7 @@ class ProviderFailure(Exception):
     def __init__(self, message, status='failed', retry_after=30):
         super().__init__(message)
         self.status, self.retry_after = status, retry_after
+        self.cutout_ended = False
 
 
 def error_types(response):
@@ -193,10 +194,12 @@ class YeziProvider:
             if admitted:
                 break
             await asyncio.sleep(0.25)
+        answered = False
         try:
             async with httpx.AsyncClient(timeout=330, follow_redirects=False) as client:
                 # Yezi rejects a `timeout` field ("timeout不支持", HTTP 400); sync uses its own default wait.
                 response = await client.post('https://coco-openapi.yezisheji.com/api/v1/segment/submit', headers={'X-API-KEY': self.key}, data={'sync': '1', 'output_format': 'png'}, files={'image_file': ('sticker.png', data, 'image/png')})
+                answered = True
                 if response.status_code != 200:
                     try:
                         reason = str(response.json().get('message') or '')[:60]
@@ -222,8 +225,15 @@ class YeziProvider:
                         if len(output) > 30_000_000:
                             raise ProviderFailure('抠图结果尺寸超限')
                 return bytes(output)
+        except ProviderFailure as exc:
+            exc.cutout_ended = True
+            raise
         except (httpx.HTTPError, ValueError) as exc:
-            raise ProviderFailure('抠图服务连接或响应异常，原始生成结果已保留') from exc
+            failure = ProviderFailure('抠图服务连接或响应异常，原始生成结果已保留')
+            # Answered, or never connected: the call is over and may be retried by hand.
+            # A timeout or broken connection mid-request stays uncertain.
+            failure.cutout_ended = answered or isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout))
+            raise failure from exc
         finally:
             with self.db.transaction() as tx:
                 tx.delete('cutout_calls', call_id)

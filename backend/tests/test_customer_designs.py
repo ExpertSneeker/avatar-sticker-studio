@@ -168,3 +168,113 @@ def test_guest_designs_upload_in_review_and_stay_private(context, cutouts):
     other = opened(c, 'OTHER', generation_limit=2, final_count=1)
     stranger = TestClient(app); stranger.post('/api/guest/login', json={'order_number': other['order_number']})
     assert stranger.put('/api/guest/order/draft', json={'designs': [{'upload_id': second['id']}]}).status_code == 422
+
+
+@pytest.fixture
+def flaky_cutouts(context, monkeypatch):
+    """Yezi refuses (an answered, unbilled failure) until `refuse` is cleared."""
+    from backend.app import worker as worker_module
+    from backend.app.providers import ProviderFailure
+    app = context[0]
+    with app.state.db.transaction() as tx:
+        config = tx.get('config', 'settings'); config['cutout_api_key'] = 'local-test-only'; tx.put('config', config)
+    class Cutout:
+        refuse, calls = True, 0
+        def __init__(self, *args): pass
+        async def cutout(self, data):
+            Cutout.calls += 1
+            if Cutout.refuse:
+                failure = ProviderFailure('抠图失败（HTTP 400：timeout不支持），原始生成结果已保留'); failure.cutout_ended = True
+                raise failure
+            return png(size=Image.open(io.BytesIO(data)).size)
+    monkeypatch.setattr(worker_module, 'YeziProvider', Cutout)
+    return Cutout
+
+
+def design_order(c, count=2):
+    uploads = [send(c, rgb(color=(40 + i, 120, 200)), name=f'图{i}.png') for i in range(count)]
+    o = opened(c, generation_limit=count, final_count=count)
+    designs = [{'upload_id': u['id']} for u in uploads]
+    o = c.put('/api/customer-orders/'+o['id']+'/draft', json={'avatars': [], 'designs': designs}).json()
+    o = action(c, o, 'generate', designs=designs); assert o.status_code == 200, o.text
+    return o.json()
+
+
+def test_refused_cutout_is_retryable_by_guest_and_staff_without_confirmation(context, flaky_cutouts):
+    app, c, _, _ = context
+    o = design_order(c)
+    run(app); run(app)
+    with app.state.db.transaction() as tx:
+        items = [tx.get('items', s['active_item_id']) for s in tx.get('orders', o['id'])['slots']]
+    assert all(i['status'] == 'failed' and i['cutout_failed'] and not i.get('cutout_inflight') for i in items)
+    assert items[0]['error'] == '抠图失败（HTTP 400：timeout不支持），原始生成结果已保留'
+    staff = c.get('/api/customer-orders/'+o['id']).json()
+    assert all(s['can_recut'] and not s['needs_resolution'] and s['raw_available'] for s in staff['slots'])
+    guest = TestClient(app); assert guest.post('/api/guest/login', json={'order_number': o['order_number']}).status_code == 200
+    g = guest.get('/api/guest/order').json()
+    assert all(s['can_recut'] for s in g['slots']) and '重试抠图' in g['slots'][0]['error']
+    # The customer retries one image; it is cut out again and completes.
+    flaky_cutouts.refuse = False
+    slot = g['slots'][0]
+    r = guest.post('/api/guest/order/slots/'+slot['id']+'/reprocess', json={'client_token': 'recut-1', 'expected_version': g['version']})
+    assert r.status_code == 200, r.text
+    assert next(s for s in r.json()['slots'] if s['id'] == slot['id'])['status'] == 'queued'
+    run(app)
+    g = guest.get('/api/guest/order').json()
+    done = next(s for s in g['slots'] if s['id'] == slot['id'])
+    assert done['status'] == 'completed' and done['versions'] and not done['can_recut']
+    with app.state.db.transaction() as tx:
+        assert next(s for s in tx.get('orders', o['id'])['slots'] if s['id'] == slot['id'])['guest_retries'] == 1
+    # Staff retry the rest of the order in one go.
+    staff = c.get('/api/customer-orders/'+o['id']).json()
+    r = action(c, staff, 'recut'); assert r.status_code == 200, r.text
+    assert [s['status'] for s in r.json()['slots']] == ['completed', 'queued']
+    run(app)
+    staff = c.get('/api/customer-orders/'+o['id']).json()
+    assert [s['status'] for s in staff['slots']] == ['completed', 'completed'] and staff['rerun_limit'] >= 0
+    assert action(c, staff, 'recut').status_code == 409
+
+
+def test_guest_cutout_retries_are_limited_and_uncertain_cutouts_still_need_staff(context, flaky_cutouts):
+    from backend.app.worker import CUTOUT_UNCERTAIN
+    app, c, _, _ = context
+    o = design_order(c, count=1)
+    guest = TestClient(app); assert guest.post('/api/guest/login', json={'order_number': o['order_number']}).status_code == 200
+    run(app)
+    for attempt in range(3):
+        g = guest.get('/api/guest/order').json()
+        r = guest.post('/api/guest/order/recut', json={'client_token': f'all-{attempt}', 'expected_version': g['version']})
+        assert r.status_code == 200, r.text
+        run(app)
+    g = guest.get('/api/guest/order').json()
+    assert not g['slots'][0]['can_recut'] and '联系工作人员' in g['slots'][0]['error']
+    assert guest.post('/api/guest/order/recut', json={'client_token': 'all-4', 'expected_version': g['version']}).status_code == 409
+    assert guest.post('/api/guest/order/slots/'+g['slots'][0]['id']+'/reprocess', json={'client_token': 'one-4', 'expected_version': g['version']}).status_code == 409
+    # Staff are not limited by the customer's count.
+    staff = c.get('/api/customer-orders/'+o['id']).json(); assert staff['slots'][0]['can_recut']
+    # A cutout whose outcome is unknown (timed out mid-request) is not offered to the customer.
+    with app.state.db.transaction() as tx:
+        item = tx.get('items', tx.get('orders', o['id'])['slots'][0]['active_item_id'])
+        item.pop('cutout_failed'); item.update(cutout_inflight=True, error=CUTOUT_UNCERTAIN + '；抠图服务连接或响应异常，原始生成结果已保留'); tx.put('items', item)
+    g = guest.get('/api/guest/order').json()
+    assert not g['slots'][0]['can_recut'] and g['slots'][0]['error'] == '生成结果待确认，请联系工作人员处理'
+    assert guest.post('/api/guest/order/slots/'+g['slots'][0]['id']+'/reprocess', json={'client_token': 'unsure', 'expected_version': g['version']}).status_code == 403
+    assert c.get('/api/customer-orders/'+o['id']).json()['slots'][0]['needs_resolution']
+
+
+def test_startup_makes_earlier_refused_cutouts_retryable(context, flaky_cutouts):
+    from backend.app.worker import CUTOUT_UNCERTAIN
+    app, c, _, _ = context
+    o = design_order(c)
+    run(app); run(app)
+    with app.state.db.transaction() as tx:
+        slots = tx.get('orders', o['id'])['slots']
+        refused, unsure = (tx.get('items', s['active_item_id']) for s in slots)
+        # As stored before the fix: Yezi answered HTTP 400, yet the item was marked uncertain.
+        refused.pop('cutout_failed'); refused.update(cutout_inflight=True, cutout_started_at=1, error=CUTOUT_UNCERTAIN + '；抠图失败（HTTP 400），原始生成结果已保留')
+        unsure.pop('cutout_failed'); unsure.update(cutout_inflight=True, error=CUTOUT_UNCERTAIN + '；抠图服务连接或响应异常，原始生成结果已保留')
+        tx.put('items', refused); tx.put('items', unsure)
+    app.state.worker.recover()
+    staff = c.get('/api/customer-orders/'+o['id']).json()
+    assert staff['slots'][0]['can_recut'] and not staff['slots'][0]['needs_resolution'] and staff['slots'][0]['error'] == '抠图失败（HTTP 400），原始生成结果已保留'
+    assert not staff['slots'][1]['can_recut'] and staff['slots'][1]['needs_resolution']

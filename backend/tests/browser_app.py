@@ -6,6 +6,7 @@ import tempfile
 from collections import Counter
 
 from PIL import Image, ImageDraw
+from backend.app import worker as worker_module
 from backend.app.main import create_app
 from backend.app.providers import ProviderFailure
 
@@ -35,13 +36,38 @@ class BrowserTestProvider:
         return output.getvalue()
 
 
+class BrowserTestCutout:
+    """Stands in for Yezi. A cyan background (e2e/fixtures/cutout-refused-*.png) is refused once per image,
+    as Yezi answers a bad request, then cut out; other images are cut out at once."""
+    attempts = Counter()
+
+    def __init__(self, *args):
+        pass
+
+    async def cutout(self, data):
+        with Image.open(io.BytesIO(data)) as source:
+            image = source.convert('RGBA')
+        if image.getpixel((0, 0))[:3] == (0, 255, 255):
+            BrowserTestCutout.attempts[data] += 1
+            if BrowserTestCutout.attempts[data] % 2:
+                failure = ProviderFailure('抠图失败（HTTP 400：测试拒绝），原始生成结果已保留')
+                failure.cutout_ended = True
+                raise failure
+        background = image.getpixel((0, 0))
+        image.putdata([(0, 0, 0, 0) if pixel == background else pixel for pixel in image.getdata()])
+        output = io.BytesIO()
+        image.save(output, format='PNG')
+        return output.getvalue()
+
+
 def factory():
     root = tempfile.TemporaryDirectory(prefix='avatar-studio-browser-test-')
     atexit.register(root.cleanup)
     os.environ['STUDIO_ALLOWED_ORIGINS'] = 'http://127.0.0.1:5174'
+    worker_module.YeziProvider = BrowserTestCutout
     app = create_app(root.name, provider=BrowserTestProvider())
     with app.state.db.transaction() as tx:
         settings = tx.get('config', 'settings')
-        settings.update(max_inflight=8)
+        settings.update(max_inflight=8, cutout_api_key='browser-test-only')
         tx.put('config', settings)
     return app

@@ -13,6 +13,8 @@ export interface CustomerSlot {
   source?:'sticker'|'design'; cutout?:CutoutMode; design_id?:string
   // A definitely failed first generation that may be retried (guests: within their per-slot limit).
   can_retry?:boolean
+  // The cutout service refused this image; the original is kept and cutout can run again (guests: same limit).
+  can_recut?:boolean
 }
 export interface CustomerAvatar {id:string; name:string; preview_url:string}
 export interface AvatarChoice {upload_id:string;template_ids:string[];sticker_ids:string[]}

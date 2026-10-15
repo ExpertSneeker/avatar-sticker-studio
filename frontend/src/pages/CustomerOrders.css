@@ -1199,3 +1199,4 @@
   .customer-design-hint>.button { justify-content: center; }
   .customer-design-row select { max-width: none; flex: 1; }
 }
+.customer-recut-all { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }

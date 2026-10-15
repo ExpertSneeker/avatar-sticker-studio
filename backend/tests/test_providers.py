@@ -183,8 +183,9 @@ def test_yezi_cutout_request_and_result_hosts(monkeypatch, tmp_path):
 def test_yezi_rejection_carries_provider_reason(monkeypatch, tmp_path):
     from backend.app.db import Database
     install(monkeypatch, lambda r: httpx.Response(400, json={'status': 400, 'message': 'timeout不支持'}))
-    with pytest.raises(ProviderFailure, match='HTTP 400：timeout不支持'):
+    with pytest.raises(ProviderFailure, match='HTTP 400：timeout不支持') as caught:
         asyncio.run(providers.YeziProvider(Database(tmp_path), 'cut-key').cutout(png()))
+    assert caught.value.cutout_ended
 
 
 @pytest.mark.parametrize('url', ['http://169.254.169.254/out.png', 'ftp://img-coco-bj-rm.arrowfty.com/out.png', 'http://arrowfty.com.evil.example/out.png'])
@@ -198,3 +199,14 @@ def test_yezi_untrusted_result_is_not_downloaded(monkeypatch, tmp_path, url):
     with pytest.raises(ProviderFailure, match='受信任'):
         asyncio.run(providers.YeziProvider(Database(tmp_path), 'cut-key').cutout(png()))
     assert len(seen) == 1
+
+
+@pytest.mark.parametrize('error,ended', [(httpx.ConnectError('down'), True), (httpx.ReadTimeout('slow'), False)])
+def test_yezi_failure_says_whether_the_call_is_over(monkeypatch, tmp_path, error, ended):
+    from backend.app.db import Database
+    def receive(r):
+        raise error
+    install(monkeypatch, receive)
+    with pytest.raises(ProviderFailure) as caught:
+        asyncio.run(providers.YeziProvider(Database(tmp_path), 'cut-key').cutout(png()))
+    assert caught.value.cutout_ended is ended

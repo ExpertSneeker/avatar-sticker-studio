@@ -232,6 +232,22 @@ def retryable(item, slot):
                 and not item.get('raw_result_id') and item['id'] == slot['initial_item_id'])
 
 
+def cutout_retryable(item):
+    """Yezi answered with a failure (or was never reached): the original image is kept and cutout can run again."""
+    return bool(item and item['status'] == 'failed' and item.get('cutout_failed') and item.get('raw_result_id')
+                and not item.get('cutout_inflight') and not item.get('remote_reserved'))
+
+
+def requeue_postprocess(order, slot, item):
+    """Run post-processing (cutout) again on the kept original; no new generation."""
+    if rerun_budget(order) >= order['rerun_limit'] and item['id'] != slot['initial_item_id']:
+        raise HTTPException(409, '整单重试次数已用完')
+    if item['id'] != slot['initial_item_id'] and not slot.get('reservation_item_id'):
+        reserve_group(order, slot, item['id'], sharing_only=True)
+    item.update(status='queued', processing_stage='postprocess', next_at=0, error=None)
+    item.pop('cutout_failed', None)
+
+
 def guest_error(item, slot):
     """Guest-safe outcome text; internal provider details stay with staff."""
     error = item.get('error') or ''
@@ -239,6 +255,11 @@ def guest_error(item, slot):
         return '生成结果待确认，请联系工作人员处理'
     if item['status'] != 'failed':
         return '生成服务繁忙，正在自动重试'
+    if cutout_retryable(item):
+        tail = '可点“重试抠图”再试一次' if slot.get('guest_retries', 0) < GUEST_RETRY_LIMIT else '重试次数已用完，请联系工作人员处理'
+        if item.get('source') == 'design':
+            return '自动抠图失败，' + tail + '；也可以点“查看 / 更换”换一张图片或改为整张印'
+        return '抠图失败，原图已保留，' + tail
     if item.get('source') == 'design':
         return '图片处理失败，可点击“查看 / 更换”换一张图片或改为整张印，也可联系工作人员处理'
     reason = ('生成服务未接受这张图片，可能触发了内容限制' if 'HTTP 422' in error or '内容限制' in error
@@ -321,6 +342,7 @@ def dto(tx, order, guest=False, summary=False):
             if item and item.get('error'):
                 row['error'] = guest_error(item, slot) if guest else item['error']
             row['can_retry'] = retryable(item, slot) and (not guest or slot.get('guest_retries', 0) < GUEST_RETRY_LIMIT)
+            row['can_recut'] = cutout_retryable(item) and (not guest or slot.get('guest_retries', 0) < GUEST_RETRY_LIMIT)
             if not guest:
                 row['raw_available'] = bool(item and item.get('raw_result_id'))
                 row['needs_resolution'] = bool(item and (item['status'] == 'unknown' or item.get('cutout_inflight') or item.get('remote_reserved') and item['status'] == 'failed'))
@@ -752,7 +774,8 @@ def register_customer_orders(app, db, user):
                     raise HTTPException(404, '贴纸位置不存在')
                 item = tx.get('items', slot['active_item_id'])
                 if action in {'retry', 'resolve', 'reprocess'}:
-                    if guest and action != 'retry':
+                    # Customers may retry a failed first generation, or a cutout Yezi refused.
+                    if guest and not (action == 'retry' or action == 'reprocess' and cutout_retryable(item)):
                         raise HTTPException(403, '需要工作人员处理')
                     if guest and slot.get('guest_retries', 0) >= GUEST_RETRY_LIMIT:
                         raise HTTPException(409, '这张图片的重试次数已用完，请联系工作人员处理')
@@ -767,11 +790,9 @@ def register_customer_orders(app, db, user):
                     elif action == 'reprocess':
                         if not item.get('raw_result_id') or item['status'] not in {'failed', 'unknown'} or item.get('cutout_inflight') or item.get('remote_reserved'):
                             raise HTTPException(409, '请先核对原请求，或暂无可恢复原图')
-                        if rerun_budget(order) >= order['rerun_limit'] and item['id'] != slot['initial_item_id']:
-                            raise HTTPException(409, '整单重试次数已用完')
-                        if item['id'] != slot['initial_item_id'] and not slot.get('reservation_item_id'):
-                            reserve_group(order, slot, item['id'], sharing_only=True)
-                        item.update(status='queued', processing_stage='postprocess', next_at=0, error=None)
+                        requeue_postprocess(order, slot, item)
+                        if guest:
+                            slot['guest_retries'] = slot.get('guest_retries', 0) + 1
                         tx.put('items', item)
                     else:
                         if item['status'] != 'failed' or item.get('remote_reserved') or item.get('cutout_inflight') or item.get('raw_result_id') or item['id'] != slot['initial_item_id']:
@@ -847,6 +868,24 @@ def register_customer_orders(app, db, user):
                 # Linked orders read the latest seller remark from Pinduoduo once before the pages are laid out.
                 if order.get('agiso_id'):
                     order['remark_sync_pending'] = True
+            elif action == 'recut':
+                # Every image whose cutout Yezi refused, in one go; copies sharing one image run it once.
+                if state != 'review':
+                    raise HTTPException(409, '当前订单不能修改结果')
+                done = set()
+                for slot in order['slots']:
+                    item = tx.get('items', slot['active_item_id'])
+                    if not cutout_retryable(item) or item['id'] in done or guest and slot.get('guest_retries', 0) >= GUEST_RETRY_LIMIT:
+                        continue
+                    if item['id'] != slot['initial_item_id'] and rerun_budget(order) >= order['rerun_limit']:
+                        continue
+                    requeue_postprocess(order, slot, item)
+                    if guest:
+                        slot['guest_retries'] = slot.get('guest_retries', 0) + 1
+                    tx.put('items', item)
+                    done.add(item['id'])
+                if not done:
+                    raise HTTPException(409, '没有可以重试的抠图')
             elif action == 'cancel':
                 if state == 'cancelled':
                     raise HTTPException(409, '订单已取消')
@@ -883,8 +922,9 @@ def register_customer_orders(app, db, user):
             def select(slot_id: str, data: Select, request: Request, id: str | None = None): return mutate(request, data, 'select', id, is_guest, slot_id)
             def submit(data: Submit, request: Request, id: str | None = None): return mutate(request, data, 'submit', id, is_guest)
             def replace(slot_id: str, data: Replace, request: Request, id: str | None = None): return mutate(request, data, 'replace', id, is_guest, slot_id)
+            def recut(data: Mutation, request: Request, id: str | None = None): return mutate(request, data, 'recut', id, is_guest)
             return [('generate', generate), ('preflight', preflight), ('slots/{slot_id}/rerun', rerun), ('slots/{slot_id}/select', select),
-                    ('slots/{slot_id}/replace', replace), ('submit', submit)]
+                    ('slots/{slot_id}/replace', replace), ('recut', recut), ('submit', submit)]
         for suffix, endpoint in endpoints(guest):
             app.add_api_route(prefix+'/'+suffix, endpoint, methods=['POST'])
     def draft(request, data, id=None, guest=False):
@@ -910,6 +950,8 @@ def register_customer_orders(app, db, user):
 
     def guest_retry(slot_id: str, data: Mutation, request: Request): return mutate(request, data, 'retry', None, True, slot_id)
     app.add_api_route('/api/guest/order/slots/{slot_id}/retry', guest_retry, methods=['POST'])
+    def guest_reprocess(slot_id: str, data: Mutation, request: Request): return mutate(request, data, 'reprocess', None, True, slot_id)
+    app.add_api_route('/api/guest/order/slots/{slot_id}/reprocess', guest_reprocess, methods=['POST'])
     for recovery in ('retry', 'reprocess'):
         def recovery_endpoint(action):
             def endpoint(id: str, slot_id: str, data: Mutation, request: Request):

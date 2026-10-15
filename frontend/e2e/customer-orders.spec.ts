@@ -359,3 +359,38 @@ test('guest prints finished images of their own: step-1 hint, whole-print warnin
     expect(errors).toEqual([])
   }finally{await context.close()}
 })
+
+test('a refused cutout is retried by the customer, one image or all at once, on a phone',async({page,browser})=>{
+  await staffLogin(page.request)
+  const order=await createCustomer(page.request,{generation_limit:3,final_count:3,rerun_limit:0})
+  const images=await Promise.all([1,2,3].map(n=>readFile(new URL(`./fixtures/cutout-refused-${n}.png`,import.meta.url))))
+  const context=await browser.newContext({baseURL:'http://127.0.0.1:5174',viewport:{width:390,height:844}})
+  const errors:string[]=[]
+  try{
+    const guest=await context.newPage();guest.on('pageerror',e=>errors.push(e.message))
+    await guest.request.post('/api/guest/login',{data:{order_number:order.order_number}});await guest.goto('/guest')
+    await guest.getByRole('button',{name:'上传做好的图片'}).click()
+    const dialog=guest.getByRole('dialog',{name:'上传做好的图片'})
+    await dialog.getByLabel('自动抠图：去掉背景，按主体轮廓印').check();await dialog.getByRole('button',{name:'取消'}).click()
+    await guest.getByLabel('选择做好的图片文件').setInputFiles(images.map((buffer,i)=>({name:`作品${i+1}.png`,mimeType:'image/png',buffer})))
+    await expect(guest.locator('.customer-design-row')).toHaveCount(3)
+    await guest.getByRole('button',{name:'核对并开始处理'}).click()
+    await guest.getByRole('dialog',{name:'生成前核对'}).getByRole('button',{name:'确认开始生成'}).click()
+    // Every cutout is refused once: the originals are kept and the customer can retry without staff.
+    await expect(guest.getByRole('button',{name:'重试抠图',exact:true})).toHaveCount(3,{timeout:60000})
+    await expect(guest.locator('.customer-result .error-text').first()).toContainText('自动抠图失败，可点“重试抠图”再试一次')
+    await expect(guest.getByRole('button',{name:'全部重试抠图（3）'})).toBeVisible()
+    await guest.screenshot({path:'test-results/recut-390.png',fullPage:true})
+    await guest.getByRole('button',{name:'重试抠图',exact:true}).first().click()
+    await expect(guest.locator('.customer-result-image img')).toHaveCount(1,{timeout:60000})
+    await guest.getByRole('button',{name:'全部重试抠图（2）'}).click()
+    await expect(guest.locator('.customer-result-image img')).toHaveCount(3,{timeout:60000})
+    await expect(guest.getByRole('button',{name:/重试抠图/})).toHaveCount(0)
+    await expect(guest.locator('.customer-selection-badge')).toHaveText('已选 3/3')
+    expect(await guest.evaluate(()=>document.documentElement.scrollWidth)).toBeLessThanOrEqual(390)
+    const detail=await(await page.request.get('/api/customer-orders/'+order.id)).json()
+    expect(detail.slots.map((s:any)=>s.status)).toEqual(['completed','completed','completed'])
+    expect(detail.slots.every((s:any)=>s.reruns_used===0)).toBe(true)
+    expect(errors).toEqual([])
+  }finally{await context.close()}
+})

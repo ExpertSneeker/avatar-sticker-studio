@@ -74,6 +74,15 @@ class Worker:
             for owner in tx.all('workers'):
                 if owner['expires'] < now:
                     tx.delete('workers', owner['id'])
+            # Before cutout_ended existed, a Yezi rejection was stored as uncertain although Yezi had
+            # answered with an HTTP status (the call was over). Make those retryable.
+            for item in tx.where('items', 'status', 'failed'):
+                error = item.get('error') or ''
+                if item['status'] == 'failed' and item.get('cutout_inflight') and error.startswith(CUTOUT_UNCERTAIN + '；抠图失败（HTTP '):
+                    item.pop('cutout_inflight', None)
+                    item.pop('cutout_started_at', None)
+                    item.update(cutout_failed=True, error=error[len(CUTOUT_UNCERTAIN) + 1:])
+                    tx.put('items', item)
 
     def heartbeat(self):
         with self.db.transaction() as tx:
@@ -412,7 +421,13 @@ class Worker:
             if not latest or latest['status'] != 'running' or latest.get('worker_id') != self.id or latest.get('run_id') != item.get('run_id'):
                 return
             if latest.get('cutout_inflight'):
-                latest.update(status='failed' if error.status == 'failed' else 'unknown', remote_reserved=False, error=CUTOUT_UNCERTAIN + '；' + str(error))
+                if error.cutout_ended:
+                    # Yezi answered (or was never reached): the call is over, so "重试抠图" can run it again.
+                    latest.pop('cutout_inflight', None)
+                    latest.pop('cutout_started_at', None)
+                    latest.update(status='failed', remote_reserved=False, cutout_failed=True, error=str(error))
+                else:
+                    latest.update(status='failed' if error.status == 'failed' else 'unknown', remote_reserved=False, error=CUTOUT_UNCERTAIN + '；' + str(error))
                 tx.put('items', latest)
                 return
             retries = latest.get('retry_count', 0)

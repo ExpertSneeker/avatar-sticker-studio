@@ -741,8 +741,10 @@ def test_guest_cannot_retry_unknown_or_use_staff_recovery(context):
     slot=guest.get('/api/guest/order').json()['slots'][0]
     assert slot['status']=='unknown' and not slot['can_retry'] and slot['error']=='生成结果待确认，请联系工作人员处理'
     assert guest_action(guest,'slots/'+slot['id']+'/retry').status_code==409
-    for name in ('resolve','reprocess'):
-        assert guest.post('/api/guest/order/slots/'+slot['id']+'/'+name,json={'client_token':'x','expected_version':1}).status_code in (404,405)
+    assert guest.post('/api/guest/order/slots/'+slot['id']+'/resolve',json={'client_token':'x','expected_version':1}).status_code in (404,405)
+    # Customers may only reprocess a cutout the cutout service refused, never an uncertain request.
+    assert guest_action(guest,'slots/'+slot['id']+'/reprocess').status_code==403
+    assert guest_action(guest,'recut').status_code==409
 
 
 def test_templates_are_1024_and_large_avatars_shrink_to_1024_short_edge(context):
