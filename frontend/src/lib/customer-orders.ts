@@ -4,7 +4,8 @@ import type { PrintSettings, Sticker, TemplateSet } from './types'
 import type { LibraryCategory } from './categories'
 
 export type OrderState = 'draft' | 'review' | 'submitted' | 'cancelled'
-export interface CustomerVersion { id:string; preview_url:string }
+// before_url: the image as it was before cutout, when this version was cut out.
+export interface CustomerVersion { id:string; preview_url:string; before_url?:string|null }
 export interface CustomerSlot {
   id:string; avatar_id:string; sticker_code:string; status:string
   reruns_used:number; reruns_reserved:number; selected_version_id:string|null
@@ -15,6 +16,8 @@ export interface CustomerSlot {
   can_retry?:boolean
   // The cutout service refused this image; the original is kept and cutout can run again (guests: same limit).
   can_recut?:boolean
+  // Staff only: the slot is idle with an original, so it can be cut out again at any time.
+  can_recut_again?:boolean
 }
 export interface CustomerAvatar {id:string; name:string; preview_url:string}
 export interface AvatarChoice {upload_id:string;template_ids:string[];sticker_ids:string[]}

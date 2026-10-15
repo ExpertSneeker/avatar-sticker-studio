@@ -278,3 +278,56 @@ def test_startup_makes_earlier_refused_cutouts_retryable(context, flaky_cutouts)
     staff = c.get('/api/customer-orders/'+o['id']).json()
     assert staff['slots'][0]['can_recut'] and not staff['slots'][0]['needs_resolution'] and staff['slots'][0]['error'] == '抠图失败（HTTP 400），原始生成结果已保留'
     assert not staff['slots'][1]['can_recut'] and staff['slots'][1]['needs_resolution']
+
+
+def test_staff_recut_any_time_adds_a_compared_version_without_budget_or_statistics(context, cutouts):
+    from backend.app.statistics import summarize
+    app, c, _, provider = context
+    sid = sticker(c, 'ONE')['id']
+    art, flat = send(c, rgb()), send(c, rgb(color=(9, 90, 9)), name='整张.png')
+    o = opened(c, generation_limit=4, final_count=4, rerun_limit=0)
+    o = action(c, o, 'generate', avatars=[{'upload_id': upload(c)['id'], 'template_ids': [], 'sticker_ids': [sid, sid]}],
+               designs=[{'upload_id': art['id']}, {'upload_id': flat['id'], 'cutout': 'whole'}]).json()
+    for _ in range(3): run(app)
+    o = c.get('/api/customer-orders/'+o['id']).json()
+    design, whole = [s for s in o['slots'] if s['source'] == 'design']
+    copies = [s for s in o['slots'] if s['source'] == 'sticker']
+    # The design was cut out: its version shows the original beside the cutout, for staff and the customer.
+    assert design['versions'][0]['before_url'] and whole['versions'][0]['before_url'] is None
+    assert copies[0]['versions'][0]['before_url'] is None  # the generated sticker was already transparent
+    assert c.get(design['versions'][0]['before_url']).status_code == 200
+    assert design['can_recut_again'] and copies[0]['can_recut_again'] and not whole['can_recut_again']
+    assert action(c, o, 'slots/'+whole['id']+'/recut').status_code == 409
+    with app.state.db.transaction() as tx:
+        before = summarize(tx, tx.all('users')[0], app.state.clock(), global_scope=True)
+    calls = cutouts.calls
+    # Staff cut the generated sticker again: forced through cutout though it is transparent; both copies follow.
+    o = action(c, o, 'slots/'+copies[0]['id']+'/recut').json()
+    copies = [s for s in o['slots'] if s['source'] == 'sticker']
+    assert [s['status'] for s in copies] == ['queued', 'queued'] and not copies[0]['can_recut_again']
+    assert action(c, o, 'slots/'+copies[1]['id']+'/recut').status_code == 409  # already being cut
+    run(app)
+    o = c.get('/api/customer-orders/'+o['id']).json()
+    copies = [s for s in o['slots'] if s['source'] == 'sticker']
+    assert cutouts.calls == calls + 1 and len(provider.calls) == 1
+    for s in copies:
+        assert len(s['versions']) == 2 and s['selected_version_id'] == s['versions'][1]['id'] and s['versions'][1]['before_url']
+        assert c.get(s['versions'][1]['before_url']).status_code == 200
+    # Again and again, free of the rerun budget (the order has none).
+    for _ in range(2):
+        design = next(s for s in o['slots'] if s['source'] == 'design' and s['cutout'] == 'cutout')
+        o = action(c, o, 'slots/'+design['id']+'/recut').json(); run(app)
+        o = c.get('/api/customer-orders/'+o['id']).json()
+    design = next(s for s in o['slots'] if s['source'] == 'design' and s['cutout'] == 'cutout')
+    assert len(design['versions']) == 3 and all(v['before_url'] for v in design['versions'])
+    assert sum(s['reruns_used'] for s in o['slots']) == 0
+    o = action(c, o, 'slots/'+design['id']+'/select', version_id=design['versions'][0]['id']).json()
+    with app.state.db.transaction() as tx:
+        after = summarize(tx, tx.all('users')[0], app.state.clock(), global_scope=True)
+    assert after['summary'] == before['summary'] and before['summary']['images'] == 1
+    # Customers cannot re-cut on their own.
+    guest = TestClient(app); assert guest.post('/api/guest/login', json={'order_number': o['order_number']}).status_code == 200
+    g = guest.get('/api/guest/order').json()
+    assert 'can_recut_again' not in g['slots'][0]
+    assert guest.post('/api/guest/order/slots/'+design['id']+'/recut', json={'client_token': 'x', 'expected_version': g['version']}).status_code in (404, 405)
+    assert all(guest.get(v['before_url']).status_code == 200 for v in next(s for s in g['slots'] if s['id'] == design['id'])['versions'])

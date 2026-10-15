@@ -360,7 +360,7 @@ test('guest prints finished images of their own: step-1 hint, whole-print warnin
   }finally{await context.close()}
 })
 
-test('a refused cutout is retried by the customer, one image or all at once, on a phone',async({page,browser})=>{
+test('a refused cutout is retried by the customer, compared before and after, and cut again by staff',async({page,browser})=>{
   await staffLogin(page.request)
   const order=await createCustomer(page.request,{generation_limit:3,final_count:3,rerun_limit:0})
   const images=await Promise.all([1,2,3].map(n=>readFile(new URL(`./fixtures/cutout-refused-${n}.png`,import.meta.url))))
@@ -391,6 +391,29 @@ test('a refused cutout is retried by the customer, one image or all at once, on 
     const detail=await(await page.request.get('/api/customer-orders/'+order.id)).json()
     expect(detail.slots.map((s:any)=>s.status)).toEqual(['completed','completed','completed'])
     expect(detail.slots.every((s:any)=>s.reruns_used===0)).toBe(true)
+    // The customer compares each image before and after cutout.
+    await guest.getByRole('button',{name:'查看 / 更换'}).first().click()
+    let view=guest.getByRole('dialog',{name:'自备图 · 查看与更换'})
+    await expect(view.getByAltText('版本 1 抠图前')).toBeVisible();await expect(view.getByAltText('版本 1',{exact:true})).toBeVisible()
+    await expect(view.getByText('抠图前')).toBeVisible();await expect(view.getByText('抠图后')).toBeVisible()
+    await expect(view.getByRole('button',{name:'重新抠图'})).toHaveCount(0)
+    expect(await guest.evaluate(()=>document.documentElement.scrollWidth)).toBeLessThanOrEqual(390)
+    await guest.screenshot({path:'test-results/cutout-compare-390.png',animations:'disabled'})
+    await view.getByRole('button',{name:'关闭',exact:true}).last().click()
+    // Staff can cut out again at any time; this one is refused once and retried, then kept as a new version.
+    await page.goto('/');await page.locator('.customer-order-row').filter({hasText:order.order_number}).getByRole('button',{name:'进入 / 代操作'}).click()
+    const staffOrder=page.getByRole('dialog',{name:'订单 '+order.order_number})
+    await staffOrder.getByRole('button',{name:'查看 / 更换'}).first().click()
+    view=page.getByRole('dialog',{name:'自备图 · 查看与更换'})
+    await view.getByRole('button',{name:'重新抠图'}).click()
+    await view.getByRole('button',{name:'重试抠图'}).click({timeout:60000})
+    await expect(view.locator('.customer-versions figure')).toHaveCount(2,{timeout:60000})
+    await expect(view.getByAltText('版本 2 抠图前')).toBeVisible()
+    await expect(view.getByRole('button',{name:'重新抠图'})).toBeEnabled({timeout:60000})
+    await page.screenshot({path:'test-results/cutout-recut-staff.png'})
+    const after=await(await page.request.get('/api/customer-orders/'+order.id)).json()
+    expect(after.slots[0].versions.length).toBe(2);expect(after.slots[0].selected_version_id).toBe(after.slots[0].versions[1].id)
+    expect(after.slots.every((s:any)=>s.reruns_used===0)).toBe(true)
     expect(errors).toEqual([])
   }finally{await context.close()}
 })

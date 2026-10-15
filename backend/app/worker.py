@@ -220,7 +220,9 @@ class Worker:
                     tx.put('items', latest)
             # Customer-made images chosen to print whole keep their opaque background.
             whole = item.get('cutout_mode') == 'whole'
-            if not whole and image.getchannel('A').getextrema()[0] == 255:
+            # Staff "重新抠图" sends the original even when it already has transparency.
+            cut = not whole and (item.get('force_cutout') or image.getchannel('A').getextrema()[0] == 255)
+            if cut:
                 key = os.environ.get('YEZI_API_KEY') or config.get('cutout_api_key')
                 if not key:
                     raise ProviderFailure('图片缺少透明背景；请管理员配置抠图API。原始生成图片已保留')
@@ -253,6 +255,9 @@ class Worker:
                 latest.pop('cutout_inflight', None)
                 latest.pop('cutout_started_at', None)
                 latest.update(status='completed', remote_reserved=False, result_id=result['id'], result_url=result['url'], error=None)
+                if cut:
+                    # The version can then show the original next to the cutout.
+                    latest['cutout_used'] = True
                 tx.put('items', latest)
                 order = tx.get('orders', item['order_id'])
                 order['content_version'] += 1

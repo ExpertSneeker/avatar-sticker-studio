@@ -176,6 +176,8 @@ def reconcile(tx, order):
             continue
         if item['status'] == 'completed' and item.get('result_id'):
             version = {'id': item['id'], 'asset_id': item['result_id'], 'item_id': item['id']}
+            if item.get('cutout_used'):
+                version['before_id'] = item['raw_result_id']
             if not any(v['id'] == version['id'] for v in slot['versions']):
                 slot['versions'].append(version)
                 if slot.get('reservation_item_id') == item['id']:
@@ -338,13 +340,22 @@ def dto(tx, order, guest=False, summary=False):
                 row.update(cutout=slot['cutout'], design_id=slot['design_id'])
             row['status'] = item['status'] if item else 'queued'
             row['group_size'] = len(slot_group(order, slot))
-            row['versions'] = [{'id': v['id'], 'preview_url': media_url(order, v['asset_id'], guest)} for v in slot['versions']]
+            row['versions'] = []
+            for v in slot['versions']:
+                before = v.get('before_id')
+                if not before and is_design(slot):
+                    # Versions made before before_id existed: a cutout-mode design's original is its upload.
+                    source = tx.get('items', v.get('item_id', '')) or {}
+                    before = source.get('raw_result_id') if source.get('cutout_mode') == 'cutout' else None
+                row['versions'].append({'id': v['id'], 'preview_url': media_url(order, v['asset_id'], guest),
+                                        'before_url': media_url(order, before, guest) if before else None})
             if item and item.get('error'):
                 row['error'] = guest_error(item, slot) if guest else item['error']
             row['can_retry'] = retryable(item, slot) and (not guest or slot.get('guest_retries', 0) < GUEST_RETRY_LIMIT)
             row['can_recut'] = cutout_retryable(item) and (not guest or slot.get('guest_retries', 0) < GUEST_RETRY_LIMIT)
             if not guest:
                 row['raw_available'] = bool(item and item.get('raw_result_id'))
+                row['can_recut_again'] = can_recut_again(order, slot, item)
                 row['needs_resolution'] = bool(item and (item['status'] == 'unknown' or item.get('cutout_inflight') or item.get('remote_reserved') and item['status'] == 'failed'))
             result['slots'].append(row)
     if not guest:
@@ -500,6 +511,26 @@ def new_design_item(tx, order, design, now, position):
             'next_at': 0, 'remote_reserved': False, 'result_id': None, 'error': None}
     tx.put('items', item)
     return item
+
+
+def recut_item(tx, item, position):
+    """Staff "重新抠图": a new post-processing item on the same original, forced through cutout.
+    No generation and no rerun budget; the slot keeps every earlier version."""
+    keep = ('order_id', 'owner', 'organization_id', 'source', 'cutout_mode', 'avatar_id', 'sticker_id', 'sticker_revision',
+            'template_id', 'set_index', 'set_code', 'raw_result_id')
+    copy = {k: item[k] for k in keep if k in item}
+    copy.update(id=uid(), position=position, status='queued', attempt=0, processing_stage='postprocess', next_at=0,
+                remote_reserved=False, result_id=None, error=None, force_cutout=True, recut_of=item['id'])
+    tx.put('items', copy)
+    return copy
+
+
+def can_recut_again(order, slot, item):
+    """Staff may cut out again whenever the slot is idle and an original exists (not for whole prints)."""
+    if order['state'] != 'review' or not item or not item.get('raw_result_id') or slot.get('cutout') == 'whole':
+        return False
+    return all(m.get('active_item_id') != item['id'] or not (m['pending_version_id'] or m.get('reservation_item_id')) for m in slot_group(order, slot)) \
+        and item['status'] in {'completed', 'failed'} and not item.get('cutout_inflight') and not item.get('remote_reserved')
 
 
 def design_slot(design, item):
@@ -766,7 +797,7 @@ def register_customer_orders(app, db, user):
                 order['slots'] += [design_slot(d, new_design_item(tx, order, d, now(), len(unique) + i)) for i, d in enumerate(designs)]
                 order.update(state='review', generation_count=len(unique), selection_count=len(occurrences) + len(designs))
                 order.pop('draft', None)
-            elif action in {'rerun', 'select', 'retry', 'resolve', 'reprocess', 'replace'}:
+            elif action in {'rerun', 'select', 'retry', 'resolve', 'reprocess', 'replace', 'recut_one'}:
                 if state != 'review':
                     raise HTTPException(409, '当前订单不能修改结果')
                 slot = next((s for s in order['slots'] if s['id'] == slot_id), None)
@@ -819,6 +850,18 @@ def register_customer_orders(app, db, user):
                     replacement = new_design_item(tx, order, design, now(), tx.count('items'))
                     slot.update(design_id=design['id'], cutout=design['cutout'], active_item_id=replacement['id'],
                                 initial_item_id=replacement['id'], pending_version_id=None)
+                elif action == 'recut_one':
+                    if guest:
+                        raise HTTPException(403, '需要工作人员处理')
+                    if slot.get('cutout') == 'whole':
+                        raise HTTPException(409, '整张印不抠图，可先改为自动抠图')
+                    if not can_recut_again(order, slot, item):
+                        raise HTTPException(409, '图片正在处理或没有原图，请稍后再重新抠图')
+                    fresh = recut_item(tx, item, tx.count('items'))
+                    # Copies of one sticker show the same image, so they move to the new cut together.
+                    for member in slot_group(order, slot):
+                        if member['active_item_id'] == item['id']:
+                            member.update(active_item_id=fresh['id'], initial_item_id=fresh['id'])
                 elif action == 'rerun':
                     if is_design(slot):
                         raise HTTPException(409, '自备图不能重新生成，可以更换图片')
@@ -952,6 +995,10 @@ def register_customer_orders(app, db, user):
     app.add_api_route('/api/guest/order/slots/{slot_id}/retry', guest_retry, methods=['POST'])
     def guest_reprocess(slot_id: str, data: Mutation, request: Request): return mutate(request, data, 'reprocess', None, True, slot_id)
     app.add_api_route('/api/guest/order/slots/{slot_id}/reprocess', guest_reprocess, methods=['POST'])
+    @app.post('/api/customer-orders/{id}/slots/{slot_id}/recut')
+    def recut_one(id: str, slot_id: str, data: Mutation, request: Request):
+        return mutate(request, data, 'recut_one', id, slot_id=slot_id)
+
     for recovery in ('retry', 'reprocess'):
         def recovery_endpoint(action):
             def endpoint(id: str, slot_id: str, data: Mutation, request: Request):

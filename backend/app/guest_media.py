@@ -166,6 +166,7 @@ def register_guest_media(app, db, user):
                     or asset_id in {a['asset_id'] for a in draft_avatars(order)}
                     or asset_id in design_assets(order)
                     or asset_id in {v['asset_id'] for s in order['slots'] for v in s['versions']}
+                    or asset_id in {v.get('before_id') for s in order['slots'] for v in s['versions']}
                     or any(u.get('guest_order_id') == order_id and u.get('asset_id') == asset_id
                            for u in tx.where('uploads', 'guest_order_id', order_id))):
                 return order, asset, 'customer'
