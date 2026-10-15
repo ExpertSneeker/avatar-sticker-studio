@@ -635,6 +635,10 @@
   justify-content: center;
 }
 
+.customer-staff-actions .text-button.danger {
+  color: var(--danger);
+}
+
 .customer-order-status {
   font-size: 12px;
   white-space: nowrap;

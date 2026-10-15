@@ -360,7 +360,7 @@ test('guest prints finished images of their own: step-1 hint, whole-print warnin
   }finally{await context.close()}
 })
 
-test('a refused cutout is retried by the customer, compared before and after, and cut again by staff',async({page,browser})=>{
+test('a refused cutout is retried by the customer, compared before and after, cut again by staff, then the order is reset',async({page,browser})=>{
   await staffLogin(page.request)
   const order=await createCustomer(page.request,{generation_limit:3,final_count:3,rerun_limit:0})
   const images=await Promise.all([1,2,3].map(n=>readFile(new URL(`./fixtures/cutout-refused-${n}.png`,import.meta.url))))
@@ -414,6 +414,16 @@ test('a refused cutout is retried by the customer, compared before and after, an
     const after=await(await page.request.get('/api/customer-orders/'+order.id)).json()
     expect(after.slots[0].versions.length).toBe(2);expect(after.slots[0].selected_version_id).toBe(after.slots[0].versions[1].id)
     expect(after.slots.every((s:any)=>s.reruns_used===0)).toBe(true)
+    // An administrator resets the whole order: staff and the open customer page both return to a fresh, empty draft.
+    await view.getByRole('button',{name:'关闭',exact:true}).last().click()
+    await staffOrder.getByRole('button',{name:'初始化订单'}).click()
+    const confirm=page.getByRole('dialog',{name:'初始化订单'})
+    await expect(confirm).toContainText('客户需要重新上传、选择并提交');await page.screenshot({path:'test-results/reset-confirm.png'});await confirm.getByRole('button',{name:'确认初始化'}).click()
+    await expect(staffOrder.locator('.customer-result')).toHaveCount(0);await expect(staffOrder.getByRole('button',{name:'上传做好的图片'})).toBeVisible()
+    await expect(guest.getByRole('button',{name:'上传做好的图片'})).toBeVisible({timeout:15000})
+    await expect(guest.locator('.customer-design-row')).toHaveCount(0);await expect(guest.locator('.customer-result')).toHaveCount(0)
+    const fresh=await(await page.request.get('/api/customer-orders/'+order.id)).json()
+    expect([fresh.state,fresh.slots.length,fresh.design_count,fresh.final_count]).toEqual(['draft',0,0,3])
     expect(errors).toEqual([])
   }finally{await context.close()}
 })

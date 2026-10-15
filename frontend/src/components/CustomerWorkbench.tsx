@@ -71,7 +71,10 @@ export function CustomerWorkbench({initial,mode,library,onChange,onBack}:{initia
     }finally{draftSaving.current=false;if(retryNow)void saveDraft()}
   }
   const changeRef=useRef(onChange);changeRef.current=onChange
-  function accept(next:GuestOrder){if(next.state==='draft'&&next.draft)adoptDraft(next.draft);setOrder(previous=>next.state==='cancelled'||(next.version??0)>=(previous.version??0)?next:previous);if(next.state==='cancelled'||next.state==='submitted'){setAvatars([]);setDesigns([]);setSelection([]);setComparison(null);setPicker(null);setPreflight(null);setSubmitOpen(false)}if(next.paused){setComparison(null);setPicker(null);setPreflight(null);setSubmitOpen(false)}changeRef.current?.(next)}
+  function accept(next:GuestOrder){
+    // An administrator reset the order to a fresh draft: drop every earlier choice held on this page.
+    if(next.state==='draft'&&orderRef.current.state!=='draft'&&(next.version??0)>=(orderRef.current.version??0)){draftRevision.current=-1;draftDirty.current=false;pickerRef.current=null;setSelection([]);setComparison(null);setPicker(null);setPreflight(null);setSubmitOpen(false);if(!next.draft){setAvatars([]);setDesigns([])}}
+    if(next.state==='draft'&&next.draft)adoptDraft(next.draft);setOrder(previous=>next.state==='cancelled'||(next.version??0)>=(previous.version??0)?next:previous);if(next.state==='cancelled'||next.state==='submitted'){setAvatars([]);setDesigns([]);setSelection([]);setComparison(null);setPicker(null);setPreflight(null);setSubmitOpen(false)}if(next.paused){setComparison(null);setPicker(null);setPreflight(null);setSubmitOpen(false)}changeRef.current?.(next)}
   async function refresh(){const signal=session.current.signal,revision=++requestVersion.current;const next=mode==='guest'?await guestApi<GuestOrder>(base,{signal}):await api<GuestOrder>(base,{signal});if(!signal.aborted&&revision===requestVersion.current){accept(next)}}
   useEffect(()=>{
     const controller=new AbortController();session.current=controller

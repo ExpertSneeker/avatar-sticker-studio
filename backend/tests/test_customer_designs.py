@@ -331,3 +331,51 @@ def test_staff_recut_any_time_adds_a_compared_version_without_budget_or_statisti
     assert 'can_recut_again' not in g['slots'][0]
     assert guest.post('/api/guest/order/slots/'+design['id']+'/recut', json={'client_token': 'x', 'expected_version': g['version']}).status_code in (404, 405)
     assert all(guest.get(v['before_url']).status_code == 200 for v in next(s for s in g['slots'] if s['id'] == design['id'])['versions'])
+
+
+def test_admin_reset_returns_the_order_to_a_fresh_draft_and_keeps_history(context, cutouts):
+    from backend.app.statistics import summarize
+    from backend.tests.helpers import member, order_items
+    app, c, _, provider = context
+    o = design_order(c); run(app); run(app)
+    o = c.get('/api/customer-orders/'+o['id']).json()
+    old_media = [v[k] for s in o['slots'] for v in s['versions'] for k in ('preview_url', 'before_url')]
+    guest = TestClient(app); assert guest.post('/api/guest/login', json={'order_number': o['order_number']}).status_code == 200
+    guest_media = [v['preview_url'] for s in guest.get('/api/guest/order').json()['slots'] for v in s['versions']]
+    # Only administrators may reset; customers have no such route.
+    staff, _ = member(c, app)
+    assert action(staff, o, 'reset').status_code == 403
+    assert guest.post('/api/guest/order/reset', json={'client_token': 'x', 'expected_version': o['version']}).status_code in (404, 405)
+    # Nothing may be in flight: a running cutout blocks the reset until it finishes.
+    o = action(c, o, 'slots/'+o['slots'][0]['id']+'/recut').json()
+    assert action(c, o, 'reset').status_code == 409
+    run(app); o = c.get('/api/customer-orders/'+o['id']).json()
+    items, calls = len(order_items(app, o)), cutouts.calls
+    with app.state.db.transaction() as tx:
+        before = summarize(tx, tx.all('users')[0], app.state.clock(), global_scope=True)
+    reset = action(c, o, 'reset'); assert reset.status_code == 200, reset.text
+    o = reset.json()
+    assert o['state'] == 'draft' and o['slots'] == [] and o['avatars'] == [] and o['design_count'] == 0
+    assert o['draft'] == {'revision': 0, 'avatars': [], 'designs': []}
+    assert (o['generation_limit'], o['final_count'], o['rerun_limit']) == (2, 2, 1)
+    # Earlier images are no longer shown; records stay and nothing new was charged or counted.
+    assert all(c.get(url).status_code == 404 for url in old_media)
+    assert all(guest.get(url).status_code == 404 for url in guest_media)
+    assert len(order_items(app, o)) == items and cutouts.calls == calls and provider.calls == []
+    with app.state.db.transaction() as tx:
+        assert summarize(tx, tx.all('users')[0], app.state.clock(), global_scope=True)['summary'] == before['summary']
+    # The customer starts over: upload, choose and submit as on a new order.
+    g = guest.get('/api/guest/order').json()
+    assert g['state'] == 'draft' and g['draft']['designs'] == [] and g['slots'] == []
+    designs = [{'upload_id': send(guest, rgb(color=(1, 2, i)), prefix='/api/guest/uploads')['id']} for i in range(2)]
+    assert guest.put('/api/guest/order/draft', json={'avatars': [], 'designs': designs}).status_code == 200
+    made = guest.post('/api/guest/order/generate', json={'client_token': 'again', 'expected_version': g['version'], 'designs': designs})
+    assert made.status_code == 200, made.text
+    run(app); run(app)
+    o = c.get('/api/customer-orders/'+o['id']).json()
+    assert o['state'] == 'review' and [s['status'] for s in o['slots']] == ['completed', 'completed']
+    # Submitted orders are unlocked first.
+    o = action(c, o, 'submit', slot_ids=[s['id'] for s in o['slots']]).json(); assert o['state'] == 'submitted'
+    assert action(c, o, 'reset').status_code == 409
+    o = action(c, o, 'unlock').json()
+    assert action(c, o, 'reset').json()['state'] == 'draft'

@@ -79,6 +79,8 @@
 
 解锁保留已消耗额度和版本，重新提交前关闭旧交付下载。取消或暂停不等于远端请求结束；继续核对在途请求，但不能继续新生图或发布不该发布的产物。
 
+初始化（2026-10-16，`POST /api/customer-orders/{id}/reset`，仅 `superadmin`/`org_admin`，无访客路由）：`draft`/`review` 订单回到刚开单的 `draft`——清空 `avatars`、`designs`、`slots`、`draft`、`final_entries`、生成/选择计数和产物字段，保留订单号、G/F/R、店铺、水印、打印参数和提示词快照；该订单任何 item 处于 `queued`/`running`/`unknown`、`remote_reserved` 或 `cutout_inflight` 时返回 409，`submitted` 需先解锁。items、generations、资产、上传和审计记录不删除，只是不再被订单引用（媒体授权随之拒绝旧图，访客本人上传的原图仍可访问），统计照旧计入；资产随订单整体按保留天数清理。前端工作台发现订单从非 `draft` 回到 `draft` 时丢弃本页旧选择。
+
 ## 图片、队列与打印
 
 - 当前 provider 源码使用 FAL `openai/gpt-image-2.5/flare/edit`；全站提交都带 `enable_safety_checker: false`（FAL 支持确认这是该端点唯一的审核开关，关闭后在上游允许范围内放宽；`model_moderated` 未开放，OpenAI 侧的拒绝仍可能以 422 `content_policy_violation` 返回）；凭证是 `FAL_KEY` 或后台私有设置，环境变量优先。这描述仓库实现，不保证第三方服务未来仍可用。变更 provider 前核对其当时官方契约。

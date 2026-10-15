@@ -15,7 +15,7 @@ from urllib.parse import quote
 from fastapi import HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import Field, field_validator, model_validator
-from .auth import token_hash
+from .auth import require_admin, token_hash
 from .db import uid
 from .schemas import Model, PrintSettings, UploadInit, safe_name
 from .storage import asset_bytes, normalize_image, save_asset
@@ -772,6 +772,8 @@ def register_customer_orders(app, db, user):
                 require_active_order(order, tx)
             if action == 'restore' and integration_held(order):
                 raise HTTPException(409, '售后处理中的订单不能恢复')
+            if action == 'reset':
+                require_admin(user(tx, request))
             key, fingerprint, prior = operation(tx, order['id'], data, [action, slot_id])
             if prior:
                 return dto(tx, order, guest)
@@ -942,6 +944,18 @@ def register_customer_orders(app, db, user):
                     raise HTTPException(409, '仅已提交订单可解锁')
                 order.update(state='review', delivery_ready=False, overview_ready=False, artifacts=[], overview_id=None,
                              final_entries=[], publish_signatures={})
+            elif action == 'reset':
+                # Back to a freshly opened order: the customer uploads and chooses again. Items, generation records,
+                # stored images and the audit trail are kept, only unlinked; numbers, quotas, shop and watermark stay.
+                if state not in {'draft', 'review'}:
+                    raise HTTPException(409, '已提交的订单请先解锁选图，再初始化')
+                if any(i['status'] in {'queued', 'running', 'unknown'} or i.get('remote_reserved') or i.get('cutout_inflight')
+                       for i in tx.where('items', 'order_id', order['id']) if i['order_id'] == order['id']):
+                    raise HTTPException(409, '订单还有图片在处理或待核对，请处理完再初始化')
+                for field in ('draft', 'final_entries', 'generation_count', 'selection_count', 'remark_sync_pending'):
+                    order.pop(field, None)
+                order.update(state='draft', avatars=[], designs=[], slots=[], artifacts=[], overview_ready=False, overview_id=None,
+                             delivery_ready=False, publish_signatures={}, processing_error=None)
             elif action == 'repack':
                 if state != 'submitted':
                     raise HTTPException(409, '仅已提交订单可重新排版')
@@ -981,7 +995,7 @@ def register_customer_orders(app, db, user):
     def staff_draft(id: str, data: DraftSave, request: Request): return draft(request, data, id)
     app.add_api_route('/api/guest/order/draft', guest_draft, methods=['PUT'])
     app.add_api_route('/api/customer-orders/{id}/draft', staff_draft, methods=['PUT'])
-    for name in ('cancel', 'restore', 'unlock'):
+    for name in ('cancel', 'restore', 'unlock', 'reset'):
         def staff_endpoint(action):
             def endpoint(id: str, data: Mutation, request: Request): return mutate(request, data, action, id)
             return endpoint
