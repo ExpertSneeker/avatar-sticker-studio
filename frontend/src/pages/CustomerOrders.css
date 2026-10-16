@@ -1247,9 +1247,14 @@
 .shipping-info-text b { display: block; color: var(--ok); }
 .shipping-info-body { display: block; white-space: pre-wrap; overflow-wrap: anywhere; font-weight: 600; }
 .shipping-info-text small { display: block; color: var(--muted); font-size: 12px; }
-.shipping-info-add { margin: 0 0 10px; }
-.shipping-info-preview { display: flex; align-items: center; gap: 6px; color: var(--ok); font-weight: 600; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; max-width: 100%; }
-.shipping-info-preview svg { flex-shrink: 0; }
+.shipping-info-add { display: inline-flex; align-items: center; gap: 6px; margin: 0 0 10px; padding: 8px 14px; border-radius: var(--r-md, 10px);
+  background: var(--ok-soft); border: 1px solid var(--ok); color: var(--ok); font: inherit; font-size: 14px; font-weight: 600; cursor: pointer; width: fit-content; }
+.shipping-info-add:hover, .shipping-info-text:hover { box-shadow: 0 0 0 3px rgb(0 0 0 / .05); }
+.shipping-info-add:focus-visible, .shipping-info-text:focus-visible, .shipping-info .icon-button:focus-visible { outline: 2px solid var(--ok); outline-offset: 2px; }
+/* The same blocks inside an order row. */
+.shipping-info.row { margin: 6px 0; width: 100%; }
+.shipping-info.row .shipping-info-text { font-weight: 400; }
+.shipping-info-add.row { margin: 6px 0; padding: 6px 12px; }
 .customer-design-copies { display: flex; align-items: center; gap: 4px; white-space: nowrap; font-size: 14px; }
 .customer-design-copies b { font-variant-numeric: tabular-nums; }
 /* Order numbers copy themselves on click (list rows and the order heading). */
