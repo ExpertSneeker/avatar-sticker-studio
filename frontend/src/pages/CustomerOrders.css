@@ -1213,3 +1213,27 @@
   .customer-versions.with-compare { grid-template-columns: minmax(0,1fr); }
   .customer-cutout-compare img { height: 170px; }
 }
+
+/* Seller remark from the sales platform: easy to spot in rows, order details and the shipping dialog. */
+.seller-remark {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 6px 0;
+  padding: 8px 12px;
+  border-radius: var(--r-md, 10px);
+  background: var(--warn-soft);
+  border: 1px solid var(--warn-dot);
+  color: var(--warn);
+  font-size: 14px;
+  line-height: 1.5;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+.seller-remark svg { flex-shrink: 0; margin-top: 2px; }
+.seller-remark b { margin-right: 8px; }
+.customer-staff-actions + .seller-remark { margin-bottom: 12px; }
+.shipping-line { color: var(--ok); font-weight: 600; }
+.customer-shipped .tracking-number { color: var(--ink, inherit); user-select: all; letter-spacing: .02em; }
+.bulk-ship-list { list-style: none; padding: 0; margin: 0 0 12px; display: grid; gap: 8px; max-height: 50vh; overflow: auto; }
+.bulk-ship-list li { padding: 8px 0; border-bottom: 1px solid var(--line); }

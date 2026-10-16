@@ -19,7 +19,7 @@
 | Agiso 协议、接口、状态转换和消息队列 | `backend/app/agiso_protocol.py`、`agiso_routes.py`、`agiso_service.py`、`agiso_worker.py` |
 | 清理、删除计划和统计 | `backend/app/maintenance.py`、`statistics.py` |
 | 后台壳、访客独立入口 | `frontend/src/App.tsx`、`main.tsx`、`pages/Guest.tsx` |
-| 工作台与历史订单共用页 | `frontend/src/pages/CustomerOrders.tsx`、`CustomerOrders.css` |
+| 工作台与全部订单共用页 | `frontend/src/pages/CustomerOrders.tsx`、`CustomerOrders.css` |
 | 后台代操作与访客共用制作界面 | `frontend/src/components/CustomerWorkbench.tsx` |
 | 视觉设计变量与全局样式 | `frontend/src/styles/tokens.css`、`frontend/src/styles.css`；规范见 `docs/design/design-system.md` |
 | API 身份、客户端幂等、交付文件保护 | `frontend/src/lib/api.ts`、`customer-orders.ts`、`delivery.ts`、`sync.ts` |
@@ -47,18 +47,19 @@
 
 ## 客户订单
 
-后台工作台和历史订单统一使用 `/api/customer-orders`。订单只有一种结构，不写入或判断 `workflow_version`，旧 `/api/orders` 接口已移除；框架升级使用明确数据迁移，不保留旧流程兼容层。
+后台工作台和全部订单统一使用 `/api/customer-orders`。订单只有一种结构，不写入或判断 `workflow_version`，旧 `/api/orders` 接口已移除；框架升级使用明确数据迁移，不保留旧流程兼容层。
 
 | 状态 | 含义和出口 |
 | --- | --- |
 | `draft` | 待制作，可上传头像并选择；确认生成后冻结并进入 `review` |
 | `review` | 选图中，等待任务、重做与版本确认；精确选择 F 个位置后提交 |
-| `submitted` | 已锁定，服务端生成水印总览及打印拼图；后台可手动下载、重新排版或解锁 |
+| `submitted` | 已锁定，服务端生成水印总览及打印拼图；后台可手动下载、重新排版、解锁或发货 |
+| `shipped` | 已发货（归档，2026-10-16）：只读；删除前仍可下载打印文件，可撤销发货（回 `submitted`）、修改快递单号；到 `purge_at` 删除图片 |
 | `cancelled` | 取消并保留记录；受规则约束可恢复，退款取消另受售后保护 |
 
 `draft` 订单的工作清单（头像上传记录与各自的模板/贴纸选择）保存在订单的 `draft` 字段，客户与后台通过 `PUT /api/guest/order/draft`、`PUT /api/customer-orders/{id}/draft` 整体覆盖保存，最后一次保存为准。草稿有独立的 `draft.revision`，不增加订单 `version`，不需要 `client_token`，不影响生成/提交的并发检查；完整订单响应（非 `summary`）在 `draft` 状态返回 `draft`。保存时服务端校验：头像数不超过 F、不重复，上传记录已完成且属于本组织；客户只能加入本订单的访客上传，但可保留后台已放入草稿的上传；份数超过 G 时仅允许减少；已下架的模板/贴纸被丢弃。草稿中的头像可通过本订单媒体路由查看；客户生成时可使用后台已放入草稿的头像。开始生成后删除草稿，之后保存返回 409。前端每次添加/移除头像或“应用选择”即保存，网络或服务端错误在下次轮询时自动重试；不在浏览器存储中保存草稿。
 
-工作台仅显示 `draft/review`；历史订单显示全部客户订单，并可筛选已提交、已取消等。订单详情在弹窗中打开，两处页面共用逻辑。列表轮询使用 `GET /api/customer-orders?summary=1`，响应省略 `avatars`/`slots`（仍对每单执行 `reconcile`）；弹窗单独请求 `GET /api/customer-orders/{id}` 取得完整订单，列表发现版本更新时再刷新详情。不带 `summary` 的列表接口保持完整数据。列表支持关联店铺及无关联店铺筛选。
+工作台仅显示 `draft/review`；全部订单（原“历史订单”）显示全部客户订单，并可筛选已提交、已发货、已取消等。订单详情在弹窗中打开，两处页面共用逻辑。列表轮询使用 `GET /api/customer-orders?summary=1`，响应省略 `avatars`/`slots`（仍对每单执行 `reconcile`）；弹窗单独请求 `GET /api/customer-orders/{id}` 取得完整订单，列表发现版本更新时再刷新详情。不带 `summary` 的列表接口保持完整数据。列表支持关联店铺及无关联店铺筛选。
 
 | 字段 | 必须保持的语义 |
 | --- | --- |
@@ -80,6 +81,10 @@
 解锁保留已消耗额度和版本，重新提交前关闭旧交付下载。取消或暂停不等于远端请求结束；继续核对在途请求，但不能继续新生图或发布不该发布的产物。
 
 初始化（2026-10-16，`POST /api/customer-orders/{id}/reset`，仅 `superadmin`/`org_admin`，无访客路由）：`draft`/`review` 订单回到刚开单的 `draft`——清空 `avatars`、`designs`、`slots`、`draft`、`final_entries`、生成/选择计数和产物字段，保留订单号、G/F/R、店铺、水印、打印参数和提示词快照；该订单任何 item 处于 `queued`/`running`/`unknown`、`remote_reserved` 或 `cutout_inflight` 时返回 409，`submitted` 需先解锁。items、generations、资产、上传和审计记录不删除，只是不再被订单引用（媒体授权随之拒绝旧图，访客本人上传的原图仍可访问），统计照旧计入；资产随订单整体按保留天数清理。前端工作台发现订单从非 `draft` 回到 `draft` 时丢弃本页旧选择。
+
+发货与图片删除（2026-10-16）：`POST /api/customer-orders/{id}/ship`（`Ship`：`tracking_number` 可空，≤64，去首尾空白、拒绝控制字符）要求 `submitted` 且 `delivery_ready`，写入 `state='shipped'`、`shipped_at`、`shipped_by`、`tracking_number` 和 `purge_at = shipped_at + config.settings.shipped_retention_days × 86400`（默认 15，1–365，超级管理员在 `PATCH /api/admin/settings` 修改）。`purge_at` 发货时固定，改设置不影响已发货订单。`/unship`（`shipped` 且未删除 → `submitted`，清除 `shipped_at/shipped_by/purge_at`，保留单号）与 `/tracking`（任何已发货订单，含已删除和已取消的）所有后台账号可用，均走 `client_token`/`expected_version`；`tracking` 不受暂停或售后保护限制。`shipped` 不能 `unlock`/`repack`/`reset`。`oss_delivery.active()` 改为 `submitted|shipped` 且 `delivery_ready` 且未 `purged_at`：下载、manifest 和 OSS 同步/保留都按它判断，删除后 OSS 打印副本由对账清理。访客对 `shipped` 与 `submitted` 一样只拿到总览，DTO 另含 `shipped_at`、`tracking_number`、`purge_at`、`purged_at`（后台同样返回）。
+
+Worker 每 300 秒在线程中执行 `maintenance.purge_due(now)`：`purge_at <= now`、未删除、状态为 `shipped` 或发货后被取消（`cancelled`）且没有在途 item 的订单，经 `purge_plan` 计算本单资产（`order_id` 指向本单的资产，以及本单和本单 item 引用的头像、自备图、结果、原图、抠图前图、总览、打印文件，和本单访客上传）减去其他订单/item 引用与图库图片，删除这些 `assets`、对应 `uploads` 记录，并登记文件、`preview-cache`、`media-cache` 到 `cleanup_files` 后立即 `drain_cleanup`。订单写入 `purged_at`，清空 `artifacts`/总览并 `version+1`；订单、items、generations、审计（`action='purge'`, `actor='system'`）全部保留，统计不变。删除后的 DTO `avatars`/`slots` 为空、`preview_url`/`delivery_ready` 为空/假。发布审计 `deploy/audit_framework.py` 的“引用资产必须存在”检查跳过 `purged_at` 订单及其 items 的引用（items 引用的图库模板仍检查）；若清理恰好发生在发布的快照与线上审计之间，比对会报告这些资产缺失，核对为清理所致即可。
 
 ## 图片、队列与打印
 

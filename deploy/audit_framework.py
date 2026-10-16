@@ -63,7 +63,11 @@ def referenced_assets(records):
         for doc in records.get(kind, {}).values():
             if doc.get('image', {}).get('id'):
                 refs.add(doc['image']['id'])
+    # Shipped orders past their retention keep their records but not their images (purged_at).
+    purged = {id for id, doc in records.get('orders', {}).items() if doc.get('purged_at')}
     for doc in records.get('orders', {}).values():
+        if doc.get('purged_at'):
+            continue
         if doc.get('avatar_id'):
             refs.add(doc['avatar_id'])
         for avatar in doc.get('avatars', []):
@@ -81,6 +85,9 @@ def referenced_assets(records):
             refs.add(doc['overview_id'])
     for kind in ('items', 'result_versions'):
         for doc in records.get(kind, {}).values():
+            if doc.get('order_id') in purged:
+                refs.update(doc[k] for k in ('template_id',) if doc.get(k))
+                continue
             refs.update(doc[k] for k in ('avatar_id', 'template_id', 'result_id', 'raw_result_id', 'asset_id') if doc.get(k))
     return refs
 

@@ -21,6 +21,7 @@ from .schemas import AccountPatch, ActivePatch, Credentials, CleanupConfirm, Cle
 from .storage import asset_bytes, normalize_image, save_asset
 from .providers import DEFAULT_MAX_UPLOADS, DEFAULT_UPLOAD_TIMEOUT
 from .maintenance import account_deletion_plan, cleanup_plan, drain_cleanup, stage_cleanup, storage_stats
+from .customer_orders import DEFAULT_SHIPPED_RETENTION_DAYS
 from .statistics import summarize
 from .previews import PreviewCache
 from .media_cache import MediaCache, MediaWarmer
@@ -257,6 +258,7 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
         return {**{k: config[k] for k in ('max_inflight', 'prompt', 'prompt_version')}, 'max_uploads': config.get('max_uploads', DEFAULT_MAX_UPLOADS), 'fal_upload_timeout': config.get('fal_upload_timeout', DEFAULT_UPLOAD_TIMEOUT), 'fal_configured': bool(os.environ.get('FAL_KEY') or config.get('fal_api_key')), 'cutout_configured': bool(os.environ.get('YEZI_API_KEY') or config.get('cutout_api_key')),
                 'fal_input_mode': config.get('fal_input_mode', 'inline') if oss_available else 'inline',
                 'fal_input_oss_available': oss_available,
+                'shipped_retention_days': config.get('shipped_retention_days', DEFAULT_SHIPPED_RETENTION_DAYS),
                 'fal_balance_configured': bool(os.environ.get('FAL_ADMIN_KEY') or config.get('fal_admin_key')),
                 'fal_balance_key_source': 'environment' if os.environ.get('FAL_ADMIN_KEY') else 'settings' if config.get('fal_admin_key') else None}
 

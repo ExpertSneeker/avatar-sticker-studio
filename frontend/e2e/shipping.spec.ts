@@ -1,0 +1,84 @@
+import { test, expect, type Route } from '@playwright/test'
+import { randomUUID } from 'node:crypto'
+import { uploadStickers } from './library-fixtures'
+import { completedCustomer, pixel, staffLogin } from './customer-fixtures'
+const fresh=(route:Route)=>Object.fromEntries(Object.entries(route.request().headers()).filter(([name])=>name!=='if-none-match'))
+const DAY=86400
+
+test('all orders: ship with a tracking number and a prominent seller remark, the customer sees the deletion time, undo and bulk ship',async({page,browser})=>{
+  await staffLogin(page.request)
+  const errors:string[]=[];page.on('pageerror',e=>errors.push(e.message))
+  const tag=randomUUID().slice(0,6).toUpperCase()
+  const [sticker]=await uploadStickers(page.request,[{name:`SHP-${tag}.png`,mimeType:'image/png',buffer:pixel}])
+  const order=await completedCustomer(page.request,sticker.id,{order_number:`SHP-${tag}`})
+  const detail=async()=>(await page.request.get('/api/customer-orders/'+order.id)).json()
+  await expect.poll(async()=>(await detail()).delivery_ready,{timeout:60000}).toBe(true)
+  // The retention is set by the platform administrator and fixed per order when it ships.
+  await page.goto('/');await page.getByRole('button',{name:'管理设置',exact:true}).click()
+  const days=page.getByLabel('已发货订单图片保留天数',{exact:true});await expect(days).toHaveValue('15')
+  await days.fill('7');await page.getByRole('button',{name:'保存全站设置',exact:true}).click()
+  await expect(page.getByText('全站设置已保存',{exact:true})).toBeVisible()
+  const remark='送礼请勿放发票 [pdd 10/16 09:30]'
+  await page.route('**/api/customer-orders?summary=1*',async route=>{const response=await route.fetch({headers:fresh(route)});route.fulfill({response,json:(await response.json()).map((o:any)=>o.id===order.id?{...o,platform_remark:remark}:o)})})
+  await page.route(url=>url.pathname==='/api/customer-orders/'+order.id,async route=>{if(route.request().method()!=='GET')return route.fallback();const response=await route.fetch({headers:fresh(route)});route.fulfill({response,json:{...(await response.json()),platform_remark:remark}})})
+  try{
+    await page.getByRole('navigation').getByRole('button',{name:'全部订单',exact:true}).click()
+    await expect(page.getByRole('heading',{name:'全部订单',exact:true,level:1})).toBeVisible()
+    await page.getByPlaceholder('搜索订单号').fill(`SHP-${tag}`)
+    const row=page.locator('.customer-order-row').filter({hasText:`SHP-${tag}`})
+    await expect(row.locator('.seller-remark')).toContainText(remark)
+    await row.getByRole('button',{name:'发货',exact:true}).click()
+    const dialog=page.getByRole('dialog',{name:'发货'})
+    await expect(dialog.locator('.seller-remark')).toContainText(remark)
+    await dialog.getByLabel('快递单号（选填）').fill('SF1234567890')
+    await page.screenshot({path:'test-results/ship-dialog.png'})
+    await dialog.getByRole('button',{name:'确认发货'}).click()
+    await expect(row.locator('.customer-order-status')).toHaveText(/已发货/)
+    await expect(row.locator('.shipping-line')).toContainText('快递单号：SF1234567890')
+    const shipped=await detail()
+    expect(shipped.state).toBe('shipped');expect(shipped.purge_at).toBe(shipped.shipped_at+7*DAY)
+    await expect(row.locator('.shipping-line')).toContainText('图片将于')
+    await page.screenshot({path:'test-results/ship-row-1440.png',fullPage:true})
+    // The customer sees the shipment, tracking number and the deletion time on a phone.
+    const context=await browser.newContext({baseURL:'http://127.0.0.1:5174',viewport:{width:390,height:844}})
+    try{
+      const guest=await context.newPage();guest.on('pageerror',e=>errors.push(e.message))
+      await guest.request.post('/api/guest/login',{data:{order_number:`SHP-${tag}`}});await guest.goto('/guest')
+      await expect(guest.getByRole('heading',{name:'已发货'})).toBeVisible()
+      await expect(guest.getByText('SF1234567890')).toBeVisible()
+      await expect(guest.getByText(/订单图片将于 \d{4}-\d{2}-\d{2} \d{2}:\d{2} 删除/)).toBeVisible()
+      await expect(guest.getByAltText('已确认贴纸水印总览')).toBeVisible()
+      expect(await guest.evaluate(()=>document.documentElement.scrollWidth)).toBeLessThanOrEqual(390)
+      await guest.screenshot({path:'test-results/ship-guest-390.png',fullPage:true})
+    }finally{await context.close()}
+    // Fix the tracking number in the order, then undo the shipment.
+    await row.getByRole('button',{name:'查看订单'}).click()
+    const opened=page.getByRole('dialog',{name:'订单 '+order.order_number,exact:true})
+    await expect(opened.locator('.seller-remark').first()).toContainText(remark)
+    await expect(opened.locator('.shipping-line')).toContainText('SF1234567890')
+    await opened.getByRole('button',{name:'修改快递单号'}).click()
+    const edit=page.getByRole('dialog',{name:'修改快递单号'});await edit.getByLabel('快递单号（选填）').fill('YT0001')
+    await edit.getByRole('button',{name:'保存快递单号'}).click()
+    await expect(opened.locator('.shipping-line')).toContainText('YT0001')
+    await opened.getByRole('button',{name:'撤销发货'}).click()
+    await page.getByRole('dialog',{name:'撤销发货'}).getByRole('button',{name:'确认撤销发货'}).click()
+    await expect(opened.getByRole('button',{name:'发货',exact:true})).toBeVisible()
+    expect((await detail()).state).toBe('submitted')
+    await opened.getByRole('button',{name:'关闭',exact:true}).first().click()
+    // Bulk shipping lists each order with its seller remark.
+    await page.locator('.customer-order-filters').getByRole('button',{name:'刷新'}).click()
+    await expect(row.locator('.seller-remark')).toContainText(remark)
+    await row.getByRole('checkbox').check()
+    await page.getByRole('button',{name:'批量发货 (1)'}).click()
+    const bulk=page.getByRole('dialog',{name:'批量发货'})
+    await expect(bulk.locator('.seller-remark')).toContainText(remark)
+    await bulk.getByRole('button',{name:'确认发货 1 个'}).click()
+    await expect(page.getByText('已发货 1 个订单')).toBeVisible()
+    await expect(row.locator('.customer-order-status')).toHaveText(/已发货/)
+    await page.getByRole('combobox',{name:'订单状态'}).selectOption('shipped').catch(()=>page.locator('select').filter({hasText:'已发货'}).selectOption('shipped'))
+    await expect(row).toBeVisible()
+    expect(errors).toEqual([])
+  }finally{
+    await page.request.patch('/api/admin/settings',{data:{shipped_retention_days:15}})
+  }
+})

@@ -169,7 +169,8 @@ def expected_key(order, artifact):
 
 
 def active(order):
-    return bool(order and order.get('state') == 'submitted' and order.get('delivery_ready'))
+    """Print files stay available after shipping until the order's images are deleted."""
+    return bool(order and order.get('state') in ('submitted', 'shipped') and order.get('delivery_ready') and not order.get('purged_at'))
 
 
 def sign(key):
@@ -185,7 +186,7 @@ def sign(key):
 
 
 def _active_keys(tx):
-    return {expected_key(order, artifact) for order in tx.where('orders', 'state', 'submitted')
+    return {expected_key(order, artifact) for order in tx.where('orders', 'state', 'submitted', 'shipped')
             if active(order) for artifact in order.get('artifacts', []) if artifact.get('kind') == 'print'}
 
 
@@ -223,7 +224,7 @@ def sync(db, *, now=None):
             return
         with db.transaction(readonly=True) as tx:
             pending = [(order, artifact, tx.get('assets', artifact['id']))
-                for order in tx.where('orders', 'state', 'submitted') if active(order)
+                for order in tx.where('orders', 'state', 'submitted', 'shipped') if active(order)
                 for artifact in order.get('artifacts', []) if artifact.get('kind') == 'print'
                 and artifact.get('oss_key') != expected_key(order, artifact)]
         for order, artifact, asset in pending:

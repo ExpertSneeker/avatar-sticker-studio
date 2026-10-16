@@ -98,6 +98,18 @@ class DraftSave(Model):
     designs: list[DesignSelection] = Field(default_factory=list, max_length=360)
 
 
+class Ship(Mutation):
+    tracking_number: str = Field('', max_length=64)
+
+    @field_validator('tracking_number')
+    @classmethod
+    def clean_tracking_number(cls, value):
+        value = value.strip()
+        if any(ord(c) < 32 or ord(c) == 127 for c in value):
+            raise ValueError('快递单号格式不正确')
+        return value
+
+
 class Replace(Mutation):
     upload_id: str
     cutout: CutoutMode = 'cutout'
@@ -326,10 +338,16 @@ def dto(tx, order, guest=False, summary=False):
     result.update(paused=bool(order.get('paused') or effective_hold),
                   hold_reason=('订单售后处理中，请联系工作人员' if integration_held(order) else '订单暂不可操作，请联系工作人员') if effective_hold else None)
     result.update(preview_url=media_url(order, order.get('overview_id'), guest) if order.get('overview_ready') else None,
-                  delivery_ready=order['state'] == 'submitted' and bool(order.get('delivery_ready')))
+                  delivery_ready=oss_delivery.active(order))
+    if order.get('shipped_at'):
+        # Shipping and image deletion times are shown to the customer as well.
+        result.update(shipped_at=order['shipped_at'], tracking_number=order.get('tracking_number', ''),
+                      purge_at=order.get('purge_at'), purged_at=order.get('purged_at'))
     if not summary and order['state'] == 'draft':
         result['draft'] = draft_view(tx, order, guest)
-    if not summary and (not guest or order['state'] != 'submitted'):
+    if not summary and order.get('purged_at'):
+        result['avatars'], result['slots'] = [], []
+    elif not summary and (not guest or order['state'] not in DELIVERED):
         result['avatars'] = [{'id': a['id'], 'name': a['name'], 'preview_url': media_url(order, a['asset_id'], guest)} for a in order['avatars']]
         result['slots'] = []
         for slot in order['slots']:
@@ -581,6 +599,11 @@ def create_customer_order(tx, actor, data, at, shop=None):
     return order
 
 
+# Delivered orders: submitted for printing, then shipped (archived). Customers see only the overview.
+DELIVERED = ('submitted', 'shipped')
+DEFAULT_SHIPPED_RETENTION_DAYS = 15
+
+
 def integration_held(order):
     return bool(order.get('integration_holds'))
 
@@ -768,7 +791,7 @@ def register_customer_orders(app, db, user):
     def mutate(request, data, action, id=None, guest=False, slot_id=None):
         with db.transaction() as tx:
             order, actor = access(tx, request, id, guest)
-            if action not in {'cancel', 'restore', 'resolve', 'repack'}:
+            if action not in {'cancel', 'restore', 'resolve', 'repack', 'tracking'}:
                 require_active_order(order, tx)
             if action == 'restore' and integration_held(order):
                 raise HTTPException(409, '售后处理中的订单不能恢复')
@@ -944,6 +967,28 @@ def register_customer_orders(app, db, user):
                     raise HTTPException(409, '仅已提交订单可解锁')
                 order.update(state='review', delivery_ready=False, overview_ready=False, artifacts=[], overview_id=None,
                              final_entries=[], publish_signatures={})
+            elif action == 'ship':
+                # Shipping archives the order; its images are deleted after the retention set at this moment.
+                if state != 'submitted':
+                    raise HTTPException(409, '只有已提交的订单可以发货')
+                if not order.get('delivery_ready'):
+                    raise HTTPException(409, '打印文件还没生成好，请稍后再发货')
+                days = tx.get('config', 'settings').get('shipped_retention_days', DEFAULT_SHIPPED_RETENTION_DAYS)
+                shipped = now()
+                order.update(state='shipped', shipped_at=shipped, shipped_by=actor, tracking_number=data.tracking_number,
+                             purge_at=shipped + days * 86400)
+            elif action == 'unship':
+                if state != 'shipped':
+                    raise HTTPException(409, '订单还没有发货')
+                if order.get('purged_at'):
+                    raise HTTPException(409, '订单图片已删除，不能撤销发货')
+                order['state'] = 'submitted'
+                for field in ('shipped_at', 'shipped_by', 'purge_at'):
+                    order.pop(field, None)
+            elif action == 'tracking':
+                if not order.get('shipped_at'):
+                    raise HTTPException(409, '订单还没有发货')
+                order['tracking_number'] = data.tracking_number
             elif action == 'reset':
                 # Back to a freshly opened order: the customer uploads and chooses again. Items, generation records,
                 # stored images and the audit trail are kept, only unlinked; numbers, quotas, shop and watermark stay.
@@ -995,11 +1040,19 @@ def register_customer_orders(app, db, user):
     def staff_draft(id: str, data: DraftSave, request: Request): return draft(request, data, id)
     app.add_api_route('/api/guest/order/draft', guest_draft, methods=['PUT'])
     app.add_api_route('/api/customer-orders/{id}/draft', staff_draft, methods=['PUT'])
-    for name in ('cancel', 'restore', 'unlock', 'reset'):
+    for name in ('cancel', 'restore', 'unlock', 'reset', 'unship'):
         def staff_endpoint(action):
             def endpoint(id: str, data: Mutation, request: Request): return mutate(request, data, action, id)
             return endpoint
         app.add_api_route('/api/customer-orders/{id}/'+name, staff_endpoint(name), methods=['POST'])
+
+    @app.post('/api/customer-orders/{id}/ship')
+    def ship(id: str, data: Ship, request: Request):
+        return mutate(request, data, 'ship', id)
+
+    @app.post('/api/customer-orders/{id}/tracking')
+    def tracking(id: str, data: Ship, request: Request):
+        return mutate(request, data, 'tracking', id)
 
     @app.post('/api/customer-orders/{id}/slots/{slot_id}/resolve')
     def resolve(id: str, slot_id: str, data: Resolve, request: Request):
@@ -1035,8 +1088,8 @@ def register_customer_orders(app, db, user):
 
     def delivery(tx, request, id):
         order, _ = access(tx, request, id)
-        if order['state'] != 'submitted' or not order.get('delivery_ready'):
-            raise HTTPException(409, '订单尚未完成交付')
+        if not oss_delivery.active(order):
+            raise HTTPException(409, '订单尚未完成交付或图片已删除')
         return order
 
     @app.get('/api/customer-orders/{id}/manifest')

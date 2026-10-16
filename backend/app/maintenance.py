@@ -88,6 +88,59 @@ def stage_cleanup(tx, records, paths):
         tx.put('cleanup_files', {'id':hashlib.sha256(path.encode()).hexdigest(), 'path':path})
 
 
+def library_image_ids(tx):
+    return ({im['id'] for kind in ('templates', 'template_revisions') for t in tx.all(kind) for im in t.get('images', [])}
+            | {s['image']['id'] for kind in ('stickers', 'sticker_revisions') for s in tx.all(kind)})
+
+
+def purge_plan(db, tx, order):
+    """Images of one shipped order whose retention ended: uploads, results, originals, overview and print
+    files with their caches. Records (order, items, generations, audit) stay for statistics and costs;
+    anything another order or the library still uses is kept."""
+    items = tx.all('items')
+    mine = [i for i in items if i['order_id'] == order['id']]
+    protected = _references([o for o in tx.all('orders') if o['id'] != order['id']], [i for i in items if i['order_id'] != order['id']])
+    protected |= library_image_ids(tx)
+    own_uploads = tx.where('uploads', 'guest_order_id', order['id'])
+    referenced = _references([order], mine) | {u['asset_id'] for u in own_uploads if u.get('asset_id')}
+    removable = [a for a in tx.all('assets') if a['kind'] != 'template' and a['id'] not in protected
+                 and (a.get('order_id') == order['id'] or a['id'] in referenced)]
+    asset_ids = {a['id'] for a in removable}
+    uploads = [u for u in tx.all('uploads') if u['id'] not in protected and (u.get('asset_id') in asset_ids
+               or u.get('guest_order_id') == order['id'] and not u.get('asset_id'))]
+    paths = (['assets/' + a['file'] for a in removable] + [u['id'] + '.upload' for u in uploads]
+             + ['preview-cache/' + id for id in asset_ids] + ['media-cache/' + id for id in asset_ids])
+    return {'assets': removable, 'uploads': uploads}, paths
+
+
+def purge_due(db, now):
+    """Delete the images of shipped orders past their own deletion time (set when shipped)."""
+    with db.transaction(readonly=True) as tx:
+        due = [o['id'] for o in tx.find('orders', ("json_extract(doc,'$.purge_at') <= ?", (now,))) if not o.get('purged_at')]
+    purged = 0
+    for id in due:
+        with db.transaction() as tx:
+            order = tx.get('orders', id)
+            # Unshipping clears purge_at; a refund cancelled after shipping keeps the shipped deadline.
+            if (not order or order.get('purged_at') or not order.get('purge_at') or order['purge_at'] > now
+                    or order['state'] not in ('shipped', 'cancelled')):
+                continue
+            if any(i['status'] in {'queued', 'running', 'unknown'} or i.get('remote_reserved') or i.get('cutout_inflight')
+                   for i in tx.where('items', 'order_id', id) if i['order_id'] == id):
+                continue
+            records, paths = purge_plan(db, tx, order)
+            stage_cleanup(tx, records, paths)
+            order.update(purged_at=now, artifacts=[], overview_ready=False, overview_id=None, delivery_ready=False,
+                         publish_signatures={}, version=order['version'] + 1, content_version=order['content_version'] + 1)
+            tx.put('orders', order)
+            from .customer_orders import audit
+            audit(tx, order, 'purge', 'system', now)
+            purged += 1
+    if purged:
+        drain_cleanup(db)
+    return purged
+
+
 def account_deletion_plan(tx, account_id):
     """Snapshot deletion scope under the same write lock used by worker claims."""
     target = tx.get('users', account_id)

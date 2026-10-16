@@ -345,3 +345,15 @@ def test_single_order_compare_allows_only_worker_lease_turnover(tmp_path):
         conn.execute("DELETE FROM records WHERE kind='workers'")
         conn.execute('INSERT INTO records VALUES(?,?,?)', ('workers', 'current', '{"id":"current","expires":2}'))
     assert audit_framework.compare(before, audit_framework.audit(tmp_path, allow_single_order_migration=True)) == []
+
+
+def test_purged_shipped_orders_may_lack_their_images(tmp_path):
+    docs = seed(tmp_path)
+    with sqlite3.connect(tmp_path / 'studio.sqlite3') as conn:
+        conn.execute('INSERT INTO records VALUES(?,?,?)', ('items', 'i', json.dumps({'id': 'i', 'order_id': 'o', 'result_id': 'gone', 'template_id': 'asset'})))
+    assert 'missing referenced asset: gone' in audit_framework.audit(tmp_path)['failures']
+    replace(tmp_path, 'orders', docs['orders'][0] | {'avatars': [{'asset_id': 'gone-avatar'}], 'purged_at': 1})
+    assert audit_framework.audit(tmp_path)['failures'] == []
+    # Library images the purged order's items used are still required.
+    (tmp_path / 'assets' / 'asset.png').unlink()
+    assert 'missing referenced asset: asset' in audit_framework.audit(tmp_path)['failures']

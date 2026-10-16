@@ -124,7 +124,7 @@ test('manual bulk print download selects one root, verifies hashes, preserves fo
   const sticker=(await uploadStickers(page.request,[{name:'ZIP-'+randomUUID().slice(0,8)+'.png',mimeType:'image/png',buffer:pixel}]))[0]
   const orders=[await completedCustomer(page.request,sticker.id,{order_number:'PRINT-'+randomUUID().slice(0,8),notes:'客户/备注'}),await completedCustomer(page.request,sticker.id,{order_number:'PRINT-'+randomUUID().slice(0,8),notes:''})]
   await installDirectoryPicker(page)
-  await page.goto('/');await page.getByRole('navigation').getByRole('button',{name:'历史订单',exact:true}).click();await expect(page.getByRole('heading',{name:'历史订单',exact:true,level:1})).toBeVisible()
+  await page.goto('/');await page.getByRole('navigation').getByRole('button',{name:'全部订单',exact:true}).click();await expect(page.getByRole('heading',{name:'全部订单',exact:true,level:1})).toBeVisible()
   await page.waitForTimeout(300)
   expect(await page.evaluate(()=>(window as any).pickerCalls)).toBe(0)
   for(const order of orders)await page.getByLabel('选择订单 '+order.order_number,{exact:true}).check()
@@ -227,7 +227,7 @@ test('independent superadmin starts in organization management without organizat
   await page.route('**/api/auth/me',route=>route.fulfill({json:independent}))
   page.on('request',request=>requests.push(new URL(request.url()).pathname))
   await page.goto('/');await expect(page.getByRole('heading',{name:'组织管理',exact:true,level:1})).toBeVisible()
-  for(const name of ['工作台','贴纸库','模板库','历史订单'])await expect(page.getByRole('navigation').getByRole('button',{name,exact:true})).toHaveCount(0)
+  for(const name of ['工作台','贴纸库','模板库','全部订单'])await expect(page.getByRole('navigation').getByRole('button',{name,exact:true})).toHaveCount(0)
   expect(requests.some(path=>['/api/templates','/api/stickers','/api/orders','/api/customer-orders','/api/library/categories'].includes(path))).toBe(false)
 })
 
@@ -278,7 +278,7 @@ test('staff reconciles applied-but-lost generate and rerun responses, then manag
   await page.getByRole('button',{name:'返回订单'}).click()
   await page.getByLabel('订单号',{exact:true}).fill(order.order_number)
   await expect(page.locator('.customer-order-row')).toHaveCount(0)
-  await page.getByRole('navigation').getByRole('button',{name:'历史订单',exact:true}).click()
+  await page.getByRole('navigation').getByRole('button',{name:'全部订单',exact:true}).click()
   await page.getByLabel('订单号',{exact:true}).fill(order.order_number)
   await expect(page.locator('.customer-order-row')).toHaveCount(1)
   await expect(page.locator('.customer-order-thumb')).toHaveCount(1)
@@ -354,7 +354,7 @@ test('guest prints finished images of their own: step-1 hint, whole-print warnin
     await expect(guest.getByRole('heading',{name:'已提交印刷'})).toBeVisible()
     await expect.poll(async()=>(await(await page.request.get('/api/customer-orders/'+order.id)).json()).delivery_ready,{timeout:60000}).toBe(true)
     // Staff see the order flagged in the list.
-    await page.goto('/');await page.getByRole('navigation').getByRole('button',{name:'历史订单',exact:true}).click()
+    await page.goto('/');await page.getByRole('navigation').getByRole('button',{name:'全部订单',exact:true}).click()
     await expect(page.locator('.customer-order-row').filter({hasText:order.order_number})).toContainText('含自备图 2 张')
     expect(errors).toEqual([])
   }finally{await context.close()}

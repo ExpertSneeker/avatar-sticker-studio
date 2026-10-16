@@ -10,7 +10,7 @@ test('history renders 50 rows at a time while filters and select-all cover every
   await page.route(/\/api\/customer-orders\?summary=1(&active=1)?$/,route=>route.fulfill({json:rows}))
   await page.route(/\/api\/customer-orders\/paging-\d+\/media\//,route=>route.fulfill({status:404}))
   await page.goto('/')
-  await page.getByRole('navigation').getByRole('button',{name:'历史订单',exact:true}).click()
+  await page.getByRole('navigation').getByRole('button',{name:'全部订单',exact:true}).click()
   const list=page.locator('.customer-order-row')
   await expect(list).toHaveCount(50)
   const thumb=page.locator('.customer-order-thumb img').first()

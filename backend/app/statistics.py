@@ -37,7 +37,7 @@ def summarize(tx, actor, now, days=30, offset=480, global_scope=False):
         total['attempts'] += sum(i.get('attempt', 0) for i in items)
         total['extra_attempts'] += sum(max(0, i.get('attempt', 0) - 1) for i in items)
         status = order['state']
-        done = status == 'submitted' and order.get('delivery_ready', False)
+        done = status == 'shipped' or status == 'submitted' and order.get('delivery_ready', False)
         statuses[status] += 1
         total['ready_orders'] += int(bool(done))
         member = members.setdefault(order['owner'], {'id':order['owner'], 'orders':0, 'images':0, 'completed':0, 'failed':0, 'attempts':0})
@@ -53,7 +53,7 @@ def summarize(tx, actor, now, days=30, offset=480, global_scope=False):
     keys = ('orders', 'ready_orders', 'images', 'completed', 'failed', 'unknown', 'running', 'queued', 'attempts', 'extra_attempts')
     result = {'scope':'global' if global_scope else 'personal', 'days':days,
               'generated_at':current.isoformat(), 'summary':{k:total[k] for k in keys},
-              'order_statuses':{k:statuses[k] for k in ('queued','processing','completed','failed','unknown','paused','archived','draft','review','submitted','cancelled')},
+              'order_statuses':{k:statuses[k] for k in ('queued','processing','completed','failed','unknown','paused','archived','draft','review','submitted','shipped','cancelled')},
               'daily':list(daily.values()),
               'templates':sorted(templates.values(), key=lambda v:(-v['orders'], v['code']))}
     if global_scope:

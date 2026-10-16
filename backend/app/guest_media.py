@@ -161,7 +161,7 @@ def register_guest_media(app, db, user):
             raise HTTPException(404, '图片不可用')
         if order.get('overview_ready') and asset_id == order.get('overview_id'):
             return order, asset, 'customer'
-        if not is_guest or order['state'] != 'submitted':
+        if not is_guest or order['state'] not in ('submitted', 'shipped'):
             if (asset_id in {a['asset_id'] for a in order['avatars']}
                     or asset_id in {a['asset_id'] for a in draft_avatars(order)}
                     or asset_id in design_assets(order)

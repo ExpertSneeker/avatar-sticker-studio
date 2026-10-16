@@ -14,7 +14,7 @@ interface StatisticsData {
   accounts?:{total:number;active:number;contributing:number}
 }
 const periods=[['1','最近 24 小时'],['3','最近 3 天'],['7','最近 7 天'],['30','最近 30 天'],['0','全部订单']]
-const states=[['draft','待制作'],['review','选图中'],['submitted','已提交'],['cancelled','已取消'],['queued','排队中'],['processing','处理中'],['completed','已完成'],['failed','有失败'],['unknown','待确认'],['paused','已暂停'],['archived','已归档']]
+const states=[['draft','待制作'],['review','选图中'],['submitted','已提交'],['shipped','已发货'],['cancelled','已取消'],['queued','排队中'],['processing','处理中'],['completed','已完成'],['failed','有失败'],['unknown','待确认'],['paused','已暂停'],['archived','已归档']]
 const number=(value:number)=>value.toLocaleString('zh-CN')
 
 export function Statistics({global=false}:{global?:boolean}) {

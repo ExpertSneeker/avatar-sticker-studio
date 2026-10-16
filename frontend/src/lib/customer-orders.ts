@@ -3,7 +3,7 @@ import { ApiError, fetchRevalidated, post } from './api'
 import type { PrintSettings, Sticker, TemplateSet } from './types'
 import type { LibraryCategory } from './categories'
 
-export type OrderState = 'draft' | 'review' | 'submitted' | 'cancelled'
+export type OrderState = 'draft' | 'review' | 'submitted' | 'shipped' | 'cancelled'
 // before_url: the image as it was before cutout, when this version was cut out.
 export interface CustomerVersion { id:string; preview_url:string; before_url?:string|null }
 export interface CustomerSlot {
@@ -34,6 +34,8 @@ export interface GuestOrder {
   generation_limit:number; final_count:number; rerun_limit:number
   avatars?:CustomerAvatar[]; slots?:CustomerSlot[]; preview_url?:string|null
   delivery_ready?:boolean; created_at?:string; paused?:boolean; hold_reason?:string|null; draft?:OrderDraft
+  // Shipped (archived) orders: images are deleted at purge_at (epoch seconds); purged_at once done.
+  shipped_at?:number; tracking_number?:string; purge_at?:number|null; purged_at?:number|null
 }
 export interface CustomerOrder extends GuestOrder {
   version:number;
@@ -47,7 +49,9 @@ export interface LibrarySticker {id:string;code:string;name:string;category:stri
 export interface LibraryTemplate {id:string;code:string;name:string;category:string;sticker_ids:string[];images:{preview_url:string;code?:string}[];active?:boolean;available?:boolean}
 export interface CustomerLibrary {stickers:LibrarySticker[];templates:LibraryTemplate[];categories?:LibraryCategory[]}
 export interface Preflight {avatar_count:number;selection_count:number;generation_count:number;design_count?:number}
-export const stateLabels:Record<OrderState,string> = {draft:'待制作',review:'选图中',submitted:'已提交',cancelled:'已取消'}
+export const stateLabels:Record<OrderState,string> = {draft:'待制作',review:'选图中',submitted:'已提交',shipped:'已发货',cancelled:'已取消'}
+// Epoch seconds as local "YYYY-MM-DD HH:mm".
+export function formatTime(seconds:number){const d=new Date(seconds*1000),p=(n:number)=>String(n).padStart(2,'0');return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`}
 export const roleLabel=(role:string)=>({superadmin:'超级管理员',org_admin:'组织管理员',staff:'成员'}[role]||role)
 export const isAdmin=(role:string)=>role==='superadmin'||role==='org_admin'
 

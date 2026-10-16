@@ -93,6 +93,7 @@ class SettingsPatch(Model):
     fal_api_key: str | None = Field(None, max_length=500)
     fal_admin_key: str | None = Field(None, max_length=500)
     cutout_api_key: str | None = Field(None, max_length=500)
+    shipped_retention_days: int | None = Field(None, ge=1, le=365)
 
     @field_validator('fal_input_mode')
     @classmethod

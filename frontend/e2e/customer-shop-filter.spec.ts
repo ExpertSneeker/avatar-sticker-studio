@@ -10,7 +10,7 @@ test('workbench and history filter orders by associated shop',async({page})=>{
   await page.route(/\/api\/customer-orders(\?summary=1(&active=1)?)?$/,route=>route.fulfill({json:rows}))
   await page.goto('/')
   for(const history of [false,true]){
-    if(history)await page.getByRole('navigation').getByRole('button',{name:'历史订单',exact:true}).click()
+    if(history)await page.getByRole('navigation').getByRole('button',{name:'全部订单',exact:true}).click()
     const filter=page.getByLabel('店铺',{exact:true})
     await filter.selectOption('shop-0')
     await expect(page.locator('.customer-order-row')).toHaveCount(1)

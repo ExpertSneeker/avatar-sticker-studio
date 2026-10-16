@@ -33,7 +33,7 @@ test('白边处理宽度在账号设置保存，订单快照和重新排版使�
   const [sticker] = await uploadStickers(page.request, [{ name: `WHITE-EDGE-${Date.now()}.png`, mimeType: 'image/png', buffer: pixel }])
   const submitted = await completedCustomer(page.request, sticker.id)
   if (page.viewportSize()!.width < 720) await page.getByRole('button', { name: '展开导航' }).click()
-  await page.getByRole('navigation').getByRole('button', { name: '历史订单', exact: true }).click()
+  await page.getByRole('navigation').getByRole('button', { name: '全部订单', exact: true }).click()
   await page.getByText(submitted.order_number, { exact: true }).click()
   const orderDialog = page.getByRole('dialog', { name: '订单 ' + submitted.order_number, exact: true })
   await orderDialog.getByRole('button', { name: '重新排版', exact: true }).click()
