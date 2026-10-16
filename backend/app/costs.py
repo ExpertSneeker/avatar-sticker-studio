@@ -389,11 +389,17 @@ def agiso_calibration(tx, versions, date_from, date_to):
             'balance_day': latest['id'] if latest else None}
 
 
+def aliyun_sync(db, now):
+    from .aliyun_costs import sync_aliyun
+    return sync_aliyun(db, now)
+
+
 def tick(db, now, get=None):
     """Periodic cost syncs; each source fails on its own without stopping the others.
     `get` replaces outbound HTTP in tests and local browser runs."""
     for name, job in (('fx', lambda: sync_fx(db, now, get)), ('cutout', lambda: sync_cutouts(db)), ('fal', lambda: sync_fal(db, now, get)),
-                      ('agiso', lambda: sync_agiso(db, now)), ('agiso-deposit', lambda: None if get else sync_agiso_deposit(db, now))):  # no balance queries from test runs
+                      ('agiso', lambda: sync_agiso(db, now)), ('agiso-deposit', lambda: None if get else sync_agiso_deposit(db, now)),
+                      ('aliyun', lambda: None if get else aliyun_sync(db, now))):  # test runs inject `get`: no balance or bill queries
         try:
             job()
         except Exception:

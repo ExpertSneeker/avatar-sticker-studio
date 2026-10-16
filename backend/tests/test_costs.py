@@ -228,3 +228,67 @@ def test_agiso_pushes_with_repeats_and_calls_are_charged_and_unmatched_ones_shar
     check = report(c)['agiso_check']
     assert check['balance'] == 4.333 and check['days'] == 1 and check['balance_drop'] == pytest.approx(0.01)
     assert check['computed'] == pytest.approx(0.011) and check['ratio'] == pytest.approx(0.01 / 0.011, abs=1e-3)
+
+
+class FakeAliyun:
+    region, site_id = 'cn-wulanchabu', 'site'
+    def __init__(self, lines, rows, ready=True):
+        self.lines, self.rows, self.ready = lines, rows, ready
+    def bill(self, day, product):
+        if product == 'oss':
+            return [('cn-wulanchabu;standard-zrs', '外网流出流量', 'PayAsYouGo', 0.5), ('cn-wulanchabu;standard-zrs', '标准存储（同城冗余）容量', 'PayAsYouGo', 0.03),
+                    ('cn-beijing;standard', '外网流出流量', 'PayAsYouGo', 9.0)] if self.ready else []
+        return [('esa-site', '流量', 'PayAsYouGo', 0.02)] if product == 'dcdn' else []
+    def subscriptions(self, cycle, product):
+        return [(51.1, 12)]
+    def oss_lines(self, day):
+        return self.lines
+    def esa_rows(self, day):
+        return self.rows
+
+
+def test_oss_and_esa_days_are_split_by_bytes_and_the_rest_shared(context):
+    from datetime import datetime, timezone
+    from backend.app import aliyun_costs
+    app, c, clock, _ = context
+    sid = sticker(c, 'ONE')['id']
+    a, b = printed(app, c, 'NET-A', sid, 1), printed(app, c, 'NET-B', sid, 1)
+    with app.state.db.transaction() as tx:
+        item = order_items(app, a)[0]
+        started = datetime.fromtimestamp(item['started_at'], timezone.utc)
+        template_sha = tx.get('assets', item['template_id'])['sha256']
+        asset = next(x for x in tx.all('assets') if x.get('order_id') == b['id'])
+    day = started.astimezone(aliyun_costs.CHINA).date().isoformat()
+    stamp = started.astimezone(aliyun_costs.CHINA).strftime('%d/%b/%Y:%H:%M:%S +0800')
+    def line(path, sent, host='coreages-sticker.oss-cn-wulanchabu.aliyuncs.com', method='GET'):
+        return f'1.2.3.4 - - [{stamp}] "{method} /{path} HTTP/1.1" 200 {sent} 10 "-" "ua" "{host}" "rid" "true" "-" "GetObject" "coreages-sticker" "-" - 0 "-" 1 "1" - "-" "standard" "-" "-" "-" "-" - -'
+    lines = [line(f"print/org/{b['id']}/x.png", 600),
+             line(f"fal-inputs/{started:%Y%m%d}/{template_sha}.png", 300),  # used by both orders' items that day
+             line('fal-inputs/20990101/' + 'f' * 64 + '.png', 100),            # unknown input: shared
+             line(f"backups/x.tar", 999999, host='coreages-sticker.oss-cn-wulanchabu-internal.aliyuncs.com')]  # internal: free
+    rows = [{'ClientRequestHost': 'sticker.coreages.com', 'ClientIP': '9.9.9.9', 'ClientRequestURI': f"/api/guest/media/{a['id']}/x?m=1", 'EdgeResponseBytes': 1000},
+            {'ClientRequestHost': 'sticker.coreages.com', 'ClientIP': '9.9.9.9', 'ClientRequestURI': '/media/catalog/x/y/1/z.webp', 'EdgeResponseBytes': 500},
+            {'ClientRequestHost': 'sticker.coreages.com', 'ClientIP': '8.8.8.8', 'ClientRequestURI': f"/api/assets/{asset['id']}", 'EdgeResponseBytes': 1500},
+            {'ClientRequestHost': 'sticker.coreages.com', 'ClientIP': '8.8.8.8', 'ClientRequestURI': '/api/stickers', 'EdgeResponseBytes': 2000},
+            {'ClientRequestHost': 'www.coreages.com', 'ClientIP': '7.7.7.7', 'ClientRequestURI': '/', 'EdgeResponseBytes': 99999}]
+    assert aliyun_costs.sync_day(app.state.db, FakeAliyun(lines, rows, ready=False), day) is False
+    assert aliyun_costs.sync_day(app.state.db, FakeAliyun(lines, rows), day)
+    assert aliyun_costs.sync_day(app.state.db, FakeAliyun(lines, rows), day)  # re-syncing a day replaces it
+    with app.state.db.transaction() as tx:
+        entries = {e['id']: e for e in tx.all('cost_entries') if e['source'] in ('oss', 'esa')}
+    # OSS traffic 0.5 over 1000 public bytes: B 600 + 150, A 150, unknown input 100 shared; storage shared.
+    assert entries[f"oss:{day}:{b['id']}"]['amount_cny'] == pytest.approx(0.5 * 750 / 1000)
+    assert entries[f"oss:{day}:{a['id']}"]['amount_cny'] == pytest.approx(0.5 * 150 / 1000)
+    assert entries[f'oss:{day}:shared']['amount_cny'] == pytest.approx(0.05) and entries[f'oss-storage:{day}']['amount_cny'] == 0.03
+    # ESA: plan 51.1 over 365 days plus 0.02 pay-as-you-go, over 5000 sticker bytes.
+    esa = 51.1 / 365 + 0.02
+    assert entries[f"esa:{day}:{a['id']}"]['amount_cny'] == pytest.approx(esa * 1500 / 5000)  # media + catalog by IP
+    assert entries[f"esa:{day}:{b['id']}"]['amount_cny'] == pytest.approx(esa * 1500 / 5000)  # its print asset
+    assert entries[f'esa:{day}:shared']['amount_cny'] == pytest.approx(esa * 2000 / 5000) and entries[f'esa:{day}:shared']['shared']
+    # Shared parts are spread over the month's two orders.
+    data = report(c)
+    shared = (0.05 + 0.03) / 2
+    assert row(data, 'NET-A')['costs']['oss'] == pytest.approx(0.5 * 150 / 1000 + shared, abs=1e-4)
+    assert row(data, 'NET-B')['costs']['esa'] == pytest.approx(esa * 0.3 + esa * 0.4 / 2, abs=1e-4)
+    # Not configured: nothing happens; days are taken oldest first, two days back at most.
+    assert aliyun_costs.sync_aliyun(app.state.db, clock(), None) == 0
