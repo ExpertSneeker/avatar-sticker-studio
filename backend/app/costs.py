@@ -402,8 +402,10 @@ def tick(db, now, get=None):
                       ('aliyun', lambda: None if get else aliyun_sync(db, now))):  # test runs inject `get`: no balance or bill queries
         try:
             job()
-        except Exception:
-            log.warning('Cost sync %s failed; will retry', name)
+        except Exception as error:
+            # Only our own RuntimeError texts are logged (status and error codes); others may hold signed URLs.
+            log.warning('Cost sync %s failed (%s); will retry', name,
+                        type(error).__name__ + (': ' + str(error)[:120] if type(error) is RuntimeError else ''))
 
 
 def report(tx, actor, now, date_from, date_to, *, offset=480, global_scope=False, platform=None, shop_id=None):
