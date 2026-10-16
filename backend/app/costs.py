@@ -22,12 +22,19 @@ log = logging.getLogger(__name__)
 
 CHINA = timezone(timedelta(hours=8))
 # Rates in CNY. Agiso bills per push or API call by tier (base/high/increment); prices are its current list prices.
-RATE_FIELDS = ('packaging', 'shipping', 'sheet', 'per_sheet', 'cutout', 'agiso_base', 'agiso_high', 'agiso_increment')
+RATE_FIELDS = ('packaging', 'shipping', 'sheet', 'per_sheet', 'cutout', 'agiso_base', 'agiso_high', 'agiso_increment',
+               'oss_traffic', 'oss_traffic_idle', 'oss_storage', 'oss_requests', 'esa_traffic')
 DEFAULT_RATES = {'from': '1970-01-01', 'packaging': 0.3, 'shipping': 2.3, 'sheet': 0.27, 'per_sheet': 6, 'cutout': 0.032,
-                 'agiso_base': 0.001, 'agiso_high': 0.002, 'agiso_increment': 0.004}
+                 'agiso_base': 0.001, 'agiso_high': 0.002, 'agiso_increment': 0.004,
+                 # Pay-as-you-go list prices: OSS egress per GB (08-24 / 00-08 China time), storage per GB-month (zone-redundant
+                 # standard), requests per 10,000; ESA traffic per GB (basic plan overage price).
+                 'oss_traffic': 0.5, 'oss_traffic_idle': 0.25, 'oss_storage': 0.15, 'oss_requests': 0.01, 'esa_traffic': 0.198}
 # Used only before the first daily USD/CNY rate is stored.
 FALLBACK_USD_CNY = 7.1
-CATEGORIES = ('packaging', 'shipping', 'material', 'generation', 'cutout', 'agiso', 'oss', 'esa')
+# 现实成本 (physical: packaging, shipping, sheets, cutouts) and 软件成本 (software and cloud services).
+PHYSICAL = ('packaging', 'shipping', 'material', 'cutout')
+SOFTWARE = ('generation', 'agiso', 'oss', 'esa')
+CATEGORIES = PHYSICAL + SOFTWARE
 
 
 def day_of(seconds, zone=CHINA):
@@ -39,12 +46,13 @@ def rate_versions(config):
 
 
 def rates_on(versions, day):
-    """The version in effect on `day`; days before the first version use the first one."""
+    """The version in effect on `day`; days before the first version use the first one. Fields added
+    after a version was saved take their defaults."""
     current = versions[0]
     for version in versions:
         if version['from'] <= day:
             current = version
-    return current
+    return {**DEFAULT_RATES, **current}
 
 
 def fx_on(tx, day):
@@ -81,6 +89,10 @@ def fixed_costs(order, versions, today):
 
 def entry_amount(entry, versions, fx):
     """CNY for one cost entry."""
+    if entry.get('usage'):
+        # Usage priced at the rates of its day (missing fields in older rate versions fall back to defaults).
+        rate = rates_on(versions, entry['day'])
+        return sum(amount * rate.get(field, DEFAULT_RATES[field]) for field, amount in entry['usage'].items())
     if entry.get('amount_cny') is not None:
         return entry['amount_cny']
     if entry.get('amount_usd') is not None:
@@ -432,7 +444,7 @@ def report(tx, actor, now, date_from, date_to, *, offset=480, global_scope=False
             continue
         if date_from and created < date_from or date_to and created > date_to:
             continue
-        if platform and platform_of(order) != platform or shop_id and order.get('shop_id') != shop_id:
+        if platform and platform_of(order) != platform or shop_id and (order.get('shop_id') or 'none') != shop_id:
             continue
         orders.append((order, created))
     ids = {o['id'] for o, _ in orders}
@@ -449,7 +461,8 @@ def report(tx, actor, now, date_from, date_to, *, offset=480, global_scope=False
         elif global_scope and in_range(entry['day']):
             # Charges no order can be matched to: tests, requests whose id was not kept, shared costs of a month without orders.
             loose[entry['source']] += entry_amount(entry, versions, fx)
-    shops = {s['id']: s.get('shop_name', '') for s in tx.all('agiso_shops')}
+    shop_list = [s for s in tx.all('agiso_shops') if global_scope or s.get('organization_id') == actor.get('organization_id')]
+    shops = {s['id']: s.get('shop_name', '') for s in shop_list}
     rows, totals = [], {c: 0.0 for c in CATEGORIES}
     printed_total = sheets_total = 0
     for order, created in orders:
@@ -473,7 +486,8 @@ def report(tx, actor, now, date_from, date_to, *, offset=480, global_scope=False
         sheets_total += sheets
         rows.append({'id': order['id'], 'order_number': order['order_number'], 'state': order['state'], 'created': created,
                      'platform': platform_of(order), 'shop_name': shops.get(order.get('shop_id'), ''),
-                     'shipped_at': order.get('shipped_at'), 'printed': printed, 'sheets': sheets, 'fixed_basis': basis,
+                     'shop_id': order.get('shop_id'), 'shipped_at': order.get('shipped_at'), 'printed': printed,
+                     'physical': round(sum(costs[c] for c in PHYSICAL), 4), 'software': round(sum(costs[c] for c in SOFTWARE), 4), 'sheets': sheets, 'fixed_basis': basis,
                      'cutouts': counts.get('cutout', 0), 'requests': counts.get('generation', 0), 'allocated': round(allocated, 4), 'costs': costs, 'total': round(sum(costs.values()), 4)})
     rows.sort(key=lambda r: (r['created'], r['order_number']), reverse=True)
     total = round(sum(totals.values()), 4)
@@ -481,7 +495,9 @@ def report(tx, actor, now, date_from, date_to, *, offset=480, global_scope=False
     return {'date_from': date_from, 'date_to': date_to, 'today': today, 'scope': 'global' if global_scope else 'organization',
             'rates': rates_on(versions, today), 'rate_versions': versions,
             'fx': {'usd_cny': current['usd_cny'], 'source': current['source'], 'day': current.get('id'), 'published': current.get('published')},
+            'shops': [{'id': s['id'], 'name': s.get('shop_name', ''), 'platform': platform_of(s)} for s in shop_list],
             'summary': {'orders': len(rows), 'printed': printed_total, 'sheets': sheets_total, 'total': total,
+                        'physical': round(sum(totals[c] for c in PHYSICAL), 4), 'software': round(sum(totals[c] for c in SOFTWARE), 4),
                         'per_order': round(total / len(rows), 4) if rows else 0, 'per_sticker': round(total / printed_total, 4) if printed_total else 0,
                         'categories': {c: round(v, 4) for c, v in totals.items()}},
             'orders': rows,

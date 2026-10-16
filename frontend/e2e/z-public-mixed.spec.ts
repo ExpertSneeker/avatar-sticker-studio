@@ -55,7 +55,7 @@ test('retired browser drafts cannot create orders or bind download destinations'
   await new Promise<void>((resolve,reject)=>{const tx=db.transaction('state','readwrite');tx.objectStore('state').put([{id:'legacy-missing',name:'旧草稿',file:new File(['x'],'legacy.png',{type:'image/png'}),template_ids:['removed-template'],sticker_ids:['removed-sticker'],print_settings:{paper_width_mm:210,paper_height_mm:297,long_edge_mm:85,margin_mm:10,gap_mm:10,dpi:300,brightness:false,color_balance:false},client_token:'legacy-missing'}],'drafts:'+id);tx.oncomplete=()=>resolve();tx.onerror=()=>reject(tx.error)});db.close()
  },user.id)
  await page.goto('/')
- await expect(page.getByRole('heading',{name:'客户订单',exact:true})).toBeVisible()
+ await expect(page.getByRole('heading',{name:'制作中',exact:true,level:1})).toBeVisible()
  await expect(page.getByRole('button',{name:'提交生成',exact:true})).toHaveCount(0)
  await expect(page.getByText('旧草稿',{exact:true})).toHaveCount(0)
  await expect(page.getByRole('button',{name:'选择保存目录',exact:true})).toHaveCount(0)

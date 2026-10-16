@@ -1,9 +1,11 @@
-"""Daily OSS and ESA charges split over orders by the bytes each order caused.
+"""Daily OSS and ESA usage per order, priced at pay-as-you-go rates (never by prepaid plans).
 
 Read-only: a dedicated RAM role (STUDIO_COST_RAM_ROLE_ARN), assumed from the ECS instance role, reads
-the daily bill (BSS), ESA offline access logs and the bucket's OSS access logs. Each China day's actual
-amounts are split by bytes; whatever cannot be tied to an order is shared (spread over the month's
-orders by the cost report). OSS storage is shared: release backups hold almost all of it.
+the daily OSS bill usage (BSS), ESA offline access logs and the bucket's OSS access logs. Entries keep
+usage (GB, GB-months, 10,000 requests) and the cost report prices it with the rates of that day.
+Public OSS egress is split by the bytes each order caused, busy (08-24) and idle (00-08) apart; ESA
+traffic likewise. What cannot be tied to an order is shared (spread over the month's orders by the
+report). OSS storage and requests are shared: release backups hold almost all of the storage.
 """
 import base64
 import gzip
@@ -24,6 +26,9 @@ log = logging.getLogger(__name__)
 CHINA = timezone(timedelta(hours=8))
 START_DAY = '2026-10-06'  # sticker.coreages.com moved behind ESA; OSS access logs exist from then on
 LOG_PREFIX = 'oss-access-logs/'
+# v2: usage priced at pay-as-you-go rates; restarting from START_DAY rewrites the earlier plan-based days.
+SYNC_ID = 'aliyun-v2'
+GIB = 1024 ** 3
 ORDER_PATH = re.compile(r'^/api/(?:guest/media|customer-orders)/([0-9a-f]{32})(?:/|$|\?)')
 ASSET_PATH = re.compile(r'^/api/assets/([0-9a-f]{32})')
 PRINT_KEY = re.compile(r'^print/[^/]+/([0-9a-f]{32})/')
@@ -78,7 +83,7 @@ class Aliyun:
         return self.creds[0]
 
     def bill(self, day, product):
-        """Daily bill lines of one product: [(InstanceID, BillingItem, SubscriptionType, PretaxAmount)]."""
+        """Daily bill lines of one product: [(InstanceID, BillingItem, SubscriptionType, PretaxAmount, Usage)]."""
         lines, token = [], None
         while True:
             params = dict(BillingCycle=day[:7], BillingDate=day, Granularity='DAILY', ProductCode=product, IsBillingItem='true', MaxResults=300)
@@ -88,18 +93,11 @@ class Aliyun:
             if not data.get('Success', True) or 'Data' not in data:
                 raise RuntimeError(f"DescribeInstanceBill {product} {data.get('Code')}")
             data = data['Data']
-            lines += [(i.get('InstanceID') or '', i.get('BillingItem') or '', i.get('SubscriptionType') or '', float(i.get('PretaxAmount') or 0))
-                      for i in data.get('Items', [])]
+            lines += [(i.get('InstanceID') or '', i.get('BillingItem') or '', i.get('SubscriptionType') or '', float(i.get('PretaxAmount') or 0),
+                       float(i.get('Usage') or 0)) for i in data.get('Items', [])]
             token = data.get('NextToken')
             if not token:
                 return lines
-
-    def subscriptions(self, cycle, product):
-        """Prepaid lines of a month: [(amount, months)] — the ESA plan fee."""
-        data = self.rpc('business.aliyuncs.com', '2017-12-14', 'DescribeInstanceBill', self.credentials(),
-                        BillingCycle=cycle, ProductCode=product, IsBillingItem='true', MaxResults=300)['Data']
-        return [(float(i.get('PretaxAmount') or 0), int(i.get('ServicePeriod') or 0) if i.get('ServicePeriodUnit') == '月' else 0)
-                for i in data.get('Items', []) if i.get('SubscriptionType') == 'Subscription']
 
     def esa_rows(self, day):
         """Every ESA access log row of one China day."""
@@ -142,7 +140,8 @@ class Aliyun:
 
 
 def oss_requests(lines, day):
-    """(key, bytes) of public-network GET/HEAD downloads on the China day; internal traffic is free."""
+    """(key, bytes, idle) of public-network GET/HEAD downloads on the China day; internal traffic is free.
+    idle: 00:00-08:00 China time, billed at the lower egress price."""
     for line in lines:
         try:
             p = shlex.split(line)
@@ -153,25 +152,25 @@ def oss_requests(lines, day):
             continue
         if when.astimezone(CHINA).date().isoformat() != day or '-internal' in p[11] or method not in ('GET', 'HEAD') or not sent:
             continue
-        yield unquote(path.split('?')[0].lstrip('/')), sent
+        yield unquote(path.split('?')[0].lstrip('/')), sent, when.astimezone(CHINA).hour < 8
 
 
 def split_oss(requests, input_users):
-    """Bytes per order (None = shared). Print files carry the order id; an FAL input is shared by the
-    items that used that image on that day."""
+    """[busy, idle] bytes per order (None = shared). Print files carry the order id; an FAL input is
+    shared by the items that used that image on that day."""
     shares = {}
-    for key, sent in requests:
+    def add(order_id, sent, idle):
+        share = shares.setdefault(order_id, [0.0, 0.0])
+        share[1 if idle else 0] += sent
+    for key, sent, idle in requests:
         match = PRINT_KEY.match(key)
         if match:
-            shares[match.group(1)] = shares.get(match.group(1), 0) + sent
+            add(match.group(1), sent, idle)
             continue
         match = INPUT_KEY.match(key)
         users = input_users.get((match.group(1), match.group(2))) if match else None
-        if users:
-            for order_id in users:
-                shares[order_id] = shares.get(order_id, 0) + sent / len(users)
-        else:
-            shares[None] = shares.get(None, 0) + sent
+        for order_id in users or [None]:
+            add(order_id, sent / len(users or [None]), idle)
     return shares
 
 
@@ -220,49 +219,29 @@ def split_esa(rows, assets):
     return shares
 
 
-def entries_for(day, source, amount, shares, orders):
-    """Split one day's amount by bytes; unknown or deleted orders fall to the shared entry."""
-    total = sum(shares.values())
-    result, shared = [], amount
-    for order_id, sent in shares.items():
-        if order_id is None or order_id not in orders or not total:
+def usage_entries(day, source, shares, orders, usage):
+    """One entry per order with its usage (`usage(share)` -> {rate field: quantity}); unknown or deleted
+    orders and unmatched traffic go to the shared entry."""
+    result, shared = [], None
+    for order_id, share in shares.items():
+        if order_id is None or order_id not in orders:
+            shared = share if shared is None else [a + b for a, b in zip(shared, share)] if isinstance(share, list) else shared + share
             continue
-        part = amount * sent / total
-        shared -= part
         result.append({'id': f'{source}:{day}:{order_id}', 'source': source, 'order_id': order_id, 'organization_id': orders[order_id],
-                       'day': day, 'quantity': round(sent), 'amount_cny': round(part, 6), 'basis': 'split'})
-    result.append({'id': f'{source}:{day}:shared', 'source': source, 'order_id': None, 'day': day, 'shared': True,
-                   'quantity': round(shares.get(None, 0)), 'amount_cny': round(max(shared, 0.0), 6), 'basis': 'split'})
+                       'day': day, 'usage': usage(share), 'basis': 'usage'})
+    if shared is not None:
+        result.append({'id': f'{source}:{day}:shared', 'source': source, 'order_id': None, 'day': day, 'shared': True,
+                       'usage': usage(shared), 'basis': 'usage'})
     return result
 
 
-def esa_plan_daily(db, client, day):
-    """The prepaid ESA plan spread evenly over its service days (cached once found)."""
-    with db.transaction(readonly=True) as tx:
-        plan = tx.get('cost_sync', 'esa-plan')
-    if not plan:
-        found = []
-        for cycle in sorted({day[:7], START_DAY[:7]}):
-            found += client.subscriptions(cycle, 'dcdn')
-        found = [(amount, months) for amount, months in found if amount and months]
-        if not found:
-            return 0.0
-        amount, months = found[0]
-        plan = {'id': 'esa-plan', 'amount': amount, 'months': months}
-        with db.transaction() as tx:
-            tx.put('cost_sync', plan)
-    return plan['amount'] / (plan['months'] * 365 / 12)
-
-
 def sync_day(db, client, day):
-    oss_bill = [(i, item, kind, amount) for i, item, kind, amount in client.bill(day, 'oss') if i.startswith(client.region)]
+    oss_bill = [line for line in client.bill(day, 'oss') if line[0].startswith(client.region)]
     if not oss_bill:
         return False  # the day's bill is not out yet
-    traffic = sum(a for _, item, _, a in oss_bill if '流出' in item)
-    rest = sum(a for _, item, _, a in oss_bill if '流出' not in item)
-    # ESA bills under product code dcdn: its prepaid plan line plus any pay-as-you-go overage.
-    esa_payg = sum(a for _, _, kind, a in client.bill(day, 'dcdn') if kind != 'Subscription')
-    esa_cost = esa_plan_daily(db, client, day) + esa_payg
+    # Storage (GB-hours) and requests (10,000) from the bill's usage; their prepaid or free-tier amounts are ignored.
+    storage = sum(usage for _, item, _, _, usage in oss_bill if '存储' in item)
+    requests = sum(usage for _, item, _, _, usage in oss_bill if '请求' in item)
     with db.transaction(readonly=True) as tx:
         orders = {o['id']: o.get('organization_id') for o in tx.all('orders')}
         assets = {a['id']: a['order_id'] for a in tx.all('assets') if a.get('order_id')}
@@ -270,16 +249,16 @@ def sync_day(db, client, day):
         users = input_users(tx, days)
     oss_shares = split_oss(oss_requests(client.oss_lines(day), day), users)
     esa_shares = split_esa(client.esa_rows(day), assets) if client.site_id else {}
-    entries = entries_for(day, 'oss', traffic, oss_shares, orders)
-    entries.append({'id': f'oss-storage:{day}', 'source': 'oss', 'order_id': None, 'day': day, 'shared': True,
-                    'quantity': 0, 'amount_cny': round(rest, 6), 'basis': 'bill'})
-    entries += entries_for(day, 'esa', esa_cost, esa_shares, orders)
+    entries = usage_entries(day, 'oss', oss_shares, orders, lambda s: {'oss_traffic': s[0] / GIB, 'oss_traffic_idle': s[1] / GIB})
+    entries.append({'id': f'oss-storage:{day}', 'source': 'oss', 'order_id': None, 'day': day, 'shared': True, 'basis': 'usage',
+                    'usage': {'oss_storage': storage / 720, 'oss_requests': requests}})
+    entries += usage_entries(day, 'esa', esa_shares, orders, lambda sent: {'esa_traffic': sent / GIB})
     with db.transaction() as tx:
         for entry in tx.find('cost_entries', ("json_extract(doc,'$.day')=? AND json_extract(doc,'$.source') IN ('oss','esa')", (day,))):
             tx.delete('cost_entries', entry['id'])
         for entry in entries:
             tx.put('cost_entries', entry)
-        tx.put('cost_sync', {'id': 'aliyun', 'day': day})
+        tx.put('cost_sync', {'id': SYNC_ID, 'day': day})
     return True
 
 
@@ -289,7 +268,7 @@ def sync_aliyun(db, now, client=None, *, max_days=2):
     if client is None:
         return 0
     with db.transaction(readonly=True) as tx:
-        last = (tx.get('cost_sync', 'aliyun') or {}).get('day')
+        last = (tx.get('cost_sync', SYNC_ID) or {}).get('day')
     day = (datetime.fromisoformat(last) + timedelta(days=1)).date().isoformat() if last else START_DAY
     final = datetime.fromtimestamp(now, CHINA).date() - timedelta(days=2)
     done = 0

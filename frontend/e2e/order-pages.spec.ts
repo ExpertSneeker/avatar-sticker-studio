@@ -1,0 +1,40 @@
+import { test, expect } from '@playwright/test'
+import { randomUUID } from 'node:crypto'
+import { uploadStickers } from './library-fixtures'
+import { completedCustomer, createCustomer, mutate, pixel, staffLogin } from './customer-fixtures'
+
+test('sidebar order pages: making, to ship, shipped, recycle bin and all orders, in the requested order',async({page})=>{
+  await staffLogin(page.request)
+  const errors:string[]=[];page.on('pageerror',e=>errors.push(e.message))
+  const tag=randomUUID().slice(0,6).toUpperCase()
+  const [sticker]=await uploadStickers(page.request,[{name:`PG-${tag}.png`,mimeType:'image/png',buffer:pixel}])
+  const making=await createCustomer(page.request,{order_number:`PG-${tag}-M`})
+  const printed=await completedCustomer(page.request,sticker.id,{order_number:`PG-${tag}-S`})
+  await expect.poll(async()=>(await(await page.request.get('/api/customer-orders/'+printed.id)).json()).delivery_ready,{timeout:60000}).toBe(true)
+  await page.setViewportSize({width:1440,height:1000})
+  await page.goto('/')
+  const nav=page.getByRole('navigation',{name:'主导航'})
+  await expect(nav.getByRole('button',{name:'使用说明',exact:true})).toBeVisible()
+  const names=await nav.getByRole('button').allTextContents()
+  expect(names.slice(0,10)).toEqual(['制作中','待发货','已发货','回收站','全部订单','贴纸库','模板库','店铺接入','统计','使用说明'])
+  await expect(nav.locator('hr.nav-divider')).toHaveCount(2)
+  const open=async(name:string)=>{await nav.getByRole('button',{name,exact:true}).click();await expect(page.getByRole('heading',{name,exact:true,level:1})).toBeVisible();await page.getByPlaceholder('搜索订单号').fill(`PG-${tag}`)}
+  const rows=page.locator('.customer-order-row')
+  await open('制作中');await expect(rows).toHaveCount(1);await expect(rows).toContainText(`PG-${tag}-M`)
+  await open('待发货');await expect(rows).toHaveCount(1);await expect(rows).toContainText(`PG-${tag}-S`)
+  await rows.getByRole('button',{name:'发货',exact:true}).click()
+  await page.getByRole('dialog',{name:'发货'}).getByRole('button',{name:'确认发货'}).click()
+  await expect(rows).toHaveCount(0)
+  await open('已发货');await expect(rows).toHaveCount(1);await expect(rows.locator('.shipping-line')).toContainText('图片将于')
+  await mutate(page.request,making,'cancel')
+  await open('回收站');await expect(rows).toHaveCount(1);await expect(rows).toContainText(`PG-${tag}-M`)
+  await rows.getByRole('button',{name:'恢复订单'}).click()
+  await page.getByRole('dialog',{name:'恢复订单'}).getByRole('button',{name:'确认恢复'}).click()
+  await expect(rows).toHaveCount(0)
+  await open('全部订单');await expect(rows).toHaveCount(2)
+  await expect(nav.locator('button.active')).toHaveText('全部订单')
+  await page.screenshot({path:'test-results/order-pages-1440.png',fullPage:true})
+  await page.setViewportSize({width:390,height:844})
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth)).toBe(false)
+  expect(errors).toEqual([])
+})

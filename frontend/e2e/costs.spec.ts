@@ -30,7 +30,17 @@ test('administrators see per-order costs, edit dated rates and export CSV, on de
     await dialog.getByRole('button',{name:'保存费率'}).click()
     await expect(page.getByText('成本费率已保存')).toBeVisible()
     await expect(row).toContainText('3.00')
+    // Totals for the current filter, split into physical and software costs; shop and date filters.
+    const total=page.getByRole('region',{name:'当前筛选的总计'})
+    await expect(total).toContainText('现实成本');await expect(total).toContainText('软件成本');await expect(total).toContainText('全部店铺')
+    await expect(page.locator('.costs-table thead')).toContainText('现实成本');await expect(page.locator('.costs-table tfoot')).toContainText('合计')
+    await page.getByLabel('成本店铺').selectOption('none')
+    await expect(total).toContainText('无关联店铺');await expect(row).toBeVisible()
     await page.screenshot({path:'test-results/costs-1440.png',fullPage:true})
+    await page.getByLabel('成本开始日期').fill('2099-01-01')
+    await expect(page.getByText('当前筛选下没有订单')).toBeVisible()
+    await page.getByRole('button',{name:'本月',exact:true}).click()
+    await expect(row).toBeVisible()
     const download=page.waitForEvent('download')
     await page.getByRole('button',{name:'导出 CSV'}).click()
     const file=await download

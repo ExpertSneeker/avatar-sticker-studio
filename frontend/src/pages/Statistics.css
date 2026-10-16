@@ -446,3 +446,19 @@
 .costs-unattributed .statistics-section-heading strong { font-size: 20px; font-variant-numeric: tabular-nums; }
 .costs-unattributed-list { display: flex; flex-wrap: wrap; gap: 8px 20px; font-size: 14px; color: var(--muted); }
 .costs-unattributed-list b { color: var(--ink, inherit); font-variant-numeric: tabular-nums; }
+.costs-presets { width: fit-content; }
+.costs-total { display: grid; gap: 12px; }
+.costs-filter-label { margin: 0; color: var(--muted); font-size: 13px; }
+.costs-total-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+.costs-total-grid>div { display: grid; gap: 2px; padding: 10px 14px; border-radius: var(--r-md, 10px); background: var(--surface-raised, var(--surface)); border: 1px solid var(--line); }
+.costs-total-grid span { color: var(--muted); font-size: 13px; }
+.costs-total-grid strong { font-size: 22px; font-variant-numeric: tabular-nums; }
+.costs-total-grid small { color: var(--muted); font-size: 12px; }
+.costs-total-main { background: var(--brand-tint, var(--surface)) !important; border-color: var(--brand-line, var(--line)) !important; }
+.costs-total-main strong { font-size: 28px; color: var(--brand-strong); }
+.costs-group + .costs-group { margin-top: 10px; }
+.costs-group h3 { display: flex; justify-content: space-between; margin: 4px 0; font-size: 14px; }
+.costs-group h3 span { font-variant-numeric: tabular-nums; }
+.costs-table th.costs-group-head { text-align: center; border-bottom: 1px solid var(--line); }
+.costs-table .costs-subtotal { font-weight: 650; background: var(--surface-raised, transparent); }
+.costs-table tfoot th, .costs-table tfoot td { font-weight: 650; border-top: 2px solid var(--line); }

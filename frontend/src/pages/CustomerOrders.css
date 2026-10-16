@@ -580,7 +580,7 @@
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: var(--r-lg);
-  padding: 20px;
+  padding: 14px 20px;
   box-shadow: var(--shadow-xs);
   transition: box-shadow var(--t-base) var(--ease),border-color var(--t-fast);
 }
@@ -599,8 +599,10 @@
   padding: 0;
   cursor: pointer;
   display: grid;
-  gap: 7px;
+  gap: 4px;
 }
+/* Notes inside an order card stay compact: the card's own gap spaces them. */
+.customer-order-open .seller-remark { margin: 2px 0 0; padding: 6px 12px; }
 
 .customer-order-open strong {
   font-size: 16px;
@@ -1252,12 +1254,13 @@
 .shipping-info-add:hover, .shipping-info-text:hover { box-shadow: 0 0 0 3px rgb(0 0 0 / .05); }
 .shipping-info-add:focus-visible, .shipping-info-text:focus-visible, .shipping-info .icon-button:focus-visible { outline: 2px solid var(--ok); outline-offset: 2px; }
 /* The same blocks inside an order row. */
-.shipping-info.row { margin: 6px 0; width: 100%; align-items: center; }
-.shipping-info.row .shipping-info-text { align-items: center; min-width: 0; padding: 8px 12px; line-height: 1.5; }
+.shipping-info.row { margin: 0; width: 100%; align-items: center; }
+.shipping-info.row .shipping-info-text { align-items: center; min-width: 0; padding: 6px 12px; line-height: 1.5; }
 .shipping-info.row .shipping-info-text svg { margin-top: 0; }
 .shipping-info.row .shipping-info-text b { display: inline; margin-right: 8px; white-space: nowrap; }
 .shipping-info-line { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.shipping-info-add.row { margin: 6px 0; padding: 6px 12px; }
+.shipping-info-add.row { margin: 0; padding: 2px 0; background: none; border: 0; box-shadow: none; font-weight: 600; }
+.shipping-info-add.row:hover { box-shadow: none; text-decoration: underline; }
 .customer-design-copies { display: flex; align-items: center; gap: 4px; white-space: nowrap; font-size: 14px; }
 .customer-design-copies b { font-variant-numeric: tabular-nums; }
 /* Order numbers copy themselves on click (list rows and the order heading). */

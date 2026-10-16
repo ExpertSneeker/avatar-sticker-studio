@@ -94,6 +94,11 @@ class CostRates(Model):
     agiso_base: float = Field(ge=0, le=1)
     agiso_high: float = Field(ge=0, le=1)
     agiso_increment: float = Field(ge=0, le=1)
+    oss_traffic: float = Field(0.5, ge=0, le=100)
+    oss_traffic_idle: float = Field(0.25, ge=0, le=100)
+    oss_storage: float = Field(0.15, ge=0, le=100)
+    oss_requests: float = Field(0.01, ge=0, le=100)
+    esa_traffic: float = Field(0.198, ge=0, le=100)
 
 
 class SettingsPatch(Model):

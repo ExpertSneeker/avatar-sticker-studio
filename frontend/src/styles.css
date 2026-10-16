@@ -2831,3 +2831,6 @@ small {
 .platform-badge.pdd { color: #ffe14d; background: #e02e24; }
 .platform-badge.douyin { color: #ffffff; background: #161823; }
 .platform-badge.xhs { color: #ffffff; background: #ff2442; }
+
+/* Sidebar groups: orders / library / shop, statistics and guide. */
+.sidebar nav>hr.nav-divider { border: 0; border-top: 1px solid var(--line); margin: 8px 12px; }
