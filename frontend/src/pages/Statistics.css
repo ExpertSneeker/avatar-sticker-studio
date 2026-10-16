@@ -422,3 +422,24 @@
     padding: 13px 10px;
   }
 }
+
+.statistics-view-tabs { margin: 0 0 16px; width: fit-content; }
+.costs-toolbar { flex-wrap: wrap; gap: 10px 16px; }
+.costs-toolbar input[type=date] { min-height: 36px; }
+.costs-toolbar-actions { display: flex; gap: 8px; margin-left: auto; }
+.costs-category { display: grid; grid-template-columns: 64px 1fr 84px 48px; align-items: center; gap: 10px; padding: 7px 0; font-size: 14px; }
+.costs-category strong { text-align: right; font-variant-numeric: tabular-nums; }
+.costs-category small { color: var(--muted); text-align: right; }
+.costs-category-bar { height: 8px; border-radius: 4px; background: var(--line); overflow: hidden; }
+.costs-category-bar i { display: block; height: 100%; background: var(--brand); border-radius: 4px; }
+.costs-rates dl { display: grid; grid-template-columns: 1fr; gap: 6px; margin: 0; }
+.costs-rates dl>div { display: flex; justify-content: space-between; gap: 12px; padding: 6px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
+.costs-rates dt { color: var(--muted); }
+.costs-rates dd { margin: 0; font-variant-numeric: tabular-nums; text-align: right; }
+.costs-rates dd small { display: block; color: var(--muted); font-size: 12px; }
+.costs-table td, .costs-table th { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.costs-estimate { margin-left: 6px; padding: 1px 6px; border-radius: 8px; background: var(--warn-soft); color: var(--warn); font-size: 12px; }
+@media (max-width: 640px) {
+  .costs-toolbar-actions { margin-left: 0; }
+  .costs-category { grid-template-columns: 52px 1fr 72px 42px; }
+}

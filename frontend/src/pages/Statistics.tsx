@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 import { RefreshCw, BarChart3, Users, ArrowUpRight } from 'lucide-react'
 import { api } from '../lib/api'
 import { Empty, Spinner } from '../components/UI'
+import { Costs } from './Costs'
 import './Statistics.css'
 
 interface Totals {orders:number;ready_orders:number;images:number;completed:number;failed:number;unknown:number;running:number;queued:number;attempts:number;extra_attempts:number}
@@ -17,7 +18,9 @@ const periods=[['1','最近 24 小时'],['3','最近 3 天'],['7','最近 7 天'
 const states=[['draft','待制作'],['review','选图中'],['submitted','已提交'],['shipped','已发货'],['cancelled','已取消'],['queued','排队中'],['processing','处理中'],['completed','已完成'],['failed','有失败'],['unknown','待确认'],['paused','已暂停'],['archived','已归档']]
 const number=(value:number)=>value.toLocaleString('zh-CN')
 
-export function Statistics({global=false}:{global?:boolean}) {
+export function Statistics({global=false,admin=false,superadmin=false}:{global?:boolean;admin?:boolean;superadmin?:boolean}) {
+  const [view,setView]=useState<'work'|'costs'>('work')
+  const tabs=admin&&<div className="tabs statistics-view-tabs" role="tablist" aria-label="统计内容"><button role="tab" aria-selected={view==='work'} className={view==='work'?'active':''} onClick={()=>setView('work')}>制作统计</button><button role="tab" aria-selected={view==='costs'} className={view==='costs'?'active':''} onClick={()=>setView('costs')}>成本</button></div>
   const [days,setDays]=useState('30'),[revision,setRevision]=useState(0),[data,setData]=useState<StatisticsData|null>(null)
   const [loading,setLoading]=useState(true),[error,setError]=useState(''),[metric,setMetric]=useState<'orders'|'images'>('orders')
   const [templateSearch,setTemplateSearch]=useState(''),[memberSearch,setMemberSearch]=useState('')
@@ -40,8 +43,10 @@ export function Statistics({global=false}:{global?:boolean}) {
     ['计划图片',summary.images,'包含尚未开始的单张'],['单张已完成',summary.completed,`完成率 ${summary.images?(100*summary.completed/summary.images).toFixed(1):'0.0'}%`],
     ['失败单张',summary.failed,`${summary.unknown} 张结果待确认`],['追加生图尝试',summary.extra_attempts,`累计启动尝试 ${number(summary.attempts)} 次`],
   ]:[]
+  if(admin&&view==='costs')return <div className="statistics-page"><div className="page-heading"><div><h1>{global?'全站成本':'成本'}</h1><p>{global?'所有组织的订单成本，以及无法归属到订单的费用。':'本组织每个订单的成本明细。'}</p></div></div>{tabs}<Costs global={global} canEdit={superadmin}/></div>
   return <div className="statistics-page">
     <div className="page-heading"><div><h1>{global?'全站统计':'统计'}</h1><p>{global?'查看团队的制作量与任务分布。':'每一笔订单，都有清楚的制作记录。'}</p></div><button className="button" disabled={loading} onClick={()=>setRevision(v=>v+1)}><RefreshCw size={16}/>刷新统计</button></div>
+    {tabs}
     <div className="statistics-toolbar"><label className="statistics-period">统计范围<select aria-label="统计时间范围" value={days} onChange={e=>setDays(e.target.value)}>{periods.map(([value,label])=><option key={value} value={value}>{label}</option>)}</select></label><span>按订单提交时间筛选 · 当前结果快照</span></div>
     {loading?<div className="statistics-loading" role="status"><Spinner/>正在汇总统计</div>:error?<div className="error-banner" role="alert">{error}<button className="text-button" onClick={()=>setRevision(v=>v+1)}>重新加载</button></div>:data&&summary&&<>
       <div className="statistics-cards">{cards.map(([label,value,hint])=><article className="statistics-card" key={label}><span>{label}</span><strong>{number(Number(value))}</strong><small>{hint}</small></article>)}</div>

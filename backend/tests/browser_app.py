@@ -70,4 +70,9 @@ def factory():
         settings = tx.get('config', 'settings')
         settings.update(max_inflight=8, cutout_api_key='browser-test-only')
         tx.put('config', settings)
+    # No outbound calls from browser tests: a fixed CFETS-shaped USD/CNY answer.
+    class Rate:
+        def json(self):
+            return {'data': {'lastDate': '2026-10-16 9:15'}, 'records': [{'vrtEName': 'USD/CNY', 'price': '6.7220'}]}
+    app.state.cost_get = lambda url: Rate()
     return app

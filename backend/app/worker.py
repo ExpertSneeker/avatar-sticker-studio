@@ -14,6 +14,7 @@ from .processing import decode, encode
 from .providers import DEFAULT_MAX_UPLOADS, DEFAULT_UPLOAD_TIMEOUT, CutoutDeferred, FalProvider, ProviderFailure, YeziProvider
 from .storage import asset_bytes, save_asset
 from .maintenance import purge_due
+from . import costs
 
 log = logging.getLogger(__name__)
 # Uvicorn's default config does not install a root handler for application INFO.
@@ -54,6 +55,8 @@ class Worker:
         self.stopping = False
         self.oss_next_sync = 0
         self.purge_next = 0
+        # Outbound HTTP for cost syncs (exchange rates, bills); replaced in tests and local browser runs.
+        self.cost_get = None
         self.oss_task = None
 
     def recover(self):
@@ -510,6 +513,7 @@ class Worker:
                     # Shipped orders past their deletion time lose their images; records stay.
                     self.purge_next = tick + 300
                     await asyncio.to_thread(purge_due, self.db, tick)
+                    await asyncio.to_thread(costs.tick, self.db, tick, self.cost_get)
                 if not self.stopping and tick >= self.oss_next_sync:
                     self.oss_next_sync = tick + 30
                     if self.oss_task is None or self.oss_task.done():

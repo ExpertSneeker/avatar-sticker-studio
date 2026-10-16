@@ -84,6 +84,18 @@ class PasswordChange(Model):
     new_password: str = Field(min_length=10, max_length=200)
 
 
+class CostRates(Model):
+    from_: str = Field(alias='from', pattern=r'^\d{4}-\d{2}-\d{2}$')
+    packaging: float = Field(ge=0, le=1000)
+    shipping: float = Field(ge=0, le=1000)
+    sheet: float = Field(ge=0, le=1000)
+    per_sheet: int = Field(ge=1, le=100)
+    cutout: float = Field(ge=0, le=10)
+    agiso_base: float = Field(ge=0, le=1)
+    agiso_high: float = Field(ge=0, le=1)
+    agiso_increment: float = Field(ge=0, le=1)
+
+
 class SettingsPatch(Model):
     max_inflight: int | None = Field(None, ge=1, le=40)
     max_uploads: int | None = Field(None, ge=1, le=40)

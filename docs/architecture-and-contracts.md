@@ -86,6 +86,16 @@
 
 Worker 每 300 秒在线程中执行 `maintenance.purge_due(now)`：`purge_at <= now`、未删除、状态为 `shipped` 或发货后被取消（`cancelled`）且没有在途 item 的订单，经 `purge_plan` 计算本单资产（`order_id` 指向本单的资产，以及本单和本单 item 引用的头像、自备图、结果、原图、抠图前图、总览、打印文件，和本单访客上传）减去其他订单/item 引用与图库图片，删除这些 `assets`、对应 `uploads` 记录，并登记文件、`preview-cache`、`media-cache` 到 `cleanup_files` 后立即 `drain_cleanup`。订单写入 `purged_at`，清空 `artifacts`/总览并 `version+1`；订单、items、generations、审计（`action='purge'`, `actor='system'`）全部保留，统计不变。删除后的 DTO `avatars`/`slots` 为空、`preview_url`/`delivery_ready` 为空/假。发布审计 `deploy/audit_framework.py` 的“引用资产必须存在”检查跳过 `purged_at` 订单及其 items 的引用（items 引用的图库模板仍检查）；若清理恰好发生在发布的快照与线上审计之间，比对会报告这些资产缺失，核对为清理所致即可。
 
+### 订单成本（2026-10-16，`backend/app/costs.py`）
+
+`GET /api/costs`（`scope=organization` 需 `org_admin`/`superadmin` 且有组织，`scope=global` 需 `superadmin`；`date_from`/`date_to` 为按 `offset` 时区的订单创建日，另可按 `platform`、`shop_id`）返回每单 `costs`（`packaging`、`shipping`、`material`、`generation`、`cutout`、`agiso`、`oss`、`esa`）、合计与汇总；`PUT /api/costs/rates`（`superadmin`）保存一个费率版本 `{from, packaging, shipping, sheet, per_sheet, cutout, agiso_base, agiso_high, agiso_increment}` 到 `config.settings.cost_rates`，同一 `from` 覆盖。某天的费率取 `from <= 该天` 的最新版本，早于全部版本的天用最早版本；默认版本 `from=1970-01-01`。
+
+- 包装、快递、物料不落库，按订单计算：有 `shipped_at` 时按发货日费率为“实际”，`submitted` 时按今天费率为“预计”，其他为 0。物料张数 = `max(1, ceil(len(final_entries) / per_sheet))`。
+- 按次费用写入 `cost_entries`（不受发布审计保护的派生数据，幂等 id）：`{id, source, order_id, organization_id, day, quantity, rate}` 按该天费率计价，或带 `amount_cny`/`amount_usd`（美元按 `fx_rates` 中该天或之前最近的 USD/CNY 换算，无记录时用最早一条，完全没有时用 7.1）。
+- 抠图：`sync_cutouts` 为每个 `completed` item 写一条 `cutout:<item_id>`，`cutout_used` 为 1；没有 `cutout_used` 的自动抠图自备图读原图判断是否完全不透明（是则 1，标 `basis='inferred'`）；其余为 0。失败和不确定的抠图不计。
+- 汇率：`sync_fx` 每个中国日存一条 `fx_rates/<日期>`，先取中国外汇交易中心 `ccpr.json` 的 USD/CNY 中间价，失败用 `open.er-api.com`；失败后 1 小时内不重试（`cost_sync/fx.attempted_at`）。
+- Worker 每 300 秒在线程中执行 `costs.tick`（与发货清理同一节拍），各来源独立失败、下次重试。`Worker.cost_get` 可替换出站 HTTP，浏览器测试注入固定汇率，不访问外网。
+
 ## 图片、队列与打印
 
 - 当前 provider 源码使用 FAL `openai/gpt-image-2.5/flare/edit`；全站提交都带 `enable_safety_checker: false`（FAL 支持确认这是该端点唯一的审核开关，关闭后在上游允许范围内放宽；`model_moderated` 未开放，OpenAI 侧的拒绝仍可能以 422 `content_policy_violation` 返回）；凭证是 `FAL_KEY` 或后台私有设置，环境变量优先。这描述仓库实现，不保证第三方服务未来仍可用。变更 provider 前核对其当时官方契约。

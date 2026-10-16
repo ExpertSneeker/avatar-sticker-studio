@@ -48,6 +48,7 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
         drain_cleanup(db)
         app.state.worker = Worker(db, provider=provider, clock=now)
         app.state.worker.before_publish = app.state.agiso_worker.submitted_remark
+        app.state.worker.cost_get = getattr(app.state, 'cost_get', None)
         if start_worker:
             await app.state.worker.start()
             await app.state.agiso_worker.start()
@@ -435,6 +436,8 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
 
     from .customer_orders import register_customer_orders
     register_customer_orders(app, db, user)
+    from .costs import register_costs
+    register_costs(app, db, user, admin, superadmin)
     from .agiso_routes import register_agiso
     register_agiso(app, db, user)
 
