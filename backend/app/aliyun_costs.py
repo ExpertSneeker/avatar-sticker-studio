@@ -84,7 +84,10 @@ class Aliyun:
             params = dict(BillingCycle=day[:7], BillingDate=day, Granularity='DAILY', ProductCode=product, IsBillingItem='true', MaxResults=300)
             if token:
                 params['NextToken'] = token
-            data = self.rpc('business.aliyuncs.com', '2017-12-14', 'DescribeInstanceBill', self.credentials(), **params)['Data']
+            data = self.rpc('business.aliyuncs.com', '2017-12-14', 'DescribeInstanceBill', self.credentials(), **params)
+            if not data.get('Success', True) or 'Data' not in data:
+                raise RuntimeError(f"DescribeInstanceBill {product} {data.get('Code')}")
+            data = data['Data']
             lines += [(i.get('InstanceID') or '', i.get('BillingItem') or '', i.get('SubscriptionType') or '', float(i.get('PretaxAmount') or 0))
                       for i in data.get('Items', [])]
             token = data.get('NextToken')
@@ -257,7 +260,8 @@ def sync_day(db, client, day):
         return False  # the day's bill is not out yet
     traffic = sum(a for _, item, _, a in oss_bill if '流出' in item)
     rest = sum(a for _, item, _, a in oss_bill if '流出' not in item)
-    esa_payg = sum(a for product in ('dcdn', 'esa') for _, _, kind, a in client.bill(day, product) if kind != 'Subscription')
+    # ESA bills under product code dcdn: its prepaid plan line plus any pay-as-you-go overage.
+    esa_payg = sum(a for _, _, kind, a in client.bill(day, 'dcdn') if kind != 'Subscription')
     esa_cost = esa_plan_daily(db, client, day) + esa_payg
     with db.transaction(readonly=True) as tx:
         orders = {o['id']: o.get('organization_id') for o in tx.all('orders')}
