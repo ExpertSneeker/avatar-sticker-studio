@@ -35,7 +35,8 @@ function ShippingInfo({text,onCopy,onEdit}:{text?:string;onCopy:(text:string)=>v
 function rowAction(run:()=>void){return {role:'button',tabIndex:0,onClick:(e:ReactMouseEvent)=>{e.stopPropagation();run()},onKeyDown:(e:ReactKeyboardEvent)=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();e.stopPropagation();run()}}}}
 function RowShippingInfo({text,onCopy,onEdit}:{text?:string;onCopy:(text:string)=>void;onEdit?:()=>void}){
   if(!text)return onEdit?<span className="shipping-info-add row" {...rowAction(onEdit)}><MapPin size={15} aria-hidden/>填写收货信息</span>:null
-  return <span className="shipping-info row"><span className="shipping-info-text" title="点击复制收货信息" {...rowAction(()=>onCopy(text))}><MapPin size={16} aria-hidden/><span><b>收货信息</b><span className="shipping-info-body">{text}</span><small>点击复制</small></span></span>{onEdit&&<span className="icon-button" title="修改收货信息" aria-label="修改收货信息" {...rowAction(onEdit)}><Pencil size={15}/></span>}</span>
+  // One line here (same height as the seller remark); the click copies the full text, the tooltip shows it.
+  return <span className="shipping-info row"><span className="shipping-info-text" title={text+'\n（点击复制）'} {...rowAction(()=>onCopy(text))}><MapPin size={16} aria-hidden/><b>收货信息</b><span className="shipping-info-line">{text.split('\n').map(line=>line.trim()).filter(Boolean).join('  ')}</span></span>{onEdit&&<span className="icon-button" title="修改收货信息" aria-label="修改收货信息" {...rowAction(onEdit)}><Pencil size={15}/></span>}</span>
 }
 function shippingLine(order:CustomerOrder){
   if(!order.shipped_at)return ''

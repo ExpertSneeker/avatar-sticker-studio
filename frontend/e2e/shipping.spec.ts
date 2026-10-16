@@ -58,7 +58,9 @@ test('all orders: ship with a tracking number and a prominent seller remark, the
     const info=page.getByRole('dialog',{name:'收货信息'})
     await info.getByLabel('收货信息').fill('张三 13800000000\n上海市浦东新区某路 1 号')
     await info.getByRole('button',{name:'保存收货信息'}).click()
-    await expect(row.locator('.shipping-info-body')).toHaveText('张三 13800000000\n上海市浦东新区某路 1 号')
+    // The row shows one line; the order shows every line.
+    await expect(row.locator('.shipping-info-line')).toHaveText('张三 13800000000  上海市浦东新区某路 1 号')
+    expect((await row.locator('.shipping-info-text').boundingBox())!.height).toBeLessThan(46)  // one line, like the seller remark
     await page.screenshot({path:'test-results/shipping-info-row-1440.png'})
     await row.locator('.shipping-info-text').click()
     await expect(page.getByText('收货信息已复制')).toBeVisible()

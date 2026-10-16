@@ -1252,8 +1252,11 @@
 .shipping-info-add:hover, .shipping-info-text:hover { box-shadow: 0 0 0 3px rgb(0 0 0 / .05); }
 .shipping-info-add:focus-visible, .shipping-info-text:focus-visible, .shipping-info .icon-button:focus-visible { outline: 2px solid var(--ok); outline-offset: 2px; }
 /* The same blocks inside an order row. */
-.shipping-info.row { margin: 6px 0; width: 100%; }
-.shipping-info.row .shipping-info-text { font-weight: 400; }
+.shipping-info.row { margin: 6px 0; width: 100%; align-items: center; }
+.shipping-info.row .shipping-info-text { align-items: center; min-width: 0; padding: 8px 12px; line-height: 1.5; }
+.shipping-info.row .shipping-info-text svg { margin-top: 0; }
+.shipping-info.row .shipping-info-text b { display: inline; margin-right: 8px; white-space: nowrap; }
+.shipping-info-line { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .shipping-info-add.row { margin: 6px 0; padding: 6px 12px; }
 .customer-design-copies { display: flex; align-items: center; gap: 4px; white-space: nowrap; font-size: 14px; }
 .customer-design-copies b { font-variant-numeric: tabular-nums; }
