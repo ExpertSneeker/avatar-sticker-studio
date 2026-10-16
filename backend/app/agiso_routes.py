@@ -18,6 +18,13 @@ from .media_cache import watermark_of
 from pydantic import BaseModel, ConfigDict, Field
 
 
+def count_repeat(tx,event_id):
+    """Agiso bills every push it sends; repeats of a stored push are counted apart from the event record."""
+    repeat=tx.get('agiso_push_repeats',event_id) or {'id':event_id,'count':0}
+    repeat['count']+=1
+    tx.put('agiso_push_repeats',repeat)
+
+
 def register_agiso(app,db,user):
     now=app.state.clock
 
@@ -327,7 +334,8 @@ def register_agiso(app,db,user):
             except (KeyError,ValueError,TypeError):raise HTTPException(422,'通知内容无效')
         event_id=token_hash(platform+':'+family+':'+topic+':'+json.dumps(payload,sort_keys=True,ensure_ascii=False))
         with db.transaction() as tx:
-            if tx.get('agiso_events',event_id):return
+            if tx.get('agiso_events',event_id):
+                count_repeat(tx,event_id);return
             shop=find_shop(tx,platform,key) if key else None
             if family=='other':status,error='ignored','unsupported_topic'
             elif not shop:status,error='unmatched',None
@@ -411,7 +419,8 @@ def register_agiso(app,db,user):
         # Pinduoduo keeps its original ids so pushes repeated across the upgrade still deduplicate.
         event_id=token_hash(('' if platform=='pdd' else platform+':')+prefix+json.dumps(payload,sort_keys=True,ensure_ascii=False))
         with db.transaction() as tx:
-            if not tx.get('agiso_events',event_id):
+            if tx.get('agiso_events',event_id):count_repeat(tx,event_id)
+            else:
                 shop=next((s for s in tx.all('agiso_shops') if s['shop_id']==mall and platform_of(s)==platform),None)
                 if not shop:logging.getLogger(__name__).warning('Agiso push for unknown shop topic=%s',topic)
                 if family=='other':

@@ -94,6 +94,10 @@ Worker 每 300 秒在线程中执行 `maintenance.purge_due(now)`：`purge_at <=
 - 按次费用写入 `cost_entries`（不受发布审计保护的派生数据，幂等 id）：`{id, source, order_id, organization_id, day, quantity, rate}` 按该天费率计价，或带 `amount_cny`/`amount_usd`（美元按 `fx_rates` 中该天或之前最近的 USD/CNY 换算，无记录时用最早一条，完全没有时用 7.1）。
 - 抠图：`sync_cutouts` 为每个 `completed` item 写一条 `cutout:<item_id>`，`cutout_used` 为 1；没有 `cutout_used` 的自动抠图自备图读原图判断是否完全不透明（是则 1，标 `basis='inferred'`）；其余为 0。失败和不确定的抠图不计。
 - 汇率：`sync_fx` 每个中国日存一条 `fx_rates/<日期>`，先取中国外汇交易中心 `ccpr.json` 的 USD/CNY 中间价，失败用 `open.er-api.com`；失败后 1 小时内不重试（`cost_sync/fx.attempted_at`）。
+- 生图（`sync_fal`，需 FAL ADMIN Key）：按整点窗口（每窗最多一天、每次最多 3 窗、只处理 3 小时前的数据，进度在 `cost_sync/fal.until`）读取 `GET api.fal.ai/v1/models/usage?timeframe=minute` 全部端点的按分钟费用，并用同窗 `timeframe=hour` 合计核对，不一致则不入账；再按端点读取 `requests/by-endpoint`（窗前多取 2 小时），一分钟的费用平分给该分钟内 `ended_at` 落入且 `status_code=200` 的请求（无成功请求时平分给全部），写 `fal:<request_id>`（`amount_usd`）。没有请求的分钟写 `fal-minute:<端点>:<分钟>`，不归属订单。请求编号到 item 的对应来自 `fal_request_id`、新增的 `fal_request_ids`（`request_tracking.progress` 每次追加）、`fal_input_retries[].request_id` 和 `generations.request_id`。
+- 阿奇索：`agiso_protocol.on_call`（启动时设置）对每次有应答的网关调用写 `agiso-call:<uuid>`，按 `AGISO_API_TIERS` 定档，带 `tid`/`shop_order_id` 的调用记 `order_number`，否则 `shared`；`sync_agiso` 为每条 `agiso_events` 写 `agiso-push:<事件id>`，数量 = 1 + `agiso_push_repeats` 中的重复次数（重复推送按事件 id 计数，不改事件记录），档位按 `AGISO_PUSH_TIERS`（默认高级），并通过 `agiso_orders.tid/order_number` 或订单号把推送和调用关联到客户订单，对不上的标 `shared`。`sync_agiso_deposit` 每个中国日调用一次 `open/Bankroll/QueryDeposit`（基础档，本身记为共用费用）存 `agiso_deposit/<日期>`；全站报表 `agiso_check` 用相邻两天余额下降额比对两天之间按单价计算的阿奇索费用（余额上升的时段跳过）。
+- 共用费用：`shared` 且无订单的条目按条目所在月份平均分到该月创建、未取消的所有组织订单（`allocated`）；当月没有订单的共用费用和非共用的无主费用在全站报表的 `unattributed` 中列出。
+- 成本同步在 `Worker.upkeep` 后台任务中运行，不阻塞生成调度；`costs.STOP` 在 worker 停止时置位，慢接口同步在两次请求之间退出。
 - Worker 每 300 秒在线程中执行 `costs.tick`（与发货清理同一节拍），各来源独立失败、下次重试。`Worker.cost_get` 可替换出站 HTTP，浏览器测试注入固定汇率，不访问外网。
 
 ## 图片、队列与打印

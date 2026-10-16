@@ -249,8 +249,16 @@ async def exchange(code,config,transport,now,platform='pdd',app=None):
     return result
 
 
+# Cost accounting hook set at app start: called once for every gateway call that was answered.
+on_call=None
+
+
 async def api(path,fields,shop,config,transport,now):
-    fields={**fields,'timestamp':str(int(now))}
+    signed={**fields,'timestamp':str(int(now))}
     token=config['cipher'].decrypt(shop['token'].encode()).decode()
-    return await request_json('POST','https://gw-api.agiso.com/'+gateway_of(shop)+'/'+path,transport,
-                              data={**fields,'sign':sign(config['secret'],fields)},headers={'Authorization':'Bearer '+token,'ApiVersion':'1'})
+    result=await request_json('POST','https://gw-api.agiso.com/'+gateway_of(shop)+'/'+path,transport,
+                              data={**signed,'sign':sign(config['secret'],signed)},headers={'Authorization':'Bearer '+token,'ApiVersion':'1'})
+    if on_call:
+        try:on_call(api=('/'+gateway_of(shop)+'/'+path).lower(),shop=shop,fields=fields,at=now)
+        except Exception:logging.getLogger(__name__).warning('Agiso call accounting failed')
+    return result

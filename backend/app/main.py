@@ -438,6 +438,9 @@ def create_app(data_root=None, provider=None, clock=None, start_worker=True):
     register_customer_orders(app, db, user)
     from .costs import register_costs
     register_costs(app, db, user, admin, superadmin)
+    from . import agiso_protocol
+    from .costs import record_agiso_call
+    agiso_protocol.on_call = lambda **call: record_agiso_call(db, **call)
     from .agiso_routes import register_agiso
     register_agiso(app, db, user)
 

@@ -3,6 +3,7 @@ import io
 import pytest
 from PIL import Image
 from backend.tests.test_worker import context
+from backend.tests.test_agiso import configured
 from backend.tests.test_api import upload
 from backend.tests.test_mixed_stickers import sticker
 from backend.tests.test_customer_orders import action, opened, run
@@ -127,3 +128,103 @@ def test_daily_exchange_rate_prefers_cfets_and_falls_back(context):
         assert costs.fx_on(tx, d0)['usd_cny'] == 6.722 and costs.fx_on(tx, d1)['source'] == 'open.er-api.com'
         assert costs.fx_on(tx, '2999-01-01')['id'] == d2 and costs.fx_on(tx, '1960-01-01')['id'] == d0
     assert report(c)['fx']['usd_cny'] == 6.722 and report(c)['fx']['day'] == d0
+
+
+class FakeFal:
+    """FAL usage (minute and hour) and request listing for one window; records what was asked."""
+    def __init__(self, minutes, requests, hour_total=None):
+        self.minutes, self.requests, self.calls = minutes, requests, []
+        self.hour_total = sum(c for _, _, c in minutes) if hour_total is None else hour_total
+    def __call__(self, url, params=None, headers=None):
+        assert headers == {'Authorization': 'Key fal-admin-test'}
+        self.calls.append((url, dict(params)))
+        if url.endswith('/usage') and params['timeframe'] == 'minute':
+            series = [{'bucket': m + ':00+00:00', 'results': [{'endpoint_id': e, 'cost': c}]} for e, m, c in self.minutes]
+            return Answer({'time_series': series, 'has_more': False})
+        if url.endswith('/usage'):
+            return Answer({'time_series': [{'bucket': '2026-09-01T00:00:00+00:00', 'results': [{'endpoint_id': 'x', 'cost': self.hour_total}]}], 'has_more': False})
+        items = [r for r in self.requests if r['endpoint_id'] == params['endpoint_id']]
+        return Answer({'items': items, 'has_more': False})
+
+
+def test_fal_charges_are_split_per_request_and_unmatched_ones_stay_unattributed(context):
+    from datetime import datetime, timezone
+    app, c, clock, _ = context
+    sid = sticker(c, 'ONE')['id']
+    a, b = printed(app, c, 'FAL-A', sid, 1), printed(app, c, 'FAL-B', sid, 1)
+    with app.state.db.transaction() as tx:
+        config = tx.get('config', 'settings'); config['fal_admin_key'] = 'fal-admin-test'; tx.put('config', config)
+        ia, ib = order_items(app, a)[0], order_items(app, b)[0]
+        ia.update(fal_request_id='ra'); tx.put('items', ia)
+        ib.update(fal_request_id='rb', fal_request_ids=['rb-old', 'rb']); tx.put('items', ib)
+    ep = 'openai/gpt-image-2.5/flare/edit'
+    req = lambda rid, minute, status=200: {'request_id': rid, 'endpoint_id': ep, 'status_code': status, 'ended_at': minute + ':41.2Z'}
+    fake = FakeFal([(ep, '2026-09-01T01:05', 0.0556), (ep, '2026-09-01T01:30', 0.0278), (ep, '2026-09-01T02:00', 0.01), (ep, '2026-09-01T02:10', 0.03)],
+                   [req('ra', '2026-09-01T01:05'), req('rb-old', '2026-09-01T01:05'), req('rb', '2026-09-01T01:30'),
+                    req('refused', '2026-09-01T01:30', 422), req('stranger', '2026-09-01T02:10'), req('free', '2026-09-01T02:40')])
+    now = datetime(2026, 9, 1, 6, 20, tzinfo=timezone.utc).timestamp()
+    # Not configured: nothing is asked.
+    with app.state.db.transaction() as tx:
+        config = tx.get('config', 'settings'); key = config.pop('fal_admin_key'); tx.put('config', config)
+    assert costs.sync_fal(app.state.db, now, fake) == 0 and fake.calls == []
+    with app.state.db.transaction() as tx:
+        config = tx.get('config', 'settings'); config['fal_admin_key'] = key; tx.put('config', config)
+    # Totals that disagree (data still settling) are not booked and the window is retried.
+    wrong = FakeFal(fake.minutes, fake.requests, hour_total=1.0)
+    assert costs.sync_fal(app.state.db, now, wrong) == 0
+    assert costs.sync_fal(app.state.db, now, fake) == 5
+    assert costs.sync_fal(app.state.db, now, fake) == 0  # settled up to 03:00 already
+    with app.state.db.transaction() as tx:
+        entries = {e['id']: e for e in tx.all('cost_entries') if e['source'] == 'generation'}
+        assert tx.get('cost_sync', 'fal')['until'] == '2026-09-01T03:00:00+00:00'
+    assert entries['fal:ra']['amount_usd'] == pytest.approx(0.0278) and entries['fal:ra']['order_id'] == a['id']
+    assert entries['fal:rb-old']['order_id'] == b['id'] and entries['fal:rb']['amount_usd'] == pytest.approx(0.0278)
+    assert 'fal:refused' not in entries and 'fal:free' not in entries  # failed or not charged
+    assert entries['fal:stranger']['order_id'] is None and entries['fal-minute:' + ep + ':2026-09-01T02:00']['amount_usd'] == 0.01
+    assert entries['fal:ra']['day'] == '2026-09-01'
+    with app.state.db.transaction() as tx:
+        tx.put('fx_rates', {'id': '2026-09-01', 'usd_cny': 7.0, 'source': 'cfets'})
+    data = report(c)
+    assert row(data, 'FAL-A')['costs']['generation'] == pytest.approx(0.0278 * 7, abs=1e-4)
+    assert row(data, 'FAL-B')['costs']['generation'] == pytest.approx(0.0556 * 7, abs=1e-4) and row(data, 'FAL-B')['requests'] == 2
+    assert data['unattributed']['categories']['generation'] == pytest.approx(0.04 * 7, abs=1e-4)
+    assert 'unattributed' not in c.get('/api/costs').json()
+
+
+def test_agiso_pushes_with_repeats_and_calls_are_charged_and_unmatched_ones_shared(configured):
+    from backend.tests.test_agiso import shop, trade, push, process, refund
+    app, c, clock = configured
+    s = shop(configured)
+    assert push(c, trade('AG-1')).status_code == 200; process(app)
+    push(c, trade('AG-1'))  # Agiso sent it again: charged again, stored once
+    push(c, refund('GHOST', 'R9'), topic='8')  # a refund for an order this site never opened
+    o = c.get('/api/customer-orders').json()[0]
+    assert c.get('/api/agiso/shops/'+s['id']+'/goods').status_code == 200  # shop-level call
+    assert c.post('/api/customer-orders/remarks/sync', json={'ids': [o['id']]}).status_code == 200  # Trade/Detail for this order
+    costs.sync_agiso(app.state.db, clock())
+    with app.state.db.transaction() as tx:
+        entries = [e for e in tx.all('cost_entries') if e['source'] == 'agiso']
+    pushes = {e['order_number']: e for e in entries if 'push' in e}
+    calls = {e['api']: e for e in entries if 'api' in e}
+    assert pushes['AG-1']['quantity'] == 2 and pushes['AG-1']['order_id'] == o['id'] and pushes['AG-1']['tier'] == 'high'
+    assert pushes['GHOST']['order_id'] is None and pushes['GHOST']['shared']
+    assert calls['/aldspdd/goods/list']['shared'] and calls['/aldspdd/goods/list']['rate'] == 'agiso_high'
+    assert calls['/aldspdd/trade/detail']['order_id'] == o['id'] and not calls['/aldspdd/trade/detail']['shared']
+    costs.sync_agiso(app.state.db, clock())  # idempotent
+    with app.state.db.transaction() as tx:
+        assert len([e for e in tx.all('cost_entries') if e['source'] == 'agiso']) == len(entries)
+    # The order carries its own pushes and calls plus this month's shared Agiso costs (it is the only order).
+    data = report(c)
+    r = row(data, o['order_number'])
+    assert r['costs']['agiso'] == pytest.approx(3 * 0.002 + 2 * 0.002) and r['allocated'] == pytest.approx(0.004)
+    assert data['unattributed']['categories']['agiso'] == 0
+    # Daily balance snapshots calibrate the unit prices against what Agiso actually deducted.
+    class Balance:
+        def __init__(self, value): self.value = value
+        def json(self): return {'IsSuccess': True, 'Data': self.value}
+    assert costs.sync_agiso_deposit(app.state.db, clock(), lambda url, **kw: Balance(4.343))
+    assert not costs.sync_agiso_deposit(app.state.db, clock() + 60, lambda url, **kw: Balance(1.0))
+    assert costs.sync_agiso_deposit(app.state.db, clock() + DAY, lambda url, **kw: Balance(4.333))
+    check = report(c)['agiso_check']
+    assert check['balance'] == 4.333 and check['days'] == 1 and check['balance_drop'] == pytest.approx(0.01)
+    assert check['computed'] == pytest.approx(0.011) and check['ratio'] == pytest.approx(0.01 / 0.011, abs=1e-3)

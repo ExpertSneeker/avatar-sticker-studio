@@ -55,6 +55,7 @@ class Worker:
         self.stopping = False
         self.oss_next_sync = 0
         self.purge_next = 0
+        self.upkeep_task = None
         # Outbound HTTP for cost syncs (exchange rates, bills); replaced in tests and local browser runs.
         self.cost_get = None
         self.oss_task = None
@@ -479,6 +480,7 @@ class Worker:
             return False
 
     async def start(self):
+        costs.STOP.clear()
         self.recover()
         self.heartbeat()
         self.lease_task = asyncio.create_task(self.maintain_lease())
@@ -488,6 +490,13 @@ class Worker:
         while not self.stopping:
             await asyncio.to_thread(self.heartbeat)
             await asyncio.sleep(5)
+
+    async def upkeep(self, tick):
+        try:
+            await asyncio.to_thread(purge_due, self.db, tick)
+        except Exception:
+            log.exception('Shipped order image deletion failed; will retry')
+        await asyncio.to_thread(costs.tick, self.db, tick, self.cost_get)
 
     async def sync_oss(self):
         try:
@@ -509,11 +518,11 @@ class Worker:
                 for id in pending:
                     await asyncio.to_thread(self.publish, id)
                 tick = self.clock()
-                if not self.stopping and tick >= self.purge_next:
-                    # Shipped orders past their deletion time lose their images; records stay.
+                if not self.stopping and tick >= self.purge_next and (self.upkeep_task is None or self.upkeep_task.done()):
+                    # Shipped orders past their deletion time lose their images; cost syncs may wait on slow
+                    # provider APIs, so both run beside generation admission instead of blocking it.
                     self.purge_next = tick + 300
-                    await asyncio.to_thread(purge_due, self.db, tick)
-                    await asyncio.to_thread(costs.tick, self.db, tick, self.cost_get)
+                    self.upkeep_task = asyncio.create_task(self.upkeep(tick))
                 if not self.stopping and tick >= self.oss_next_sync:
                     self.oss_next_sync = tick + 30
                     if self.oss_task is None or self.oss_task.done():
@@ -532,9 +541,11 @@ class Worker:
 
     async def stop(self):
         self.stopping = True
-        if self.oss_task:
-            self.oss_task.cancel()
-            await asyncio.gather(self.oss_task, return_exceptions=True)
+        costs.STOP.set()
+        for task in (self.oss_task, self.upkeep_task):
+            if task:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
         if self.lease_task:
             self.lease_task.cancel()
             await asyncio.gather(self.lease_task, return_exceptions=True)

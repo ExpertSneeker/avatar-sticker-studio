@@ -443,3 +443,6 @@
   .costs-toolbar-actions { margin-left: 0; }
   .costs-category { grid-template-columns: 52px 1fr 72px 42px; }
 }
+.costs-unattributed .statistics-section-heading strong { font-size: 20px; font-variant-numeric: tabular-nums; }
+.costs-unattributed-list { display: flex; flex-wrap: wrap; gap: 8px 20px; font-size: 14px; color: var(--muted); }
+.costs-unattributed-list b { color: var(--ink, inherit); font-variant-numeric: tabular-nums; }
