@@ -298,9 +298,9 @@ test('staff reconciles applied-but-lost generate and rerun responses, then manag
   await expect(page.locator('.customer-order-row')).toHaveCount(0)
 })
 
-test('guest prints finished images of their own: step-1 hint, whole-print warning, swap for free, auto-selected and submitted on a phone',async({page,browser})=>{
+test('guest prints finished images of their own: step-1 hint, whole-print warning, extra copies, swap for free, auto-selected and submitted on a phone',async({page,browser})=>{
   await staffLogin(page.request)
-  const order=await createCustomer(page.request,{generation_limit:3,final_count:2,rerun_limit:0})
+  const order=await createCustomer(page.request,{generation_limit:3,final_count:3,rerun_limit:0})
   const transparent=await readFile(new URL('./fixtures/design-transparent.png',import.meta.url)),opaque=await readFile(new URL('./fixtures/design-opaque.png',import.meta.url))
   const context=await browser.newContext({baseURL:'http://127.0.0.1:5174',viewport:{width:390,height:844}})
   const errors:string[]=[]
@@ -310,11 +310,12 @@ test('guest prints finished images of their own: step-1 hint, whole-print warnin
     await expect(guest.getByRole('heading',{name:'订单 '+order.order_number})).toBeVisible()
     // Step 1 tells customers they can skip customization with their own finished images.
     await expect(guest.locator('.customer-design-hint')).toContainText('已经有做好的图片？')
-    await expect(guest.locator('.customer-design-hint')).toContainText('每张占 1 张可提交印刷数量（本单共 2 张）')
+    await expect(guest.locator('.customer-design-hint')).toContainText('每印 1 张占 1 张可提交印刷数量（本单共 3 张）')
     await guest.getByRole('button',{name:'上传做好的图片'}).click()
     const dialog=guest.getByRole('dialog',{name:'上传做好的图片'})
     await dialog.getByLabel('整张印：保留背景').check()
     await expect(dialog.getByText('印出来是正方形或长方形')).toBeVisible()
+    await expect(dialog.getByText(/确认是透明背景，整张印会按图案轮廓印成异形/)).toBeVisible()
     await dialog.getByLabel('自动抠图：去掉背景，按主体轮廓印').check()
     await dialog.getByRole('button',{name:'取消'}).click()
     await guest.getByLabel('选择做好的图片文件').setInputFiles([{name:'作品一.png',mimeType:'image/png',buffer:transparent},{name:'作品二.png',mimeType:'image/png',buffer:opaque}])
@@ -322,21 +323,27 @@ test('guest prints finished images of their own: step-1 hint, whole-print warnin
     await expect(guest.getByRole('status').filter({hasText:'分辨率较低'})).toContainText('作品一.png（300 像素）')
     await guest.getByLabel('做好的图片 2 的处理方式').selectOption('whole')
     await expect(guest.locator('.customer-design-row').nth(1)).toContainText('印出来是正方形或长方形')
-    await expect(guest.locator('.customer-submit-bar')).toContainText('已选 2 张')
-    await expect(guest.locator('.customer-submit-bar')).toContainText('2 张做好的图片')
+    // One image can be printed more than once; every copy takes a print position.
+    await guest.getByRole('button',{name:'做好的图片 1 多印一张'}).click()
+    await expect(guest.getByRole('group',{name:'做好的图片 1 的印刷数量'})).toContainText('印 2 张')
+    await expect(guest.getByRole('button',{name:'做好的图片 2 多印一张'})).toBeDisabled()
+    await expect(guest.locator('.customer-design-list h3')).toHaveText('做好的图片（2 张，共印 3 张）')
+    await expect(guest.locator('.customer-submit-bar')).toContainText('已选 3 张')
     // The working list is saved to the order like avatars are.
-    await expect.poll(async()=>(await(await page.request.get('/api/customer-orders/'+order.id)).json()).draft?.designs?.map((d:any)=>d.cutout)).toEqual(['cutout','whole'])
+    await expect.poll(async()=>(await(await page.request.get('/api/customer-orders/'+order.id)).json()).draft?.designs?.map((d:any)=>[d.cutout,d.copies])).toEqual([['cutout',2],['whole',1]])
     const width=await guest.evaluate(()=>document.documentElement.scrollWidth);expect(width).toBeLessThanOrEqual(390)
     await guest.getByRole('button',{name:'核对并开始处理'}).click()
     const preflight=guest.getByRole('dialog',{name:'生成前核对'})
-    await expect(preflight.locator('.customer-counts strong')).toHaveText(['0','2','2','2'])
+    await expect(preflight.locator('.customer-counts strong')).toHaveText(['0','3','3','3'])
+    await expect(preflight).toContainText('共 2 张，印 3 张')
     await preflight.getByRole('button',{name:'确认开始生成'}).click()
-    await expect(guest.locator('.customer-result-image img')).toHaveCount(2,{timeout:60000})
+    await expect(guest.locator('.customer-result-image img')).toHaveCount(3,{timeout:60000})
     // Ready customer-made images start selected for printing.
-    await expect(guest.locator('.customer-selection-badge')).toHaveText('已选 2/2')
+    await expect(guest.locator('.customer-selection-badge')).toHaveText('已选 3/3')
     await expect(guest.getByRole('button',{name:'查看 / 重跑'})).toHaveCount(0)
     await guest.getByRole('button',{name:'查看 / 更换'}).first().click()
     const swap=guest.getByRole('dialog',{name:'自备图 · 查看与更换'})
+    await expect(swap.getByText('这张图印 2 张')).toBeVisible()
     await swap.getByRole('button',{name:'改为整张印'}).click()
     await expect(swap.getByText('确认改为整张印吗')).toBeVisible()
     await swap.getByRole('button',{name:'确认改为整张印'}).click()
@@ -346,7 +353,7 @@ test('guest prints finished images of their own: step-1 hint, whole-print warnin
     await expect(swap.locator('.customer-versions figure')).toHaveCount(3,{timeout:60000})
     await swap.getByRole('button',{name:'关闭',exact:true}).last().click()
     const detail=await(await page.request.get('/api/customer-orders/'+order.id)).json()
-    expect(detail.design_count).toBe(2);expect(detail.slots.map((s:any)=>s.cutout)).toEqual(['whole','whole'])
+    expect(detail.design_count).toBe(3);expect(detail.slots.map((s:any)=>s.cutout)).toEqual(['whole','whole','whole'])
     expect(detail.slots.every((s:any)=>s.reruns_used===0))
     await expect(guest.getByRole('button',{name:'确认成品并提交'})).toBeEnabled({timeout:60000})
     await guest.getByRole('button',{name:'确认成品并提交'}).click()
@@ -355,7 +362,7 @@ test('guest prints finished images of their own: step-1 hint, whole-print warnin
     await expect.poll(async()=>(await(await page.request.get('/api/customer-orders/'+order.id)).json()).delivery_ready,{timeout:60000}).toBe(true)
     // Staff see the order flagged in the list.
     await page.goto('/');await page.getByRole('navigation').getByRole('button',{name:'全部订单',exact:true}).click()
-    await expect(page.locator('.customer-order-row').filter({hasText:order.order_number})).toContainText('含自备图 2 张')
+    await expect(page.locator('.customer-order-row').filter({hasText:order.order_number})).toContainText('含自备图 3 张')
     expect(errors).toEqual([])
   }finally{await context.close()}
 })

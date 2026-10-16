@@ -134,3 +134,21 @@ def test_unshipped_and_refunded_orders(context):
     assert purge_due(app.state.db, clock.value) == 1
     restored = action(c, c.get('/api/customer-orders/'+o['id']).json(), 'restore').json()
     assert restored['state'] == 'shipped' and restored['purged_at'] == clock.value
+
+
+def test_shipping_info_is_staff_only_multiline_and_editable_at_any_stage(context):
+    app, c, clock, _ = context
+    o = opened(c, 'INFO-1')
+    staff, _ = member(c, app)
+    text = '  张三 13800000000\r\n上海市 浦东新区 某路 1 号   \n\n'
+    o = action(staff, o, 'shipping-info', text=text).json()
+    assert o['shipping_info'] == '张三 13800000000\n上海市 浦东新区 某路 1 号'
+    assert action(c, o, 'shipping-info', text='a\x00b').status_code == 422
+    assert action(c, o, 'shipping-info', text='x' * 1001).status_code == 422
+    guest = TestClient(app); guest.post('/api/guest/login', json={'order_number': 'INFO-1'})
+    assert 'shipping_info' not in guest.get('/api/guest/order').json()
+    # Still editable once cancelled; clearing it is allowed too.
+    o = action(c, o, 'cancel').json()
+    o = action(c, o, 'shipping-info', text='李四').json(); assert o['shipping_info'] == '李四'
+    o = action(c, o, 'shipping-info', text='').json(); assert o['shipping_info'] == ''
+    assert 'shipping_info' in c.get('/api/customer-orders?summary=1').json()[0]

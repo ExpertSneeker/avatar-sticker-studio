@@ -379,3 +379,33 @@ def test_admin_reset_returns_the_order_to_a_fresh_draft_and_keeps_history(contex
     assert action(c, o, 'reset').status_code == 409
     o = action(c, o, 'unlock').json()
     assert action(c, o, 'reset').json()['state'] == 'draft'
+
+
+def test_a_customer_image_can_be_printed_several_times_with_one_processing(context, cutouts):
+    app, c, _, provider = context
+    art, other = send(c, rgb()), send(c, rgb(color=(5, 6, 7)), name='另一张.png')
+    o = opened(c, generation_limit=4, final_count=4)
+    too_many = [{'upload_id': art['id'], 'copies': 4}, {'upload_id': other['id']}]
+    assert c.put('/api/customer-orders/'+o['id']+'/draft', json={'avatars': [], 'designs': too_many}).status_code == 422
+    designs = [{'upload_id': art['id'], 'copies': 3}, {'upload_id': other['id']}]
+    saved = c.put('/api/customer-orders/'+o['id']+'/draft', json={'avatars': [], 'designs': designs}).json()
+    assert [d['copies'] for d in saved['draft']['designs']] == [3, 1] and saved['design_count'] == 4
+    pre = action(c, saved, 'preflight', designs=designs).json()
+    assert pre['selection_count'] == 4 and pre['design_count'] == 4
+    o = action(c, saved, 'generate', designs=designs).json()
+    assert len(o['slots']) == 4 and [s['group_size'] for s in o['slots']] == [3, 3, 3, 1]
+    run(app); run(app)
+    assert cutouts.calls == 2 and provider.calls == []  # one cutout per image, not per copy
+    o = c.get('/api/customer-orders/'+o['id']).json()
+    assert all(s['status'] == 'completed' and s['selected_version_id'] for s in o['slots'])
+    # Swapping one copy swaps every copy of that image.
+    swap = send(c, rgb(color=(90, 9, 9)), name='换一张.png')
+    o = action(c, o, 'slots/'+o['slots'][1]['id']+'/replace', upload_id=swap['id'], cutout='whole').json()
+    assert [s['cutout'] for s in o['slots']] == ['whole', 'whole', 'whole', 'cutout']
+    run(app)
+    o = c.get('/api/customer-orders/'+o['id']).json()
+    assert [len(s['versions']) for s in o['slots']] == [2, 2, 2, 1]
+    o = action(c, o, 'submit', slot_ids=[s['id'] for s in o['slots']]).json()
+    assert o['state'] == 'submitted'
+    with app.state.db.transaction() as tx:
+        assert len(tx.get('orders', o['id'])['final_entries']) == 4

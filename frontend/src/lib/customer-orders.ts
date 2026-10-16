@@ -23,7 +23,8 @@ export interface CustomerAvatar {id:string; name:string; preview_url:string}
 export interface AvatarChoice {upload_id:string;template_ids:string[];sticker_ids:string[]}
 // 'cutout' removes an opaque background; 'whole' prints the full square or rectangle.
 export type CutoutMode='cutout'|'whole'
-export interface DesignChoice {upload_id:string;cutout:CutoutMode}
+// copies: printed copies of this image, each taking one print position (default 1).
+export interface DesignChoice {upload_id:string;cutout:CutoutMode;copies?:number}
 export type DraftDesign=DesignChoice&{name:string;preview_url:string}
 // Saved pre-generation working list (draft orders only); its revision is independent of the order version.
 export interface OrderDraft {revision:number; avatars:(AvatarChoice&{name:string;preview_url:string|null})[]; designs?:(DesignChoice&{name:string;preview_url:string|null})[]}
@@ -44,6 +45,8 @@ export interface CustomerOrder extends GuestOrder {
   platform_remark?:string; remark_sync?:{status:'ok'|'failed';at:number}|null
   platform?:PlatformKey; platform_editable?:boolean; remark_supported?:boolean
   design_count?:number
+  // Staff-only delivery details (several lines); never sent to customers.
+  shipping_info?:string
 }
 export interface LibrarySticker {id:string;code:string;name:string;category:string;revision:number;preview_url:string;active?:boolean}
 export interface LibraryTemplate {id:string;code:string;name:string;category:string;sticker_ids:string[];images:{preview_url:string;code?:string}[];active?:boolean;available?:boolean}
@@ -88,10 +91,12 @@ export function pruneChoices<T extends AvatarChoice>(avatars:T[],library:Custome
   const stickers=new Set(library.stickers.map(s=>s.id)),templates=new Set(library.templates.map(t=>t.id))
   return avatars.map(a=>({...a,template_ids:a.template_ids.filter(id=>templates.has(id)),sticker_ids:a.sticker_ids.filter(id=>stickers.has(id))}))
 }
-export const draftDesigns=(draft:OrderDraft|undefined):DraftDesign[]=>(draft?.designs||[]).map(d=>({upload_id:d.upload_id,name:d.name,preview_url:d.preview_url||'',cutout:d.cutout}))
-export const designPayload=(designs:DesignChoice[])=>designs.map(({upload_id,cutout})=>({upload_id,cutout}))
+export const draftDesigns=(draft:OrderDraft|undefined):DraftDesign[]=>(draft?.designs||[]).map(d=>({upload_id:d.upload_id,name:d.name,preview_url:d.preview_url||'',cutout:d.cutout,copies:d.copies||1}))
+export const designPayload=(designs:DesignChoice[])=>designs.map(({upload_id,cutout,copies})=>({upload_id,cutout,copies:copies||1}))
+// Print positions taken by customer-made images: every copy counts.
+export const designCopies=(designs:DesignChoice[])=>designs.reduce((sum,design)=>sum+(design.copies||1),0)
 export const cutoutLabels:Record<CutoutMode,string>={cutout:'自动抠图',whole:'整张印'}
-export const WHOLE_PRINT_NOTE='整张印会保留图片背景，印出来是正方形或长方形。'
+export const WHOLE_PRINT_NOTE='整张印会保留图片背景，印出来是正方形或长方形；如果图片已经抠好、确认是透明背景，整张印会按图案轮廓印成异形。'
 // Prints run about 1000px on the long edge; smaller images may print blurry.
 export const DESIGN_MIN_EDGE=1000
 export const draftChoices=(draft:OrderDraft|undefined,library:CustomerLibrary)=>pruneChoices((draft?.avatars||[]).map(a=>({upload_id:a.upload_id,name:a.name,preview_url:a.preview_url||'',template_ids:a.template_ids,sticker_ids:a.sticker_ids})),library)

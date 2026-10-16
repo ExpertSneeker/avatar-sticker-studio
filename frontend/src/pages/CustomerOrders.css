@@ -1237,3 +1237,24 @@
 .customer-shipped .tracking-number { color: var(--ink, inherit); user-select: all; letter-spacing: .02em; }
 .bulk-ship-list { list-style: none; padding: 0; margin: 0 0 12px; display: grid; gap: 8px; max-height: 50vh; overflow: auto; }
 .bulk-ship-list li { padding: 8px 0; border-bottom: 1px solid var(--line); }
+
+/* Staff-only delivery details: prominent, one click copies them. */
+.shipping-info { display: flex; align-items: flex-start; gap: 6px; margin: 6px 0 12px; }
+.shipping-info-text { flex: 1; display: flex; align-items: flex-start; gap: 8px; padding: 10px 12px; border-radius: var(--r-md, 10px);
+  background: var(--ok-soft); border: 1px solid var(--ok); color: var(--ink, inherit); text-align: left; cursor: copy; font: inherit; font-size: 14px; line-height: 1.6; }
+.shipping-info-text:hover { box-shadow: 0 0 0 3px rgb(0 0 0 / .05); }
+.shipping-info-text svg { flex-shrink: 0; margin-top: 3px; color: var(--ok); }
+.shipping-info-text b { display: block; color: var(--ok); }
+.shipping-info-body { display: block; white-space: pre-wrap; overflow-wrap: anywhere; font-weight: 600; }
+.shipping-info-text small { display: block; color: var(--muted); font-size: 12px; }
+.shipping-info-add { margin: 0 0 10px; }
+.shipping-info-preview { display: flex; align-items: center; gap: 6px; color: var(--ok); font-weight: 600; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; max-width: 100%; }
+.shipping-info-preview svg { flex-shrink: 0; }
+.customer-design-copies { display: flex; align-items: center; gap: 4px; white-space: nowrap; font-size: 14px; }
+.customer-design-copies b { font-variant-numeric: tabular-nums; }
+/* Order numbers copy themselves on click (list rows and the order heading). */
+.order-number-copy { display: inline-flex; align-items: center; gap: 6px; cursor: copy; border-radius: 6px; }
+.order-number-copy svg { color: var(--muted); }
+.order-number-copy:hover { color: var(--brand-strong); }
+.order-number-copy:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+.order-number-copy.heading { border: 0; background: none; padding: 0; font: inherit; color: inherit; }

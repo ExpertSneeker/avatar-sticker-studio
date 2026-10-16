@@ -72,13 +72,15 @@
 
 开户固定水印和打印参数，空水印使用当时账号显示名，同时保存提示词及版本。生成时固定头像、贴纸版本和选择。首次生图按 `(avatar_id, sticker_id, revision)` 去重；每次选择仍保留独立位置，但同一组位置（`slot_group`）的重做只建一个任务、只在发起位置计一次预留，版本选择同时应用到整组（2026-10-14 起）。
 
-客户自备图（做好的图片，2026-10-15）：上传时 `purpose: 'design'`（访客 `/api/guest/uploads/init` 与后台 `/api/uploads/init` 同一字段，默认 `avatar`；按用途分别去重，只缩不放到长边 2048 并保留透明度）。草稿 `draft.designs = [{upload_id, asset_id, name, cutout}]`，`cutout` 为 `cutout`（不透明时调用抠图）或 `whole`（保留背景，整张矩形印刷）；`Generate`/`DraftSave` 带 `designs`，头像可为 0 但两者不能都空。约束：自备图数 ≤ F，`选择份数 + 自备图数` 在 F 至 G 之间（自备图同时占预览和印刷额度），头像上传不能当自备图用，反之亦然；preflight 返回 `design_count`，`selection_count` 含自备图。生成时每张自备图建一个 `source: 'design'` 的 item：无 generations 记录、不调 FAL，直接以上传图为 `raw_result_id` 进入 `postprocess`（整张印跳过抠图且允许不透明），结果按普通版本进入位置。位置 `source: 'design'`、`sticker_code: '自备图'`、`design_id`、`cutout`，`slot_group` 只含自身；`rerun` 返回 409，改用 `POST …/slots/{slot_id}/replace`（`upload_id` + `cutout`，访客和后台都可用，不占 `rerun_limit`，旧版本保留可选回；处理中不可更换）。访客在 `review` 状态仍可上传 `design` 用途的图片（头像仍只能在 `draft` 上传）。打印不再要求透明（生成结果在后处理时已检查），总览按比例居中放入 256 格。后台 DTO 有 `design_count`，列表标注“含自备图”。
+客户自备图（做好的图片，2026-10-15）：上传时 `purpose: 'design'`（访客 `/api/guest/uploads/init` 与后台 `/api/uploads/init` 同一字段，默认 `avatar`；按用途分别去重，只缩不放到长边 2048 并保留透明度）。草稿 `draft.designs = [{upload_id, asset_id, name, cutout}]`，`cutout` 为 `cutout`（不透明时调用抠图）或 `whole`（保留背景，整张矩形印刷）；`Generate`/`DraftSave` 带 `designs`，头像可为 0 但两者不能都空。约束：自备图数 ≤ F，`选择份数 + 自备图数` 在 F 至 G 之间（自备图同时占预览和印刷额度），头像上传不能当自备图用，反之亦然；preflight 返回 `design_count`，`selection_count` 含自备图。生成时每张自备图建一个 `source: 'design'` 的 item：无 generations 记录、不调 FAL，直接以上传图为 `raw_result_id` 进入 `postprocess`（整张印跳过抠图且允许不透明），结果按普通版本进入位置。位置 `source: 'design'`、`sticker_code: '自备图'`、`design_id`、`cutout`，`slot_group` 只含自身；`rerun` 返回 409，改用 `POST …/slots/{slot_id}/replace`（`upload_id` + `cutout`，访客和后台都可用，不占 `rerun_limit`，旧版本保留可选回；处理中不可更换）。访客在 `review` 状态仍可上传 `design` 用途的图片（头像仍只能在 `draft` 上传）。打印不再要求透明（生成结果在后处理时已检查），总览按比例居中放入 256 格。后台 DTO 有 `design_count`，列表标注“含自备图”。自备图可设印刷份数（2026-10-16）：`DesignSelection.copies`（1–360，默认 1）存入草稿和 `order.designs`；份数合计 ≤ F，`选择份数 + 份数合计` 在 F 至 G 之间，preflight 的 `selection_count`/`design_count` 与 DTO 的 `design_count` 都按份数计。生成时每张图只建一个 item，并按份数建同一 `design_group` 的多个位置；`slot_group` 对自备图按 `design_group` 分组（旧位置无该字段时单独成组），因此 `replace` 整组切换、`select` 与重新抠图同步整组、DTO `group_size` 为份数，每个位置独立提交。
 
 重做成功消耗整单一次机会，保留旧版也不会退回已成功重做次数；明确失败且没有外部占用才释放预留，未知请求继续占用。一次性迁移 `order-shared-rerun-v1` 将存量 v3 订单的 R 设为各自 G；这是历史迁移动作，不是新订单的默认值。
 
 提交要求恰好 F 个不同位置，顺序决定输出；整单所有在途/未知请求、未释放预留和待确认版本都要处理完。顶部“已选 x/y”使用 `selection.length / final_count`，移动端滚动可见；点击可选卡片切换选择，“查看 / 重跑”才打开放大对比。
 
 解锁保留已消耗额度和版本，重新提交前关闭旧交付下载。取消或暂停不等于远端请求结束；继续核对在途请求，但不能继续新生图或发布不该发布的产物。
+
+收货信息（2026-10-16）：`POST /api/customer-orders/{id}/shipping-info`（`text` ≤1000，统一换行、去行尾空白、拒绝控制字符）写入 `order.shipping_info`，任何状态（含已取消、已发货、已删除图片）都可修改，不受暂停或售后保护限制；只出现在后台 DTO，访客 DTO 不含。
 
 初始化（2026-10-16，`POST /api/customer-orders/{id}/reset`，仅 `superadmin`/`org_admin`，无访客路由）：`draft`/`review` 订单回到刚开单的 `draft`——清空 `avatars`、`designs`、`slots`、`draft`、`final_entries`、生成/选择计数和产物字段，保留订单号、G/F/R、店铺、水印、打印参数和提示词快照；该订单任何 item 处于 `queued`/`running`/`unknown`、`remote_reserved` 或 `cutout_inflight` 时返回 409，`submitted` 需先解锁。items、generations、资产、上传和审计记录不删除，只是不再被订单引用（媒体授权随之拒绝旧图，访客本人上传的原图仍可访问），统计照旧计入；资产随订单整体按保留天数清理。前端工作台发现订单从非 `draft` 回到 `draft` 时丢弃本页旧选择。
 
