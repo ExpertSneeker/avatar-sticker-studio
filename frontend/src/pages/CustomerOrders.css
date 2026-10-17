@@ -1234,6 +1234,10 @@
 }
 .seller-remark svg { flex-shrink: 0; margin-top: 2px; }
 .seller-remark b { margin-right: 8px; }
+.seller-remark { cursor: copy; }
+.seller-remark:hover { box-shadow: 0 0 0 3px rgb(0 0 0 / .05); }
+.seller-remark:focus-visible { outline: 2px solid var(--warn); outline-offset: 2px; }
+.seller-remark .seller-remark-copy { margin-left: auto; margin-top: 4px; opacity: .7; }
 .customer-staff-actions + .seller-remark { margin-bottom: 12px; }
 .shipping-line { color: var(--ok); font-weight: 600; }
 .customer-shipped .tracking-number { color: var(--ink, inherit); user-select: all; letter-spacing: .02em; }

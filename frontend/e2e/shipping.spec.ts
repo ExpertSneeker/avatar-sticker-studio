@@ -66,10 +66,18 @@ test('all orders: ship with a tracking number and a prominent seller remark, the
     await expect(page.getByText('收货信息已复制')).toBeVisible()
     expect(await page.evaluate(()=>navigator.clipboard.readText())).toBe('张三 13800000000\n上海市浦东新区某路 1 号')
     await expect(page.getByRole('dialog',{name:'订单 '+order.order_number,exact:true})).toHaveCount(0)
+    // The seller remark copies itself too, in the row without opening the order.
+    await row.locator('.seller-remark').click()
+    await expect(page.getByText('卖家备注已复制')).toBeVisible()
+    expect(await page.evaluate(()=>navigator.clipboard.readText())).toBe(remark)
+    await expect(page.getByRole('dialog',{name:'订单 '+order.order_number,exact:true})).toHaveCount(0)
     // Fix the tracking number in the order, then undo the shipment.
     await row.getByRole('button',{name:'查看订单'}).click()
     const opened=page.getByRole('dialog',{name:'订单 '+order.order_number,exact:true})
     await expect(opened.locator('.seller-remark').first()).toContainText(remark)
+    await page.evaluate(()=>navigator.clipboard.writeText(''))
+    await opened.locator('.seller-remark').first().click()
+    expect(await page.evaluate(()=>navigator.clipboard.readText())).toBe(remark)
     // Staff-only delivery details: several lines, editable at any stage, copied with one click.
     await expect(opened.locator('.shipping-info-body')).toHaveText('张三 13800000000\n上海市浦东新区某路 1 号')
     await page.evaluate(()=>navigator.clipboard.writeText(''))
