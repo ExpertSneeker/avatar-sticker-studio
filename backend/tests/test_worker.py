@@ -427,3 +427,32 @@ def test_upload_limit_caps_only_submissions_without_request_id(context):
     assert client.patch('/api/admin/settings', json={'max_uploads':0}).status_code == 422
     assert client.patch('/api/admin/settings', json={'fal_upload_timeout':29}).status_code == 422
     assert client.patch('/api/admin/settings', json={'fal_upload_timeout':600}).json()['fal_upload_timeout'] == 600
+
+
+def test_every_submission_uses_the_live_site_prompt_and_records_its_version(context):
+    # Orders opened before a prompt change still generate (and rerun) with the latest site-wide prompt.
+    app,client,clock,_=context
+    seen=[]
+    class Recording(QueueProvider):
+        async def submit(self, **kwargs):
+            seen.append(kwargs['prompt']); return await super().submit(**kwargs)
+    p=Recording();w=app.state.worker;w.provider=p
+    o,_=order(client)
+    assert 'prompt' not in stored_order(app,o)
+    assert client.patch('/api/admin/settings',json={'prompt':'第一版更新后的全站提示词，图1是模板图2是头像'}).status_code==200
+    item=w.claim();asyncio.run(w.execute(item))
+    version=client.get('/api/admin/settings').json()['prompt_version']
+    assert seen==['第一版更新后的全站提示词，图1是模板图2是头像']
+    with app.state.db.transaction(readonly=True) as tx: assert tx.get('items',item['id'])['prompt_version']==version
+    p.state='COMPLETED';clock.value+=10
+    while (next_item:=w.claim()):asyncio.run(w.execute(next_item))
+    assert client.patch('/api/admin/settings',json={'prompt':'第二版更新后的全站提示词，只取图2头部特征'}).status_code==200
+    slot=slot_for(app,o,item)
+    assert customer_action(client,o,'slots/'+slot['id']+'/rerun').status_code==200
+    rerun=next(x for x in stored_order(app,o)['slots'] if x['id']==slot['id'])['active_item_id']
+    for _ in range(100):
+        if next(i for i in order_items(app,o) if i['id']==rerun)['status']=='completed':break
+        clock.value+=61
+        if (next_item:=w.claim()):asyncio.run(w.execute(next_item))
+    assert rerun!=item['id'] and seen[-1]=='第二版更新后的全站提示词，只取图2头部特征'
+    with app.state.db.transaction(readonly=True) as tx: assert tx.get('items',rerun)['prompt_version']==version+1

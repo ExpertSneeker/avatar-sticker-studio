@@ -177,7 +177,7 @@ class Worker:
                 provider = self.provider or FalProvider(os.environ.get('FAL_KEY') or config.get('fal_api_key', ''), config.get('fal_upload_timeout', DEFAULT_UPLOAD_TIMEOUT))
                 if hasattr(provider, 'submit'):
                     if not item.get('fal_request_id'):
-                        job = await self.submit(provider, item, config, template, avatar, order['prompt'], phase)
+                        job = await self.submit(provider, item, config, template, avatar, config['prompt'], phase)
                         if job is None:
                             return
                         self.checkpoint(item, **job)
@@ -205,7 +205,7 @@ class Worker:
                                     download_ms=round((time.monotonic() - download_started) * 1000, 3))
                 else:
                     phase['submit_entered'] = True
-                    data = await provider.generate(template=template, avatar=avatar, prompt=order['prompt'])
+                    data = await provider.generate(template=template, avatar=avatar, prompt=config['prompt'])
                 response_received = True
                 processing_started = time.monotonic()
                 image = decode(data, require_transparency=False)
@@ -369,6 +369,8 @@ class Worker:
             job = await provider.submit(template=template, avatar=avatar, prompt=prompt, **kwargs)
             metrics = job.get('fal_submit_metrics', {})
             job['fal_input'] = actual
+            # The live site-wide prompt is used for every submission; record which version this request sent.
+            job['prompt_version'] = config.get('prompt_version', 1)
             return job
         except BaseException as exc:
             metrics = getattr(exc, 'submit_metrics', {})

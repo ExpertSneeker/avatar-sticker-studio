@@ -617,7 +617,7 @@ def create_customer_order(tx, actor, data, at, shop=None):
              'name': data.order_number, 'watermark': shop_watermark(tx, shop) if shop else watermark_of(actor),
              'watermark_version': 1, 'print_settings': PrintSettings(**actor['print_defaults']).model_dump(),
              'avatars': [], 'slots': [], 'created_at': datetime.fromtimestamp(at, timezone.utc).isoformat(),
-             'prompt': config['prompt'], 'prompt_version': config.get('prompt_version', 1), 'paused': False,
+             'paused': False,
              'content_version': 1, 'artifact_version': 0, 'delivery_version': 0, 'delivery_ready': False,
              'artifacts': [], 'overview_ready': False, 'overview_id': None, 'publish_signatures': {}}
     tx.put('orders', order)
